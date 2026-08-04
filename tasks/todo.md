@@ -27,7 +27,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   验收：`uvicorn app.main:app --reload` 启动成功，`curl localhost:8000/health` 返回正常
   （本任务是裸 venv 验证的，之后的任务改用 docker compose，见下）
 
-- [ ] **任务 2：后端容器化**
+- [x] **任务 2：后端容器化**
   文件：`backend/Dockerfile`、`docker-compose.yml`
   目标：把任务 1 的 FastAPI 服务用 Docker 跑起来，源码挂载支持热重载，端口不与本机已有的 Redis(6379)/MySQL(3306) 冲突
   验收：`docker compose up` 启动后 `curl localhost:8000/health` 返回正常；改动 `main.py` 后无需重新 build 就能看到效果
