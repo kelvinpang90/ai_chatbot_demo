@@ -1,0 +1,81 @@
+{
+  "id": "hotel",
+  "name": {"zh": "酒店旅游预订助手", "en": "Hotel & Travel Assistant", "ms": "Pembantu Hotel & Percutian"},
+  "description": {
+    "zh": "房型查询、预订、行程建议、入住须知",
+    "en": "Room availability, bookings, itinerary tips, check-in info",
+    "ms": "Semakan bilik, tempahan, cadangan itinerari, maklumat daftar masuk"
+  },
+  "icon": "🏨",
+  "disclaimer": {
+    "zh": "这是演示数据，并非真实酒店预订平台，仅用于产品体验展示。",
+    "en": "This is demo data for a fictional resort, not a real booking platform.",
+    "ms": "Ini adalah data demo untuk resort fiksyen, bukan platform tempahan sebenar."
+  },
+  "persona_prompt": "You are a helpful booking assistant for 'Langkawi Breeze Resort', a fictional beachfront resort in Langkawi, Malaysia with a sister property in Penang. Help guests check room types and rates, look up bookings, suggest itineraries, and answer check-in/check-out questions. Use the room catalog and the current guest's booking history provided in context - never invent booking numbers or data that isn't in the context. All rates are in Malaysian Ringgit (RM) per night. Keep replies concise, a few sentences at most.",
+  "context_data": {
+    "room_types": [
+      {"room_type": "Deluxe Garden Room", "location": "Langkawi", "price_per_night_rm": 320, "max_guests": 2, "features": "Garden view, king bed, free WiFi"},
+      {"room_type": "Sea View Suite", "location": "Langkawi", "price_per_night_rm": 580, "max_guests": 3, "features": "Sea view, balcony, breakfast included"},
+      {"room_type": "Beachfront Villa", "location": "Langkawi", "price_per_night_rm": 950, "max_guests": 4, "features": "Private pool, direct beach access"},
+      {"room_type": "Family Suite", "location": "Langkawi", "price_per_night_rm": 480, "max_guests": 5, "features": "Two bedrooms, kids club access"},
+      {"room_type": "Standard Twin Room", "location": "Langkawi", "price_per_night_rm": 220, "max_guests": 2, "features": "Twin beds, free WiFi"},
+      {"room_type": "Superior City Room", "location": "Penang", "price_per_night_rm": 260, "max_guests": 2, "features": "City view, queen bed, free WiFi"},
+      {"room_type": "Heritage Suite", "location": "Penang", "price_per_night_rm": 420, "max_guests": 2, "features": "Georgetown heritage decor, breakfast included"},
+      {"room_type": "Penthouse", "location": "Penang", "price_per_night_rm": 890, "max_guests": 4, "features": "Rooftop terrace, panoramic view"}
+    ],
+    "faq": [
+      {"q": "What time is check-in/check-out?", "a": "Check-in is from 3:00 PM, check-out is by 12:00 PM. Early check-in/late check-out subject to availability."},
+      {"q": "Do you offer airport transfers?", "a": "Yes, airport transfers from Langkawi International Airport (LGK) and Penang International Airport (PEN) are available for RM 80 per way."},
+      {"q": "Is breakfast included?", "a": "Breakfast is included for Sea View Suite and above; other room types can add breakfast for RM 45 per person per day."}
+    ]
+  },
+  "quick_questions": [
+    {"zh": "有哪些房型和价格？", "en": "What room types and rates do you have?", "ms": "Apakah jenis bilik dan kadar yang ada?"},
+    {"zh": "帮我查一下我的预订", "en": "Check my booking", "ms": "Semak tempahan saya"},
+    {"zh": "有推荐的行程安排吗？", "en": "Any itinerary recommendations?", "ms": "Ada cadangan itinerari?"}
+  ],
+  "identities": [
+    {
+      "id": "confirmed_guest",
+      "label": {
+        "zh": "已订房客人黄志明 - 3晚海景套房，下周入住",
+        "en": "Confirmed guest Ng Chee Ming - 3 nights Sea View Suite, arriving next week",
+        "ms": "Tetamu disahkan Ng Chee Ming - 3 malam Sea View Suite, tiba minggu depan"
+      },
+      "profile": {
+        "guest_name": "Ng Chee Ming",
+        "bookings": [
+          {"booking_id": "BK-3021", "room_type": "Sea View Suite", "location": "Langkawi", "check_in": "2026-08-12", "check_out": "2026-08-15", "guests": 2, "total_rm": 1740, "status": "Confirmed"}
+        ]
+      }
+    },
+    {
+      "id": "prospective_guest",
+      "label": {
+        "zh": "潜在客人林佳颖 - 还未预订，正在咨询",
+        "en": "Prospective guest Lim Jia Ying - no booking yet, still inquiring",
+        "ms": "Bakal tetamu Lim Jia Ying - belum tempah, masih bertanya"
+      },
+      "profile": {
+        "guest_name": "Lim Jia Ying",
+        "bookings": []
+      }
+    },
+    {
+      "id": "returning_guest",
+      "label": {
+        "zh": "回头客人拿督阿末 - 曾入住2次，本周入住家庭套房",
+        "en": "Returning guest Dato Ahmad - stayed twice before, Family Suite this week",
+        "ms": "Tetamu berulang Dato Ahmad - pernah menginap 2 kali, Family Suite minggu ini"
+      },
+      "profile": {
+        "guest_name": "Dato Ahmad",
+        "bookings": [
+          {"booking_id": "BK-2890", "room_type": "Family Suite", "location": "Langkawi", "check_in": "2026-08-06", "check_out": "2026-08-09", "guests": 4, "total_rm": 1440, "status": "Confirmed"},
+          {"booking_id": "BK-2210", "room_type": "Deluxe Garden Room", "location": "Langkawi", "check_in": "2025-12-20", "check_out": "2025-12-23", "guests": 2, "total_rm": 960, "status": "Completed"}
+        ]
+      }
+    }
+  ]
+}

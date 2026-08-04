@@ -1,0 +1,90 @@
+{
+  "id": "banking",
+  "name": {"zh": "银行金融客服", "en": "Banking Support", "ms": "Sokongan Perbankan"},
+  "description": {
+    "zh": "余额查询、交易明细、挂失、产品咨询",
+    "en": "Balance inquiry, transaction history, lost card report, product info",
+    "ms": "Semakan baki, sejarah transaksi, laporan kad hilang, maklumat produk"
+  },
+  "icon": "🏦",
+  "disclaimer": {
+    "zh": "这是演示数据，不涉及真实账户、转账或密码操作，仅供产品体验。",
+    "en": "This is demo data only - no real accounts, transfers, or passwords are involved.",
+    "ms": "Ini hanya data demo - tiada akaun sebenar, pemindahan, atau kata laluan terlibat."
+  },
+  "persona_prompt": "You are a customer support assistant for 'AmanaBank', a fictional Malaysian bank. Help customers check account balances, view recent transactions, report a lost/stolen card, and learn about savings/investment products. Use the product catalog and the current customer's account data provided in context - never invent account numbers or transactions that aren't in the context. All amounts are in Malaysian Ringgit (RM). IMPORTANT: this is a demo - never ask for or process real passwords, PINs, OTPs, or actual money transfers. Keep replies concise, a few sentences at most.",
+  "context_data": {
+    "products": [
+      {"name": "AmanaSave Savings Account", "type": "Savings", "interest_rate": "2.5% p.a.", "min_balance_rm": 500},
+      {"name": "AmanaGrow Fixed Deposit (12-month)", "type": "Fixed Deposit", "interest_rate": "3.8% p.a.", "min_balance_rm": 5000},
+      {"name": "AmanaFlex Current Account", "type": "Current", "interest_rate": "0.1% p.a.", "min_balance_rm": 1000},
+      {"name": "AmanaGold Credit Card", "type": "Credit Card", "annual_fee_rm": 150, "cashback": "Up to 5% on dining & groceries"},
+      {"name": "AmanaInvest Unit Trust", "type": "Investment", "risk_level": "Moderate", "min_investment_rm": 1000}
+    ],
+    "faq": [
+      {"q": "How do I report a lost or stolen card?", "a": "Call our 24-hour hotline at 1-300-88-1234 immediately, or ask here to request a temporary card freeze. A replacement card arrives in 5-7 business days."},
+      {"q": "What are your branch hours?", "a": "Branches are open Monday-Friday 9:15 AM - 4:30 PM, and Saturday 9:15 AM - 12:30 PM. Closed on Sundays and public holidays."},
+      {"q": "Is online banking secure?", "a": "Yes, we use 2FA and encrypted connections. Never share your OTP or password with anyone, including bank staff."}
+    ]
+  },
+  "quick_questions": [
+    {"zh": "我的账户余额是多少？", "en": "What's my account balance?", "ms": "Berapa baki akaun saya?"},
+    {"zh": "查看最近的交易记录", "en": "Show my recent transactions", "ms": "Tunjukkan transaksi terkini saya"},
+    {"zh": "我的卡不见了，怎么挂失？", "en": "I lost my card, how do I report it?", "ms": "Saya hilang kad, macam mana nak lapor?"}
+  ],
+  "identities": [
+    {
+      "id": "savings_customer",
+      "label": {
+        "zh": "储蓄户客户林美玲 - 余额 RM 12,450",
+        "en": "Savings customer Lim Mei Ling - balance RM 12,450",
+        "ms": "Pelanggan simpanan Lim Mei Ling - baki RM 12,450"
+      },
+      "profile": {
+        "customer_name": "Lim Mei Ling",
+        "account_type": "AmanaSave Savings Account",
+        "account_number_masked": "**** 4821",
+        "balance_rm": 12450.30,
+        "recent_transactions": [
+          {"date": "2026-08-04", "description": "Salary credit", "amount_rm": 5200.00, "type": "credit"},
+          {"date": "2026-08-03", "description": "Grab - ride", "amount_rm": -18.50, "type": "debit"},
+          {"date": "2026-08-02", "description": "Jaya Grocer", "amount_rm": -156.20, "type": "debit"},
+          {"date": "2026-08-01", "description": "Astro subscription", "amount_rm": -109.90, "type": "debit"}
+        ]
+      }
+    },
+    {
+      "id": "credit_card_customer",
+      "label": {
+        "zh": "信用卡客户拿督黄俊 - 待处理挂失请求",
+        "en": "Credit card customer Dato Wong Jun",
+        "ms": "Pelanggan kad kredit Dato Wong Jun"
+      },
+      "profile": {
+        "customer_name": "Dato Wong Jun",
+        "account_type": "AmanaGold Credit Card",
+        "account_number_masked": "**** 7734",
+        "credit_limit_rm": 30000,
+        "current_balance_rm": 4820.75,
+        "recent_transactions": [
+          {"date": "2026-08-03", "description": "Shell Petrol Station", "amount_rm": -120.00, "type": "debit"},
+          {"date": "2026-07-29", "description": "AirAsia Flight Booking", "amount_rm": -689.00, "type": "debit"}
+        ]
+      }
+    },
+    {
+      "id": "prospective_customer",
+      "label": {
+        "zh": "潜在客户拉希德 - 尚未开户，咨询理财产品",
+        "en": "Prospective customer Rashid - no account yet, inquiring about products",
+        "ms": "Bakal pelanggan Rashid - belum buka akaun, bertanya tentang produk"
+      },
+      "profile": {
+        "customer_name": "Rashid",
+        "account_type": null,
+        "balance_rm": null,
+        "recent_transactions": []
+      }
+    }
+  ]
+}

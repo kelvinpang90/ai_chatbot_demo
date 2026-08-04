@@ -32,7 +32,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：把任务 1 的 FastAPI 服务用 Docker 跑起来，源码挂载支持热重载，端口不与本机已有的 Redis(6379)/MySQL(3306) 冲突
   验收：`docker compose up` 启动后 `curl localhost:8000/health` 返回正常；改动 `main.py` 后无需重新 build 就能看到效果
 
-- [ ] **任务 3：Bot registry + mock 数据（retail / hotel / banking）**
+- [x] **任务 3：Bot registry + mock 数据（retail / hotel / banking）**
   文件：`backend/app/bots/registry.py`、`backend/app/bots/data/retail.json`、`hotel.json`、`banking.json`
   目标：registry 能加载这 3 个类型的元数据、2-3 个演示身份、3-4 条快捷问题、mock 业务数据（RM 计价，马来西亚风格）
   验收：本地 venv 跑 pytest，打印/断言这 3 个 bot 都能被正确加载
