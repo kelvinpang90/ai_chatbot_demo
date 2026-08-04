@@ -13,7 +13,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 
 ## 后端
 
-- [ ] **任务 1：项目骨架 + 配置**
+- [x] **任务 1：项目骨架 + 配置**
   文件：`backend/app/main.py`、`backend/app/config.py`、`backend/requirements.txt`、`backend/.env.example`
   目标：FastAPI 应用能起来，有一个 `/health` 接口返回 200
   验收：`uvicorn app.main:app --reload` 启动成功，`curl localhost:8000/health` 返回正常
