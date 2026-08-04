@@ -1,0 +1,86 @@
+{
+  "id": "realestate",
+  "name": {"zh": "房产咨询助手", "en": "Real Estate Assistant", "ms": "Pembantu Hartanah"},
+  "description": {
+    "zh": "房源搜索、看房预约、房贷计算",
+    "en": "Property search, viewing appointments, mortgage estimates",
+    "ms": "Carian hartanah, temujanji tinjauan, anggaran pinjaman perumahan"
+  },
+  "icon": "🏡",
+  "disclaimer": {
+    "zh": "这是演示数据，并非真实房产平台，仅用于产品体验展示。",
+    "en": "This is demo data for a fictional property agency, not a real listing platform.",
+    "ms": "Ini adalah data demo untuk agensi hartanah fiksyen, bukan platform senarai sebenar."
+  },
+  "persona_prompt": "You are a helpful assistant for 'KL Homes Realty', a fictional property agency based in Kuala Lumpur, Malaysia. Help clients search property listings, book viewing appointments, and get rough mortgage estimates. Use the listings and the current client's appointment history provided in context - never invent listing IDs or data that isn't in the context. All prices are in Malaysian Ringgit (RM). Keep replies concise. For mortgage estimates, give a simple rough calculation and clearly note it's indicative only, not a bank commitment.",
+  "context_data": {
+    "listings": [
+      {"listing_id": "PROP-201", "type": "Condo", "area": "Mont Kiara, KL", "size_sqft": 1100, "bedrooms": 3, "price_rm": 850000, "status": "Available"},
+      {"listing_id": "PROP-202", "type": "Condo", "area": "Bangsar South, KL", "size_sqft": 950, "bedrooms": 2, "price_rm": 620000, "status": "Available"},
+      {"listing_id": "PROP-203", "type": "Terrace House", "area": "Petaling Jaya", "size_sqft": 1800, "bedrooms": 4, "price_rm": 980000, "status": "Available"},
+      {"listing_id": "PROP-204", "type": "Studio", "area": "KLCC, KL", "size_sqft": 550, "bedrooms": 1, "price_rm": 480000, "status": "Available"},
+      {"listing_id": "PROP-205", "type": "Semi-D", "area": "Subang Jaya", "size_sqft": 2600, "bedrooms": 5, "price_rm": 1650000, "status": "Available"},
+      {"listing_id": "PROP-206", "type": "Condo", "area": "Cheras, KL", "size_sqft": 900, "bedrooms": 3, "price_rm": 450000, "status": "Available"},
+      {"listing_id": "PROP-207", "type": "Apartment", "area": "Ampang, KL", "size_sqft": 800, "bedrooms": 2, "price_rm": 380000, "status": "Under offer"},
+      {"listing_id": "PROP-208", "type": "Bungalow", "area": "Damansara Heights, KL", "size_sqft": 4200, "bedrooms": 6, "price_rm": 3200000, "status": "Available"}
+    ],
+    "faq": [
+      {"q": "How much is the down payment typically?", "a": "Typically 10% of the property price, though this varies by bank and the loan margin approved."},
+      {"q": "Can foreigners buy property in Malaysia?", "a": "Yes, foreigners can generally buy property above RM 1,000,000 in most states, subject to state-specific rules."},
+      {"q": "How do I book a viewing?", "a": "Just tell us which listing and your preferred date/time, and we'll confirm with the property agent."}
+    ]
+  },
+  "quick_questions": [
+    {"zh": "有哪些房源推荐？", "en": "What listings do you recommend?", "ms": "Apakah hartanah yang anda cadangkan?"},
+    {"zh": "帮我查一下我的看房预约", "en": "Check my viewing appointment", "ms": "Semak temujanji tinjauan saya"},
+    {"zh": "帮我算一下房贷大概多少", "en": "Estimate my mortgage", "ms": "Anggarkan pinjaman perumahan saya"}
+  ],
+  "identities": [
+    {
+      "id": "scheduled_viewer",
+      "label": {
+        "zh": "客户张俊贤 - 已预约本周看房",
+        "en": "Client Teoh Jun Xian - viewing scheduled this week",
+        "ms": "Pelanggan Teoh Jun Xian - tinjauan dijadualkan minggu ini"
+      },
+      "profile": {
+        "client_name": "Teoh Jun Xian",
+        "appointments": [
+          {"listing_id": "PROP-201", "date": "2026-08-08", "time": "14:00", "status": "Confirmed"}
+        ],
+        "shortlisted": ["PROP-201", "PROP-206"]
+      }
+    },
+    {
+      "id": "first_time_buyer",
+      "label": {
+        "zh": "首购族努鲁 - 刚开始看房，还没预约",
+        "en": "First-time buyer Nurul - just started browsing, no appointment yet",
+        "ms": "Pembeli kali pertama Nurul - baru mula melayari, belum ada temujanji"
+      },
+      "profile": {
+        "client_name": "Nurul",
+        "appointments": [],
+        "shortlisted": []
+      }
+    },
+    {
+      "id": "investor_client",
+      "label": {
+        "zh": "投资客户拿督刘 - 已购入 1 套，正物色第二套",
+        "en": "Investor Dato Liew - owns 1 unit, looking for a second",
+        "ms": "Pelabur Dato Liew - memiliki 1 unit, mencari yang kedua"
+      },
+      "profile": {
+        "client_name": "Dato Liew",
+        "appointments": [
+          {"listing_id": "PROP-205", "date": "2026-08-09", "time": "10:30", "status": "Confirmed"}
+        ],
+        "shortlisted": ["PROP-205", "PROP-208"],
+        "past_purchases": [
+          {"listing_id": "PROP-207-SOLD-2024", "area": "Ampang, KL", "purchased_price_rm": 350000, "purchased_on": "2024-05"}
+        ]
+      }
+    }
+  ]
+}

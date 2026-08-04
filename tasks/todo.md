@@ -37,7 +37,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：registry 能加载这 3 个类型的元数据、2-3 个演示身份、3-4 条快捷问题、mock 业务数据（RM 计价，马来西亚风格）
   验收：本地 venv 跑 pytest，打印/断言这 3 个 bot 都能被正确加载
 
-- [ ] **任务 4：Bot registry + mock 数据（food / realestate / saas）**
+- [x] **任务 4：Bot registry + mock 数据（food / realestate / saas）**
   文件：`backend/app/bots/data/food.json`、`realestate.json`、`saas.json`
   目标：补完剩余 3 个类型，结构与任务 3 一致
   验收：同任务 3，本地 venv 跑 pytest，6 个类型全部能加载

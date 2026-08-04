@@ -1,0 +1,85 @@
+{
+  "id": "food",
+  "name": {"zh": "餐饮外卖点餐助手", "en": "Food Delivery Assistant", "ms": "Pembantu Penghantaran Makanan"},
+  "description": {
+    "zh": "菜单浏览、下单、配送状态查询",
+    "en": "Menu browsing, ordering, delivery status",
+    "ms": "Semak menu, buat pesanan, semak status penghantaran"
+  },
+  "icon": "🍜",
+  "disclaimer": {
+    "zh": "这是演示数据，并非真实餐厅平台，仅用于产品体验展示。",
+    "en": "This is demo data for a fictional restaurant, not a real food delivery platform.",
+    "ms": "Ini adalah data demo untuk restoran fiksyen, bukan platform penghantaran makanan sebenar."
+  },
+  "persona_prompt": "You are a friendly ordering assistant for 'Nasi Lemak Express', a fictional Malaysian food delivery restaurant based in Kuala Lumpur. Help customers browse the menu, place orders, and check delivery status. Use the menu and the current customer's order history provided in context - never invent order numbers or menu items that aren't in the context. All prices are in Malaysian Ringgit (RM). Keep replies concise, a few sentences at most.",
+  "context_data": {
+    "menu": [
+      {"name": "Nasi Lemak Special", "price_rm": 12.90, "category": "Rice", "description": "Coconut rice with sambal, fried chicken, egg, anchovies, peanuts"},
+      {"name": "Chicken Rendang Rice", "price_rm": 14.50, "category": "Rice", "description": "Slow-cooked spicy chicken rendang with steamed rice"},
+      {"name": "Mee Goreng Mamak", "price_rm": 10.90, "category": "Noodles", "description": "Spicy fried yellow noodles with tofu, egg, prawns"},
+      {"name": "Char Kway Teow", "price_rm": 13.50, "category": "Noodles", "description": "Stir-fried flat rice noodles with prawns, cockles, egg"},
+      {"name": "Roti Canai (2pcs)", "price_rm": 6.00, "category": "Bread", "description": "Flaky flatbread served with dhal curry"},
+      {"name": "Satay Chicken (10 sticks)", "price_rm": 15.00, "category": "Grill", "description": "Grilled chicken skewers with peanut sauce"},
+      {"name": "Curry Laksa", "price_rm": 13.90, "category": "Noodles", "description": "Spicy coconut curry noodle soup with chicken and tofu puffs"},
+      {"name": "Teh Tarik", "price_rm": 4.50, "category": "Drinks", "description": "Malaysian pulled milk tea"},
+      {"name": "Iced Milo", "price_rm": 5.00, "category": "Drinks", "description": "Chocolate malt drink served iced"},
+      {"name": "Cendol", "price_rm": 7.00, "category": "Dessert", "description": "Shaved ice dessert with coconut milk, palm sugar, pandan jelly"},
+      {"name": "Fried Wonton (8pcs)", "price_rm": 9.90, "category": "Appetizer", "description": "Crispy fried dumplings with sweet chili sauce"},
+      {"name": "Butter Prawns", "price_rm": 22.00, "category": "Seafood", "description": "Crispy prawns tossed in creamy butter curry leaf sauce"}
+    ],
+    "faq": [
+      {"q": "What's your delivery radius?", "a": "We deliver within an 8km radius of our Kuala Lumpur outlet. Delivery fee is RM 3-8 depending on distance."},
+      {"q": "How long does delivery take?", "a": "Typically 30-45 minutes depending on your location and order volume."},
+      {"q": "Do you cater for large events?", "a": "Yes! For orders above RM 300, please give us at least 24 hours notice."}
+    ]
+  },
+  "quick_questions": [
+    {"zh": "有什么推荐的菜？", "en": "What do you recommend?", "ms": "Apa yang anda cadangkan?"},
+    {"zh": "我的订单送到哪里了？", "en": "Where's my delivery?", "ms": "Di mana penghantaran saya?"},
+    {"zh": "配送范围和费用是多少？", "en": "What's your delivery area and fee?", "ms": "Apakah kawasan dan bayaran penghantaran?"}
+  ],
+  "identities": [
+    {
+      "id": "active_order",
+      "label": {
+        "zh": "客户吴俊贤 - 订单正在配送中",
+        "en": "Customer Goh Chun Hian - order out for delivery",
+        "ms": "Pelanggan Goh Chun Hian - pesanan sedang dihantar"
+      },
+      "profile": {
+        "customer_name": "Goh Chun Hian",
+        "orders": [
+          {"order_id": "FD-9021", "items": ["Nasi Lemak Special", "Iced Milo"], "status": "Out for delivery - arriving in ~10 min", "total_rm": 17.90, "ordered_on": "2026-08-05 12:30"}
+        ]
+      }
+    },
+    {
+      "id": "new_diner",
+      "label": {
+        "zh": "新客户西蒂 - 第一次浏览菜单",
+        "en": "New customer Siti - browsing the menu for the first time",
+        "ms": "Pelanggan baharu Siti - melayari menu buat kali pertama"
+      },
+      "profile": {
+        "customer_name": "Siti",
+        "orders": []
+      }
+    },
+    {
+      "id": "regular_diner",
+      "label": {
+        "zh": "常客拉杰什 - 有 2 笔历史订单",
+        "en": "Regular customer Rajesh - 2 past orders",
+        "ms": "Pelanggan tetap Rajesh - 2 pesanan lepas"
+      },
+      "profile": {
+        "customer_name": "Rajesh",
+        "orders": [
+          {"order_id": "FD-8890", "items": ["Curry Laksa", "Roti Canai (2pcs)"], "status": "Delivered", "total_rm": 19.90, "ordered_on": "2026-08-01 19:15"},
+          {"order_id": "FD-8756", "items": ["Butter Prawns", "Teh Tarik"], "status": "Delivered", "total_rm": 26.50, "ordered_on": "2026-07-25 20:00"}
+        ]
+      }
+    }
+  ]
+}

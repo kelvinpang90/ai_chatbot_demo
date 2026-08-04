@@ -1,10 +1,13 @@
 from app.bots import registry
 
 
+ALL_BOT_IDS = {"retail", "hotel", "banking", "food", "realestate", "saas"}
+
+
 def test_all_bots_load_without_error():
     bots = registry.list_bots()
     ids = {bot.id for bot in bots}
-    assert {"retail", "hotel", "banking"}.issubset(ids)
+    assert ids == ALL_BOT_IDS
 
 
 def test_each_bot_has_localized_name_and_identities():

@@ -1,0 +1,85 @@
+{
+  "id": "saas",
+  "name": {"zh": "SaaS/IT 技术支持", "en": "SaaS Tech Support", "ms": "Sokongan Teknikal SaaS"},
+  "description": {
+    "zh": "故障排查、工单创建、产品答疑",
+    "en": "Troubleshooting, ticket creation, product Q&A",
+    "ms": "Penyelesaian masalah, penciptaan tiket, soal jawab produk"
+  },
+  "icon": "💻",
+  "disclaimer": {
+    "zh": "这是演示数据，并非真实软件产品支持，仅用于产品体验展示。",
+    "en": "This is demo data for a fictional software product, not real support.",
+    "ms": "Ini adalah data demo untuk produk perisian fiksyen, bukan sokongan sebenar."
+  },
+  "persona_prompt": "You are a technical support assistant for 'CloudDesk', a fictional project management SaaS product. Help users troubleshoot common issues, create support tickets, and answer product questions. Use the known issues list and the current customer's subscription/ticket history provided in context - never invent ticket numbers or data that isn't in the context. Keep replies concise and give clear step-by-step troubleshooting when relevant.",
+  "context_data": {
+    "known_issues": [
+      {"issue": "Can't log in - 'invalid credentials' error", "fix": "Try resetting your password via the 'Forgot Password' link. If you use SSO, check with your workspace admin that your account is still active."},
+      {"issue": "File upload stuck at 0%", "fix": "This is usually a browser cache issue. Try clearing your browser cache or using an incognito window. Files over 500MB may also time out - try splitting large files."},
+      {"issue": "Notifications not showing up", "fix": "Check Settings > Notifications to ensure they're enabled, and check your browser's notification permissions for our domain."},
+      {"issue": "Integration with Slack not syncing", "fix": "Go to Settings > Integrations > Slack and click 'Reconnect'. This refreshes the auth token, which expires every 90 days."},
+      {"issue": "Dashboard loading slowly", "fix": "This can happen with workspaces that have 1000+ tasks. Try archiving completed projects, or contact us to enable our performance mode (beta)."}
+    ],
+    "plans": [
+      {"name": "Starter", "price_rm_per_month": 0, "seats": 5, "features": "Basic task management, 2 projects"},
+      {"name": "Team", "price_rm_per_month": 49, "seats": 20, "features": "Unlimited projects, integrations, analytics"},
+      {"name": "Business", "price_rm_per_month": 149, "seats": 100, "features": "SSO, advanced permissions, priority support"},
+      {"name": "Enterprise", "price_rm_per_month": null, "seats": null, "features": "Custom contract, dedicated support, SLA"}
+    ]
+  },
+  "quick_questions": [
+    {"zh": "我登录不进去，怎么办？", "en": "I can't log in, what should I do?", "ms": "Saya tidak boleh log masuk, apa patut saya buat?"},
+    {"zh": "帮我创建一个工单", "en": "Help me create a support ticket", "ms": "Bantu saya cipta tiket sokongan"},
+    {"zh": "各个套餐有什么区别？", "en": "What's the difference between plans?", "ms": "Apakah perbezaan antara pelan?"}
+  ],
+  "identities": [
+    {
+      "id": "business_customer",
+      "label": {
+        "zh": "Business 套餐客户 - 有一张待处理工单",
+        "en": "Business plan customer - one open ticket",
+        "ms": "Pelanggan pelan Business - satu tiket terbuka"
+      },
+      "profile": {
+        "customer_name": "Priya (Workspace Admin)",
+        "plan": "Business",
+        "seats_used": 42,
+        "tickets": [
+          {"ticket_id": "TCK-5521", "subject": "Slack integration not syncing", "status": "In progress", "opened_on": "2026-08-03"}
+        ]
+      }
+    },
+    {
+      "id": "starter_user",
+      "label": {
+        "zh": "Starter 免费用户 - 咨询升级套餐",
+        "en": "Starter (free) user - asking about upgrading",
+        "ms": "Pengguna Starter (percuma) - bertanya tentang naik taraf"
+      },
+      "profile": {
+        "customer_name": "Hafiz",
+        "plan": "Starter",
+        "seats_used": 3,
+        "tickets": []
+      }
+    },
+    {
+      "id": "team_customer",
+      "label": {
+        "zh": "Team 套餐客户 - 有 2 张已解决工单",
+        "en": "Team plan customer - 2 resolved tickets on record",
+        "ms": "Pelanggan pelan Team - 2 tiket diselesaikan"
+      },
+      "profile": {
+        "customer_name": "Wong Li Xin",
+        "plan": "Team",
+        "seats_used": 15,
+        "tickets": [
+          {"ticket_id": "TCK-5390", "subject": "Dashboard loading slowly", "status": "Resolved", "opened_on": "2026-07-15"},
+          {"ticket_id": "TCK-5210", "subject": "File upload stuck at 0%", "status": "Resolved", "opened_on": "2026-06-28"}
+        ]
+      }
+    }
+  ]
+}
