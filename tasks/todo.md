@@ -47,7 +47,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：内存字典存会话（bot 类型 + 身份 + 历史），历史截断到最近 ~20 轮，WhatsApp 每日消息计数限流，message id 去重
   验收：本地 venv 跑 pytest，覆盖：写入/读取会话、历史截断生效、超过限流阈值后拒绝、重复 message id 被识别
 
-- [ ] **任务 6：Claude API 封装**
+- [x] **任务 6：Claude API 封装**
   文件：`backend/app/services/llm.py`
   目标：组装 system prompt（bot 人设 + 身份数据 + 语言指令 + 长度约束 + 防注入），调用 Claude API，失败时返回兜底提示
   验收：`docker compose up` 起服务后（容器内能出网访问 Anthropic API），针对某个 bot+身份问一个问题，确认回复内容对得上 mock 数据；再模拟 API 报错场景确认兜底提示生效
