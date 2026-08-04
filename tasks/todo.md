@@ -11,83 +11,97 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 3. **任务粒度已经控制在"1-3 个文件、单一目的、可独立验收"**，正常情况下一个任务在一个 session 内能跑完并留有余量。如果某个任务做到一半感觉 session 快不够用了，优先让当前这一小步收尾到"能跑通、能 commit"的状态，而不是硬做完整个任务再收尾。
 4. 每个任务做完在下面把 `[ ]` 改成 `[x]`，这样任何一个新 session 打开这个文件就知道进度到哪，不需要提问"之前做到哪了"。
 
+## 本地验证方式说明
+
+本地机器上已有 Docker 环境（跑着别的项目用的 Redis、MySQL，与本项目无关，本项目不使用它们）。为了让本地验证的运行环境尽量贴近 VPS 部署环境，约定：
+
+- **后端**：从任务 2 起，"服务真正跑起来"的验收（curl 测接口、模拟 webhook 请求）一律通过 `docker compose up` 完成，不再用裸 `uvicorn`。`docker-compose.yml` 里给源码目录挂 volume + `uvicorn --reload`，改代码不需要重新 build 镜像。纯逻辑的 `pytest` 单元测试可以继续在本地 venv 里跑，更快，不强制进容器。
+- **前端**：开发阶段（任务 10-13）继续用 `npm run dev`，体验和热更新更好，前端产物是静态文件，运行时环境差异对它影响不大。到任务 14 才补前端 Dockerfile，和后端一起进同一个 `docker-compose.yml` 做整体联调。
+- **部署到 VPS**（任务 15）用的就是本地已经验证过的同一份 `docker-compose.yml`，理论上环境差异降到最低。
+
 ## 后端
 
 - [x] **任务 1：项目骨架 + 配置**
   文件：`backend/app/main.py`、`backend/app/config.py`、`backend/requirements.txt`、`backend/.env.example`
   目标：FastAPI 应用能起来，有一个 `/health` 接口返回 200
   验收：`uvicorn app.main:app --reload` 启动成功，`curl localhost:8000/health` 返回正常
+  （本任务是裸 venv 验证的，之后的任务改用 docker compose，见下）
 
-- [ ] **任务 2：Bot registry + mock 数据（retail / hotel / banking）**
+- [ ] **任务 2：后端容器化**
+  文件：`backend/Dockerfile`、`docker-compose.yml`
+  目标：把任务 1 的 FastAPI 服务用 Docker 跑起来，源码挂载支持热重载，端口不与本机已有的 Redis(6379)/MySQL(3306) 冲突
+  验收：`docker compose up` 启动后 `curl localhost:8000/health` 返回正常；改动 `main.py` 后无需重新 build 就能看到效果
+
+- [ ] **任务 3：Bot registry + mock 数据（retail / hotel / banking）**
   文件：`backend/app/bots/registry.py`、`backend/app/bots/data/retail.json`、`hotel.json`、`banking.json`
   目标：registry 能加载这 3 个类型的元数据、2-3 个演示身份、3-4 条快捷问题、mock 业务数据（RM 计价，马来西亚风格）
-  验收：写一个简单脚本或 pytest，打印/断言这 3 个 bot 都能被正确加载
+  验收：本地 venv 跑 pytest，打印/断言这 3 个 bot 都能被正确加载
 
-- [ ] **任务 3：Bot registry + mock 数据（food / realestate / saas）**
+- [ ] **任务 4：Bot registry + mock 数据（food / realestate / saas）**
   文件：`backend/app/bots/data/food.json`、`realestate.json`、`saas.json`
-  目标：补完剩余 3 个类型，结构与任务 2 一致
-  验收：同任务 2，6 个类型全部能加载
+  目标：补完剩余 3 个类型，结构与任务 3 一致
+  验收：同任务 3，本地 venv 跑 pytest，6 个类型全部能加载
 
-- [ ] **任务 4：会话存储**
+- [ ] **任务 5：会话存储**
   文件：`backend/app/session_store.py`
   目标：内存字典存会话（bot 类型 + 身份 + 历史），历史截断到最近 ~20 轮，WhatsApp 每日消息计数限流，message id 去重
-  验收：pytest 覆盖：写入/读取会话、历史截断生效、超过限流阈值后拒绝、重复 message id 被识别
+  验收：本地 venv 跑 pytest，覆盖：写入/读取会话、历史截断生效、超过限流阈值后拒绝、重复 message id 被识别
 
-- [ ] **任务 5：Claude API 封装**
+- [ ] **任务 6：Claude API 封装**
   文件：`backend/app/services/llm.py`
   目标：组装 system prompt（bot 人设 + 身份数据 + 语言指令 + 长度约束 + 防注入），调用 Claude API，失败时返回兜底提示
-  验收：用真实 `ANTHROPIC_API_KEY` 跑一次脚本，针对某个 bot+身份问一个问题，确认回复内容对得上 mock 数据；再模拟 API 报错场景确认兜底提示生效
+  验收：`docker compose up` 起服务后（容器内能出网访问 Anthropic API），针对某个 bot+身份问一个问题，确认回复内容对得上 mock 数据；再模拟 API 报错场景确认兜底提示生效
 
-- [ ] **任务 6：网页端 REST 接口**
+- [ ] **任务 7：网页端 REST 接口**
   文件：`backend/app/routers/chat.py`、`backend/app/models.py`
   目标：访问口令校验、创建会话、选类型、选身份、发消息、重置会话
-  验收：用 curl 走一遍完整链路（口令 → 建会话 → 选类型 → 选身份 → 发消息拿到回复 → 重置）
+  验收：`docker compose up` 起服务后，用 curl 走一遍完整链路（口令 → 建会话 → 选类型 → 选身份 → 发消息拿到回复 → 重置）
 
-- [ ] **任务 7：WhatsApp API 封装**
+- [ ] **任务 8：WhatsApp API 封装**
   文件：`backend/app/services/whatsapp.py`
   目标：发文本消息、发交互式列表消息、签名校验（`X-Hub-Signature-256`）、markdown → WhatsApp 格式转换
-  验收：pytest 覆盖签名校验函数和 markdown 转换函数；发送函数用 mock HTTP 验证请求体格式正确
+  验收：本地 venv 跑 pytest，覆盖签名校验函数和 markdown 转换函数；发送函数用 mock HTTP 验证请求体格式正确
 
-- [ ] **任务 8：WhatsApp webhook**
+- [ ] **任务 9：WhatsApp webhook**
   文件：`backend/app/routers/whatsapp_webhook.py`
   目标：GET 验证握手、POST 立即返回 200 + `BackgroundTasks` 异步处理、类型/身份两级交互列表选择、非文本消息提示、限流拦截
-  验收：用 curl 模拟 Meta 的 webhook 请求格式（含签名）跑通：验证握手、首次消息触发类型列表、选类型后触发身份列表、选完进入正常问答、重复发送同一 message id 被去重
+  验收：`docker compose up` 起服务后，用 curl 模拟 Meta 的 webhook 请求格式（含签名）跑通：验证握手、首次消息触发类型列表、选类型后触发身份列表、选完进入正常问答、重复发送同一 message id 被去重
 
 ## 前端
 
-- [ ] **任务 9：前端脚手架 + i18n**
+- [ ] **任务 10：前端脚手架 + i18n**
   文件：`frontend/`（Vite + React + TS 初始化）、`frontend/src/i18n/strings.ts`、`frontend/src/api.ts`
   目标：项目能跑起来，中/英/马来语三语字典就位，封装好调后端接口的函数
   验收：`npm run dev` 能看到空白页正常渲染，无报错
 
-- [ ] **任务 10：访问口令页 + 选择页**
+- [ ] **任务 11：访问口令页 + 选择页**
   文件：`frontend/src/pages/PasswordGate.tsx`、`frontend/src/pages/BotSelect.tsx`
   目标：输口令校验通过后进入 bot 卡片网格选择页，响应式布局
   验收：浏览器里手动走一遍，手机尺寸和桌面尺寸都正常
 
-- [ ] **任务 11：身份选择页 + 聊天页骨架**
+- [ ] **任务 12：身份选择页 + 聊天页骨架**
   文件：`frontend/src/pages/IdentitySelect.tsx`、`frontend/src/pages/Chat.tsx`
   目标：选完身份进入聊天页，能发消息、收到后端真实回复，基础气泡 UI
   验收：浏览器里选类型 → 选身份 → 发一条消息 → 收到 Claude 回复
 
-- [ ] **任务 12：聊天页体验完善**
+- [ ] **任务 13：聊天页体验完善**
   文件：`frontend/src/pages/Chat.tsx`、相关样式文件
   目标：快捷问题按钮、"重新开始"按钮、发送失败重试提示、语言切换、loading 态
   验收：完整走一遍：点快捷问题发送、切换三种语言收到对应语言回复、断网时看到失败重试提示、点重新开始清空会话
 
 ## 部署
 
-- [ ] **任务 13：容器化**
-  文件：`backend/Dockerfile`、`frontend/Dockerfile`、`docker-compose.yml`
-  目标：本地 `docker-compose up` 能跑通完整应用（后端单进程启动）
-  验收：本地容器跑起来后，浏览器能访问前端并完整聊一轮
+- [ ] **任务 14：前端容器化 + 整体联调**
+  文件：`frontend/Dockerfile`、`docker-compose.yml`（扩展，加入 frontend 服务）
+  目标：`docker compose up` 一次性跑起后端 + 前端，本地用容器化的完整拓扑走一遍全流程
+  验收：容器跑起来后，浏览器访问前端能完整聊一轮（选类型 → 选身份 → 对话）
 
-- [ ] **任务 14：部署到服务器**
+- [ ] **任务 15：部署到服务器**
   文件：`deploy/README-deploy.md` + 实际 SSH 操作（不是纯代码任务，需要用户提供服务器访问方式和域名）
-  目标：DNS 指向服务器、Nginx 反向代理、Let's Encrypt HTTPS 证书、服务跑起来
+  目标：把本地已验证的 `docker-compose.yml` 搬到 VPS；DNS 指向服务器、Nginx 反向代理、Let's Encrypt HTTPS 证书
   验收：用域名通过 HTTPS 访问到网页端
 
-- [ ] **任务 15：Meta webhook 注册 + WhatsApp 真机联调**
+- [ ] **任务 16：Meta webhook 注册 + WhatsApp 真机联调**
   目标：Meta 开发者后台注册 webhook URL 并验证通过；需要用户用真实手机发消息测试完整流程
   验收：用户手机发消息给 WhatsApp 号码，走完选类型→选身份→问答的完整流程
 
@@ -100,3 +114,5 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 ## 评审记录
 
 （每个任务完成后，如有偏离原方案的地方或踩坑教训，记录在这里）
+
+- 2026-08-05：新增"后端容器化"任务（原任务 2 之后插入），后续任务编号整体 +1。原因：本地已有 Docker 环境，希望本地验证的运行环境从早期就贴近 VPS 部署环境，减少移植时的意外。Redis/MySQL 确认与本项目无关，不引入这两个依赖。
