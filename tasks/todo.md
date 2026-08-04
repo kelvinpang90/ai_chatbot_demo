@@ -52,7 +52,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：组装 system prompt（bot 人设 + 身份数据 + 语言指令 + 长度约束 + 防注入），调用 Claude API，失败时返回兜底提示
   验收：`docker compose up` 起服务后（容器内能出网访问 Anthropic API），针对某个 bot+身份问一个问题，确认回复内容对得上 mock 数据；再模拟 API 报错场景确认兜底提示生效
 
-- [ ] **任务 7：网页端 REST 接口**
+- [x] **任务 7：网页端 REST 接口**
   文件：`backend/app/routers/chat.py`、`backend/app/models.py`
   目标：访问口令校验、创建会话、选类型、选身份、发消息、重置会话
   验收：`docker compose up` 起服务后，用 curl 走一遍完整链路（口令 → 建会话 → 选类型 → 选身份 → 发消息拿到回复 → 重置）
