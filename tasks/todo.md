@@ -42,7 +42,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：补完剩余 3 个类型，结构与任务 3 一致
   验收：同任务 3，本地 venv 跑 pytest，6 个类型全部能加载
 
-- [ ] **任务 5：会话存储**
+- [x] **任务 5：会话存储**
   文件：`backend/app/session_store.py`
   目标：内存字典存会话（bot 类型 + 身份 + 历史），历史截断到最近 ~20 轮，WhatsApp 每日消息计数限流，message id 去重
   验收：本地 venv 跑 pytest，覆盖：写入/读取会话、历史截断生效、超过限流阈值后拒绝、重复 message id 被识别
