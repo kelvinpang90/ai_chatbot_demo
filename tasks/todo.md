@@ -62,7 +62,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：发文本消息、发交互式列表消息、签名校验（`X-Hub-Signature-256`）、markdown → WhatsApp 格式转换
   验收：本地 venv 跑 pytest，覆盖签名校验函数和 markdown 转换函数；发送函数用 mock HTTP 验证请求体格式正确
 
-- [ ] **任务 9：WhatsApp webhook**
+- [x] **任务 9：WhatsApp webhook**
   文件：`backend/app/routers/whatsapp_webhook.py`
   目标：GET 验证握手、POST 立即返回 200 + `BackgroundTasks` 异步处理、类型/身份两级交互列表选择、非文本消息提示、限流拦截
   验收：`docker compose up` 起服务后，用 curl 模拟 Meta 的 webhook 请求格式（含签名）跑通：验证握手、首次消息触发类型列表、选类型后触发身份列表、选完进入正常问答、重复发送同一 message id 被去重
@@ -116,3 +116,6 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 （每个任务完成后，如有偏离原方案的地方或踩坑教训，记录在这里）
 
 - 2026-08-05：新增"后端容器化"任务（原任务 2 之后插入），后续任务编号整体 +1。原因：本地已有 Docker 环境，希望本地验证的运行环境从早期就贴近 VPS 部署环境，减少移植时的意外。Redis/MySQL 确认与本项目无关，不引入这两个依赖。
+- 2026-08-05（任务 9）：webhook 里顺带实现了 WhatsApp 端的快捷问题按钮（quick reply buttons），虽然任务 9 的目标描述里没有单独列出，但设计文档明确要求 WhatsApp 端要有和网页端对等的快捷问题体验，属于该任务合理的实现范围。
+- 2026-08-05（任务 9）：本地测试发现，`WHATSAPP_ACCESS_TOKEN` 为空时会导致 `Authorization: Bearer ` 请求头非法，httpx 直接抛 `LocalProtocolError`。这在生产环境不会发生（部署时必须配置真实 token），且已被 webhook 顶层的 try/except 兜住不会导致服务崩溃，所以未做额外处理，只是记录下来。
+- 2026-08-05（任务 9）：给 `main.py` 加了 `logging.basicConfig(level=logging.INFO)`，否则应用日志默认级别是 WARNING，webhook 里的内部流转日志（选类型、去重、限流等）看不到，验证时不好排查。
