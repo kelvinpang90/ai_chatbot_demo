@@ -3,10 +3,16 @@ import './App.css'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import PasswordGate from './pages/PasswordGate'
 import BotSelect from './pages/BotSelect'
-import { clearToken, getToken, type BotSummary } from './api'
+import IdentitySelect from './pages/IdentitySelect'
+import Chat from './pages/Chat'
+import { clearToken, createSessionId, getToken, type BotSummary } from './api'
 import { DEFAULT_LANG, type Lang } from './i18n/strings'
 
-type View = { name: 'password' } | { name: 'botSelect' } | { name: 'selected'; bot: BotSummary }
+type View =
+  | { name: 'password' }
+  | { name: 'botSelect' }
+  | { name: 'identitySelect'; bot: BotSummary }
+  | { name: 'chat'; bot: BotSummary; identityId: string; sessionId: string }
 
 function App() {
   const [lang, setLang] = useState<Lang>(DEFAULT_LANG)
@@ -28,17 +34,31 @@ function App() {
       {view.name === 'botSelect' && (
         <BotSelect
           lang={lang}
-          onSelect={(bot) => setView({ name: 'selected', bot })}
+          onSelect={(bot) => setView({ name: 'identitySelect', bot })}
           onAuthError={handleAuthError}
         />
       )}
 
-      {view.name === 'selected' && (
-        <div className="page-centered">
-          <p>
-            Selected: {view.bot.icon} {view.bot.name} — identity selection lands in task 12.
-          </p>
-        </div>
+      {view.name === 'identitySelect' && (
+        <IdentitySelect
+          lang={lang}
+          botId={view.bot.id}
+          onSelect={(identityId) =>
+            setView({ name: 'chat', bot: view.bot, identityId, sessionId: createSessionId() })
+          }
+          onBack={() => setView({ name: 'botSelect' })}
+          onAuthError={handleAuthError}
+        />
+      )}
+
+      {view.name === 'chat' && (
+        <Chat
+          lang={lang}
+          bot={view.bot}
+          identityId={view.identityId}
+          sessionId={view.sessionId}
+          onAuthError={handleAuthError}
+        />
       )}
     </div>
   )

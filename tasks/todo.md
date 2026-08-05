@@ -79,7 +79,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：输口令校验通过后进入 bot 卡片网格选择页，响应式布局
   验收：浏览器里手动走一遍，手机尺寸和桌面尺寸都正常
 
-- [ ] **任务 12：身份选择页 + 聊天页骨架**
+- [x] **任务 12：身份选择页 + 聊天页骨架**
   文件：`frontend/src/pages/IdentitySelect.tsx`、`frontend/src/pages/Chat.tsx`
   目标：选完身份进入聊天页，能发消息、收到后端真实回复，基础气泡 UI
   验收：浏览器里选类型 → 选身份 → 发一条消息 → 收到 Claude 回复
@@ -119,3 +119,4 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 - 2026-08-05（任务 9）：webhook 里顺带实现了 WhatsApp 端的快捷问题按钮（quick reply buttons），虽然任务 9 的目标描述里没有单独列出，但设计文档明确要求 WhatsApp 端要有和网页端对等的快捷问题体验，属于该任务合理的实现范围。
 - 2026-08-05（任务 9）：本地测试发现，`WHATSAPP_ACCESS_TOKEN` 为空时会导致 `Authorization: Bearer ` 请求头非法，httpx 直接抛 `LocalProtocolError`。这在生产环境不会发生（部署时必须配置真实 token），且已被 webhook 顶层的 try/except 兜住不会导致服务崩溃，所以未做额外处理，只是记录下来。
 - 2026-08-05（任务 9）：给 `main.py` 加了 `logging.basicConfig(level=logging.INFO)`，否则应用日志默认级别是 WARNING，webhook 里的内部流转日志（选类型、去重、限流等）看不到，验证时不好排查。
+- 2026-08-05（任务 12）：浏览器验证时发现，这个环境的 `computer` 工具模拟鼠标点击 `type="submit"` 按钮偶发不会真正触发表单提交（点击坐标/时序问题，不是代码 bug）。用 `element.click()` / `form.requestSubmit()` 通过 `javascript_tool` 直接触发是可靠的替代方式，后续 UI 验证优先用这种方式。顺带确认了 React StrictMode 下 `BotSelect` 的 `useEffect` 会按预期触发两次请求（开发模式的正常行为，两次都成功，不影响功能）。
