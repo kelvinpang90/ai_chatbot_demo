@@ -74,7 +74,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：项目能跑起来，中/英/马来语三语字典就位，封装好调后端接口的函数
   验收：`npm run dev` 能看到空白页正常渲染，无报错
 
-- [ ] **任务 11：访问口令页 + 选择页**
+- [x] **任务 11：访问口令页 + 选择页**
   文件：`frontend/src/pages/PasswordGate.tsx`、`frontend/src/pages/BotSelect.tsx`
   目标：输口令校验通过后进入 bot 卡片网格选择页，响应式布局
   验收：浏览器里手动走一遍，手机尺寸和桌面尺寸都正常
