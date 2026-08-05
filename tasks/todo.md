@@ -57,7 +57,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：访问口令校验、创建会话、选类型、选身份、发消息、重置会话
   验收：`docker compose up` 起服务后，用 curl 走一遍完整链路（口令 → 建会话 → 选类型 → 选身份 → 发消息拿到回复 → 重置）
 
-- [ ] **任务 8：WhatsApp API 封装**
+- [x] **任务 8：WhatsApp API 封装**
   文件：`backend/app/services/whatsapp.py`
   目标：发文本消息、发交互式列表消息、签名校验（`X-Hub-Signature-256`）、markdown → WhatsApp 格式转换
   验收：本地 venv 跑 pytest，覆盖签名校验函数和 markdown 转换函数；发送函数用 mock HTTP 验证请求体格式正确
