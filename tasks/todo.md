@@ -91,7 +91,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 
 ## 部署
 
-- [ ] **任务 14：前端容器化 + 整体联调**
+- [x] **任务 14：前端容器化 + 整体联调**
   文件：`frontend/Dockerfile`、`docker-compose.yml`（扩展，加入 frontend 服务）
   目标：`docker compose up` 一次性跑起后端 + 前端，本地用容器化的完整拓扑走一遍全流程
   验收：容器跑起来后，浏览器访问前端能完整聊一轮（选类型 → 选身份 → 对话）
