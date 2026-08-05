@@ -69,7 +69,7 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 
 ## 前端
 
-- [ ] **任务 10：前端脚手架 + i18n**
+- [x] **任务 10：前端脚手架 + i18n**
   文件：`frontend/`（Vite + React + TS 初始化）、`frontend/src/i18n/strings.ts`、`frontend/src/api.ts`
   目标：项目能跑起来，中/英/马来语三语字典就位，封装好调后端接口的函数
   验收：`npm run dev` 能看到空白页正常渲染，无报错
