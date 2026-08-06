@@ -96,10 +96,10 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：`docker compose up` 一次性跑起后端 + 前端，本地用容器化的完整拓扑走一遍全流程
   验收：容器跑起来后，浏览器访问前端能完整聊一轮（选类型 → 选身份 → 对话）
 
-- [ ] **任务 15：部署到服务器**（代码和容器都已就绪，卡在 DNS，见评审记录）
+- [x] **任务 15：部署到服务器**
   文件：`docker-compose.prod.yml`、`.github/workflows/deploy.yml`、`deploy/nginx/chatbot.acuventech.com.conf`
   目标：实际采用的方案和最初设计不同——服务器已有多个项目共用一个 Docker 化的 Nginx（`infra_nginx`，走共享的 `proxy_net` 网络，域名证书是 `*.acuventech.com` 通配符证书，不需要单独申请）。部署改成 GitHub Actions 自动化：push 到 master → 构建 backend/frontend 镜像推到 GHCR → SSH 进服务器 `git pull` + `docker compose -f docker-compose.prod.yml pull/up`，和这台服务器上其他项目（demo_os 等）的模式保持一致
-  验收：用域名通过 HTTPS 访问到网页端（DNS 加好后待验证）
+  验收：`https://chatbot.acuventech.com` 通过 HTTPS 正常访问，完整走通密码登录 → 选类型 → 选身份 → 聊天问答；手机端实测确认可用。DNS/证书链路、自动部署流水线均已验证通过
 
 - [ ] **任务 16：Meta webhook 注册 + WhatsApp 真机联调**
   目标：Meta 开发者后台注册 webhook URL 并验证通过；需要用户用真实手机发消息测试完整流程
@@ -124,3 +124,5 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 - 2026-08-06（任务 15）：部署架构和原方案（host 级 Nginx + Certbot）不同——服务器上已经有一套多项目共用的 Docker 化 Nginx（`infra_nginx`，走 `proxy_net` 共享网络，域名走 `*.acuventech.com` 通配符证书），其他项目（demo_os/crm_os/erp_os）都用同样的 GHCR 镜像 + GitHub Actions 自动部署模式。为保持一致性照做，同时新增 `docker-compose.prod.yml` 让本地开发（build 本地镜像、暴露 host 端口）和生产（拉 GHCR 镜像、只接 `proxy_net`、不暴露 host 端口）分开，互不影响。
 - 2026-08-06（任务 15）：`appleboy/ssh-action` 的多行 `script` 字段里用 `${{ secrets.VPS_DEPLOY_PATH }}` 时，实际执行时 `cd` 没有拿到真实路径（服务器上残留在默认登录目录，导致 `git pull` 报 "not a git repository"）。部署路径本身不是敏感信息，改成直接写死在 workflow 的 `env:` 里、不再用 secret，问题消失，顺手把这个 secret 删掉了。
 - 2026-08-06（任务 15）：`docker login ghcr.io` 用的是当次 workflow run 的临时 `GITHUB_TOKEN`，run 结束后这个登录凭据就失效了——如果之后要手动在服务器上单独 `docker compose pull`（不经过 workflow），会因为登录过期报 `denied`，需要重新登录一次（用 `gh auth token` 或者一个 PAT）。自动化流程本身没问题，因为每次 workflow run 都会重新登录。
+- 2026-08-06（任务 15）：GitHub Actions 的 "Failed to resolve action download info: Service Unavailable"（Actions 基础设施临时故障）在这次部署里又出现了一次，`gh run rerun <run-id>` 重跑即可，非代码问题。已出现两次，属于偶发的平台侧抖动，后续遇到直接重跑，不用排查代码。
+- 2026-08-06（任务 15 收尾）：用户手机截图反馈聊天页 `.lang-switcher`（绝对定位悬浮右上角）挡住了 `.chat-header` 标题和"重新开始"按钮——`.chat-header` 没有像 `.page`（`padding: 64px 24px 24px`）一样为悬浮的语言切换按钮预留顶部空间。修复：给 `.chat-page` 加 `padding-top: 56px`（`frontend/src/App.css`）。用 DOM `getBoundingClientRect()` 在 375px 视口下测量确认 `.chat-header` 顶部（56px）已完全避开 `.lang-switcher` 底部（约 49px），`.reset-button`（top 72px）不再被遮挡；线上 `chatbot.acuventech.com` 验证同样通过。
