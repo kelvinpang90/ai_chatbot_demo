@@ -1,0 +1,22 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE}
+    container_name: ai_chatbot_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    networks:
+      - default
+      - proxy_net
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    container_name: ai_chatbot_frontend
+    restart: unless-stopped
+    networks:
+      - default
+      - proxy_net
+
+networks:
+  proxy_net:
+    external: true
