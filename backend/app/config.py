@@ -15,5 +15,7 @@ class Settings(BaseSettings):
 
     demo_access_password: str = ""
 
+    internal_shared_secret: str = ""
+
 
 settings = Settings()

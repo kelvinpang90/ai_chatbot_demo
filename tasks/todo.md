@@ -104,6 +104,12 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 - [ ] **任务 16：Meta webhook 注册 + WhatsApp 真机联调**
   目标：Meta 开发者后台注册 webhook URL 并验证通过；需要用户用真实手机发消息测试完整流程
   验收：用户手机发消息给 WhatsApp 号码，走完选类型→选身份→问答的完整流程
+  **更新**：架构变更为多 demo 共用一个 WhatsApp 号码（见下方任务 16.1），本任务的"直接注册"方式暂缓，webhook 改由新项目 `whatsapp_gateway` 统一接收后再转发过来
+
+- [x] **任务 16.1：接入 whatsapp_gateway（多 demo 共用一个号码）**
+  文件：`backend/app/config.py`（新增 `internal_shared_secret`）、`backend/app/services/whatsapp.py`（拆出 `build_text_message`/`build_interactive_list`/`build_quick_reply_buttons`/`send_raw`）、`backend/app/routers/whatsapp_webhook.py`（内部处理函数改为构造并返回 payload 列表，新增公共入口 `dispatch_message()`）、`backend/app/routers/internal_whatsapp.py`（新增，`POST /internal/whatsapp/inbound`）、`backend/tests/test_internal_whatsapp.py`（新增）
+  目标：公司决定所有对外 demo（`ai_chatbot`、`crm_os`、未来更多）共用一个 WhatsApp 号码，由独立的 `whatsapp_gateway` 项目统一持有 Meta 凭据、收 webhook、按用户选择的 demo 转发。`ai_chatbot` 这边新增一个内部专用接口 `POST /internal/whatsapp/inbound`（带共享密钥 `X-Internal-Secret` 校验），复用原有的选类型/选身份/LLM 问答全部逻辑，只是把"直接调用 Graph API 发送"改成"返回 payload 列表"，由网关统一用共享凭据发送。原有的公网 `POST /webhook/whatsapp`（Meta 直连路径）保持不变，行为完全兼容，供以后需要独立号码时继续可用。完整方案见 `C:\Users\pengw\.claude\plans\polished-cooking-parrot.md`
+  验收：`pytest` 36 个测试全部通过（含 6 个新增的 internal 接口测试：缺失/错误密钥拒绝 401、缺 message 字段 400、正常转发返回 payload 列表、message id 去重）。真机端到端联调需要 `whatsapp_gateway` 和（可选）`crm_os` 那两部分也部署完成后才能做，见任务 16
 
 ## 可选项（非必须，MVP 之后再看要不要做）
 

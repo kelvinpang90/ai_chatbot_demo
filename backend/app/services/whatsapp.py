@@ -39,23 +39,22 @@ def markdown_to_whatsapp(text: str) -> str:
     return text
 
 
-def send_text_message(to: str, text: str) -> httpx.Response:
-    body = {
+def build_text_message(to: str, text: str) -> dict:
+    return {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "text",
         "text": {"body": markdown_to_whatsapp(text)},
     }
-    return httpx.post(_messages_url(), headers=_headers(), json=body, timeout=REQUEST_TIMEOUT_SECONDS)
 
 
-def send_interactive_list(
+def build_interactive_list(
     to: str,
     body_text: str,
     button_text: str,
     sections: list[dict],
     header_text: str | None = None,
-) -> httpx.Response:
+) -> dict:
     """sections follows Meta's format: [{"title": str, "rows": [{"id": str, "title": str, "description": str}]}]."""
     interactive: dict = {
         "type": "list",
@@ -65,18 +64,17 @@ def send_interactive_list(
     if header_text:
         interactive["header"] = {"type": "text", "text": header_text}
 
-    body = {
+    return {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "interactive",
         "interactive": interactive,
     }
-    return httpx.post(_messages_url(), headers=_headers(), json=body, timeout=REQUEST_TIMEOUT_SECONDS)
 
 
-def send_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> httpx.Response:
+def build_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> dict:
     """buttons: [{"id": str, "title": str}, ...]. Meta allows at most 3 reply buttons per message."""
-    body = {
+    return {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "interactive",
@@ -91,4 +89,25 @@ def send_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> ht
             },
         },
     }
-    return httpx.post(_messages_url(), headers=_headers(), json=body, timeout=REQUEST_TIMEOUT_SECONDS)
+
+
+def send_raw(payload: dict) -> httpx.Response:
+    return httpx.post(_messages_url(), headers=_headers(), json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+
+
+def send_text_message(to: str, text: str) -> httpx.Response:
+    return send_raw(build_text_message(to, text))
+
+
+def send_interactive_list(
+    to: str,
+    body_text: str,
+    button_text: str,
+    sections: list[dict],
+    header_text: str | None = None,
+) -> httpx.Response:
+    return send_raw(build_interactive_list(to, body_text, button_text, sections, header_text))
+
+
+def send_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> httpx.Response:
+    return send_raw(build_quick_reply_buttons(to, body_text, buttons))
