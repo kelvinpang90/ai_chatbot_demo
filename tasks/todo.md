@@ -101,10 +101,14 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
   目标：实际采用的方案和最初设计不同——服务器已有多个项目共用一个 Docker 化的 Nginx（`infra_nginx`，走共享的 `proxy_net` 网络，域名证书是 `*.acuventech.com` 通配符证书，不需要单独申请）。部署改成 GitHub Actions 自动化：push 到 master → 构建 backend/frontend 镜像推到 GHCR → SSH 进服务器 `git pull` + `docker compose -f docker-compose.prod.yml pull/up`，和这台服务器上其他项目（demo_os 等）的模式保持一致
   验收：`https://chatbot.acuventech.com` 通过 HTTPS 正常访问，完整走通密码登录 → 选类型 → 选身份 → 聊天问答；手机端实测确认可用。DNS/证书链路、自动部署流水线均已验证通过
 
-- [ ] **任务 16：Meta webhook 注册 + WhatsApp 真机联调**
+- [x] **任务 16：Meta webhook 注册 + WhatsApp 真机联调**
   目标：Meta 开发者后台注册 webhook URL 并验证通过；需要用户用真实手机发消息测试完整流程
   验收：用户手机发消息给 WhatsApp 号码，走完选类型→选身份→问答的完整流程
   **更新**：架构变更为多 demo 共用一个 WhatsApp 号码（见下方任务 16.1），本任务的"直接注册"方式暂缓，webhook 改由新项目 `whatsapp_gateway` 统一接收后再转发过来
+  **2026-08-17 完成**：用 Meta 免费测试号 `+1 555-645-3154`（Phone Number ID `1080491501819345`，Test WABA `853706927759665`）真机跑通全链路。三个容器日志逐跳可验证：
+  - 网关：`POST /webhook/whatsapp 200` → `POST ai_chatbot_backend:8000/internal/whatsapp/inbound 200` → `POST graph.facebook.com/.../messages 200`
+  - ai_chatbot：`601136182335 selected bot food` → `selected identity regular_diner for bot food` → `POST api.anthropic.com/v1/messages 200` → `Sending LLM reply`
+  真实号码尚未注册（Meta 后台 Step 2. Production setup），切换时只需改网关 `.env` 的 `WHATSAPP_PHONE_NUMBER_ID` 并重启容器——webhook 是 App 级的，不用重配
 
 - [x] **任务 16.1：接入 whatsapp_gateway（多 demo 共用一个号码）**
   文件：`backend/app/config.py`（新增 `internal_shared_secret`）、`backend/app/services/whatsapp.py`（拆出 `build_text_message`/`build_interactive_list`/`build_quick_reply_buttons`/`send_raw`）、`backend/app/routers/whatsapp_webhook.py`（内部处理函数改为构造并返回 payload 列表，新增公共入口 `dispatch_message()`）、`backend/app/routers/internal_whatsapp.py`（新增，`POST /internal/whatsapp/inbound`）、`backend/tests/test_internal_whatsapp.py`（新增）
@@ -131,4 +135,9 @@ Claude Code 的用量限制是按时间窗口算的，一个 session 里塞的�
 - 2026-08-06（任务 15）：`appleboy/ssh-action` 的多行 `script` 字段里用 `${{ secrets.VPS_DEPLOY_PATH }}` 时，实际执行时 `cd` 没有拿到真实路径（服务器上残留在默认登录目录，导致 `git pull` 报 "not a git repository"）。部署路径本身不是敏感信息，改成直接写死在 workflow 的 `env:` 里、不再用 secret，问题消失，顺手把这个 secret 删掉了。
 - 2026-08-06（任务 15）：`docker login ghcr.io` 用的是当次 workflow run 的临时 `GITHUB_TOKEN`，run 结束后这个登录凭据就失效了——如果之后要手动在服务器上单独 `docker compose pull`（不经过 workflow），会因为登录过期报 `denied`，需要重新登录一次（用 `gh auth token` 或者一个 PAT）。自动化流程本身没问题，因为每次 workflow run 都会重新登录。
 - 2026-08-06（任务 15）：GitHub Actions 的 "Failed to resolve action download info: Service Unavailable"（Actions 基础设施临时故障）在这次部署里又出现了一次，`gh run rerun <run-id>` 重跑即可，非代码问题。已出现两次，属于偶发的平台侧抖动，后续遇到直接重跑，不用排查代码。
+- 2026-08-17（任务 16）：联调前以为卡在"凭据没配、webhook 没指过来"（`whatsapp_gateway/tasks/todo.md` 8/7 的记录），实际用 `debug_token` 和 `GET /{app_id}/subscriptions` 一查，8/8 就全配好了：token 是 `type: SYSTEM_USER` + `expires_at: 0` 的永久 token，Callback URL 也早就是 `https://whatsappgateway.acuventech.com/webhook/whatsapp` 且 `active: true`。**教训：诊断先查线上真实状态，别信任务文件里的历史记录。**
+- 2026-08-17（任务 16）：真正卡住的原因，从日志的"缺什么"看出来的——网关日志里有 `POST graph.facebook.com/.../messages 200`（菜单发出去了）但一次 `POST .../internal/whatsapp/inbound` 都没有，`ai_chatbot_backend` 的 internal 接口命中数为 0。说明前三次测试都是"收到顶层菜单后没点 Select 选 demo"，流程没走完，不是配置错误。
+- 2026-08-17（任务 16）：Graph API 版本实测 —— 代码里 pin 的 `v20.0`（网关 + ai_chatbot）和 `v18.0`（crm_os）担心已过期，用同一个 token 分别打 v25.0 和 v20.0 对比，**v20.0 仍正常返回**，暂不升级。以后要升的话是一行常量改动。
+- 2026-08-17（Meta 侧资产整理）：App `crm_os` 改名为 `Acuven Messaging`（App ID `1316636550578852` 不变），system user `crm_os` 改名为 `Whatsapp_Gateway`（ID `61589493310837`），并补授两个 WABA 的 Full control。原因：这个 App 和 system user 已从"CRM 专用"变成全公司消息业务的公共入口，旧名字会误导。改名不影响 App ID/Secret 和已签发的 token。
+- 2026-08-17：`Acuven Technology` WABA（`1905512206783092`）目前是空壳——0 号码、无付款方式、无货币、时区错误（Asia/Shanghai，应为 Asia/Kuala_Lumpur）。真实号码计划注册到这个 WABA 下作为生产资产。另有三处待修的 App 配置：User data deletion 填的是占位符 `https://www.facebook.com/`、Country 是 United States、Privacy/ToS 指向 `crm.kelvinpeng.com`（应迁到 acuventech.com）。
 - 2026-08-06（任务 15 收尾）：用户手机截图反馈聊天页 `.lang-switcher`（绝对定位悬浮右上角）挡住了 `.chat-header` 标题和"重新开始"按钮——`.chat-header` 没有像 `.page`（`padding: 64px 24px 24px`）一样为悬浮的语言切换按钮预留顶部空间。修复：给 `.chat-page` 加 `padding-top: 56px`（`frontend/src/App.css`）。用 DOM `getBoundingClientRect()` 在 375px 视口下测量确认 `.chat-header` 顶部（56px）已完全避开 `.lang-switcher` 底部（约 49px），`.reset-button`（top 72px）不再被遮挡；线上 `chatbot.acuventech.com` 验证同样通过。
