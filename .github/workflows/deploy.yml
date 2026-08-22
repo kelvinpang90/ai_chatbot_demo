@@ -48,6 +48,10 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          # Off by default, which makes the step's exit code that of the LAST
+          # command. A failed pull followed by a successful `docker image
+          # prune -f` reports green while the old container keeps running.
+          script_stop: true
           script: |
             cd ${{ env.VPS_DEPLOY_PATH }}
             git pull origin master
