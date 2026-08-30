@@ -62,7 +62,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - `send_message(payload)` —— `POST /{phone_number_id}/messages`，供主动推送用（收到消息时的回复走现有 webhook 同步路径，不用这个）
   验收：pytest 用 mock HTTP 覆盖三个函数的 URL / header / body；再用真实 `media_id` 拉一张图下来能打开，上传一个 PDF 拿到 `media_id`
 
-- [ ] **任务 2：LLM 工具调用循环**
+- [x] **任务 2：LLM 工具调用循环**——**2026-08-31 代码完成**，5 个 `test_llm.py` 测试全过（全套 44 passed）。三个判断：
+  - **安全绳做成了真的分叉，不是「传空数组」**：`get_tools(bot.id)` 为空时走原来的 `messages.create`，一个字节都没动；有工具才走 `beta.messages.tool_runner`。理由是「行为完全一致」这句话，传 `tools=[]` 去 beta 端点即使能跑也已经不是同一个请求了，而线上四个 bot 正在接客。本地起 uvicorn 实测：retail 发一句，traceback 显示走的是 `/v1/messages` 的 `messages.create`，**没碰 beta 端点**
+  - **`max_iterations=8`**：runner 默认无上限（`_beta_runner.py:126`，`max_iterations=None` 就永远不停）。演示时一个刹不住的工具循环比答得不完美糟糕得多。有测试钉住这个上限
+  - **没动模型选型**——`settings.anthropic_model` 还是 `claude-sonnet-5`，那是任务 4 的事，这里不抢
+  - ⚠️ **待验**：真实 key 下网页端问一句拿到正常回复。本地只有假 key（拿到的是 `FALLBACK_REPLY`，正好证明兜底也没坏），线上要 `DEMO_ACCESS_PASSWORD` 才能登录，用户自己点一下最快
+
   文件：`backend/app/services/llm.py`、`backend/app/tools/registry.py`（新增）、`backend/tests/test_llm.py`
   目标：从单轮 `messages.create` 改成 SDK 的 tool runner（`@beta_tool` + `client.beta.messages.tool_runner()`）。工具列表按 bot 从 registry 取，**工具为空时行为与现在完全一致**——这是回归的安全绳
   验收：pytest 覆盖「无工具时输出不变」和「有工具时会调用并把结果喂回去」；`docker compose up` 后网页端问一句，确认回复正常（旧行为回归）

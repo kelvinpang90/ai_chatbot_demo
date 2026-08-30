@@ -8,12 +8,18 @@ import anthropic
 from app.bots.registry import BotConfig, Identity
 from app.config import settings
 from app.session_store import Message
+from app.tools.registry import get_tools
 
 logger = logging.getLogger(__name__)
 
 _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 MAX_REPLY_TOKENS = 512
+
+# The runner loops until Claude stops asking for tools, with no ceiling of its own.
+# A demo that quietly spends a minute and a stack of tokens in a tool loop is worse
+# than one that answers imperfectly, so give it a floor to hit.
+MAX_TOOL_ITERATIONS = 8
 
 FALLBACK_REPLY = (
     "抱歉，我这边出了点问题，请稍后再试。 / "
@@ -47,16 +53,44 @@ def build_system_prompt(bot: BotConfig, identity: Identity) -> str:
     )
 
 
+def _reply_without_tools(system_prompt: str, messages: list[dict]):
+    """The pre-tool-runner path, byte for byte.
+
+    A bot with no tools must not merely behave similarly to before -- it must take
+    the same endpoint with the same parameters, so that adding the tool runner
+    cannot regress the four bots already answering customers today.
+    """
+    return _client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=MAX_REPLY_TOKENS,
+        system=system_prompt,
+        messages=messages,
+    )
+
+
+def _reply_with_tools(system_prompt: str, messages: list[dict], tools: list):
+    """Let the SDK drive the call-execute-feed-back loop and hand us the final turn."""
+    runner = _client.beta.messages.tool_runner(
+        model=settings.anthropic_model,
+        max_tokens=MAX_REPLY_TOKENS,
+        system=system_prompt,
+        messages=messages,
+        tools=tools,
+        max_iterations=MAX_TOOL_ITERATIONS,
+    )
+    return runner.until_done()
+
+
 def get_reply(bot: BotConfig, identity: Identity, history: list[Message]) -> str:
     system_prompt = build_system_prompt(bot, identity)
     messages = [{"role": m.role, "content": m.content} for m in history]
+    tools = get_tools(bot.id)
 
     try:
-        response = _client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=MAX_REPLY_TOKENS,
-            system=system_prompt,
-            messages=messages,
+        response = (
+            _reply_with_tools(system_prompt, messages, tools)
+            if tools
+            else _reply_without_tools(system_prompt, messages)
         )
     except anthropic.APIError:
         logger.exception("Claude API call failed")
