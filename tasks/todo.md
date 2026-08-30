@@ -72,7 +72,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   目标：从单轮 `messages.create` 改成 SDK 的 tool runner（`@beta_tool` + `client.beta.messages.tool_runner()`）。工具列表按 bot 从 registry 取，**工具为空时行为与现在完全一致**——这是回归的安全绳
   验收：pytest 覆盖「无工具时输出不变」和「有工具时会调用并把结果喂回去」；`docker compose up` 后网页端问一句，确认回复正常（旧行为回归）
 
-- [ ] **任务 3：事件总线 + 导演台 SSE 骨架**
+- [x] **任务 3：事件总线 + 导演台 SSE 骨架**——**2026-08-31 完成并验收**（全套 52 passed）。验收就是 todo 要求的那条：`curl -N localhost:8392/console/stream` 挂着，另一个终端发一条会触发工具的消息，两条事件实时滚出来——`tool_start`（工具名 + 入参）和 `tool_end`（返回、`duration_ms: 201`、`status: ok`），耗时和探针里 sleep 的 200ms 对得上。设计要点：
+  - **订阅者按 seq 轮询 ring buffer，不是被 push**：聊天请求跑在 FastAPI 的同步线程池里，SSE 跑在事件循环上，跨线程往 `asyncio.Queue` 里塞是错的。轮询间隔 250ms，人眼看不出来，换来的是没有 per-subscriber 队列会在浏览器标签页关掉时泄漏
+  - **`?replay=true` 才回放缓冲区**，默认只推新事件——演示时先连屏再说话，不该一上来糊一屏历史
+  - **一个 turn 里的并行工具共享同一个 `duration_ms`**，因为 runner 是一起执行它们的。想要 per-tool 精确耗时得包装工具对象，现在不值得
+  - ⚠️ **`/console/stream` 没有鉴权，靠「打不到」保护**：前端容器的 nginx 只转 `/api/` 和 `/webhook/`，`/console/` 会落到 SPA。**任务 12 建导演台页面时必须同时解决**——那条流里有 ERP 订单数据和客户资料，加了 nginx 转发就等于公开
+
   文件：`backend/app/console/events.py`（新增）、`backend/app/routers/console.py`（新增）、`backend/app/services/llm.py`（在 tool runner 的 per-turn 钩子里 emit）
   目标：内存 ring buffer 存事件（工具名、入参、返回、耗时、状态）；`GET /console/stream` 走 SSE 推给前端；每次工具调用前后各 emit 一条
   验收：`curl -N localhost:8000/console/stream` 订阅，另开一个终端发一条会触发工具的消息，看到事件实时滚出来
@@ -133,7 +138,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   验收：一组 eval——不存在的订单号、不存在的 SKU、超出政策范围的要求、和本行业无关的问题，四类各问一遍，断言它**说不知道而不是编**；演示时可以主动邀请客户砸场（*「你随便问，问倒它才是好事」*），这句话本身就是说服力
 
 - [ ] **任务 12：导演台 v1 页面**
-  文件：`frontend/src/pages/Console.tsx`（新增）、`frontend/src/api.ts`
+  文件：`frontend/src/pages/Console.tsx`（新增）、`frontend/src/api.ts`、`frontend/nginx.conf`
+  ⚠️ **开工第一件事：给 `/console/stream` 加鉴权。** 现在它没有任何保护，仅仅因为前端 nginx 不转 `/console/` 才打不到（见任务 3）。这个页面要能用就得加转发，那一刻这条流——里面是 ERP 订单和客户资料——就公开了。复用 `require_auth` 那套 `X-Access-Token` 即可，但 `EventSource` 不能设请求头，所以 token 要走查询参数
   目标：订阅 SSE，把工具调用逐条渲染成一条流——工具名、入参、返回摘要、耗时、HTTP 状态。深色控制台风格，先能看清楚，不追求美观（v2 再打磨）
   **必须有一行「本次会话成本 RM x.xx」**：token 对老板是无意义单位，马币不是。「会不会很贵」通常是中小企业主真正的拦路问题，而这一行字直接终结它。实现是一行乘法（Opus 5：输入 $5 / 输出 $25 每百万 token，按当时汇率换算），成本几乎为零。旁边可以再放一句对照：*「同样这通询问，人工客服约 3 分钟」*
   验收：手机发消息，笔记本上的页面实时滚出对应的工具调用；会话成本以马币显示且随对话累加

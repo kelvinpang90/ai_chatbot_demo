@@ -6,6 +6,7 @@ from anthropic import beta_tool
 from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock, BetaUsage
 
 from app.bots.registry import get_bot
+from app.console import events
 from app.services import llm
 
 
@@ -132,3 +133,53 @@ def test_tool_loop_is_capped_so_a_demo_cannot_spin_forever():
             llm.get_reply(bot, identity, history=[])
 
     assert mock_parse.call_count == llm.MAX_TOOL_ITERATIONS
+
+
+def test_each_tool_call_is_announced_to_the_console_before_and_after():
+    bot = get_bot("retail")
+    identity = bot.identities[0]
+    events.clear()
+
+    @beta_tool
+    def check_stock(sku: str) -> str:
+        """Look up how many units of a SKU are on hand.
+
+        Args:
+            sku: The product code to look up.
+        """
+        return "12 units in stock"
+
+    wants_tool = _assistant_message(
+        [BetaToolUseBlock(type="tool_use", id="tu_1", name="check_stock", input={"sku": "EARBUD-01"})],
+        "tool_use",
+    )
+    final = _assistant_message([BetaTextBlock(type="text", text="Yes, 12 left.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[check_stock]):
+        with patch.object(llm._client.beta.messages, "parse", side_effect=[wants_tool, final]):
+            llm.get_reply(bot, identity, history=[])
+
+    start, end = events.since(0)
+    assert start.type == events.TOOL_START
+    assert start.tool == "check_stock"
+    assert start.input == {"sku": "EARBUD-01"}
+    assert end.type == events.TOOL_END
+    assert end.tool_use_id == start.tool_use_id
+    assert "12 units in stock" in end.output
+    assert end.status == "ok"
+    assert end.duration_ms >= 0
+
+    events.clear()
+
+
+def test_a_bot_without_tools_says_nothing_to_the_console():
+    bot = get_bot("retail")
+    identity = bot.identities[0]
+    events.clear()
+    response = _assistant_message([BetaTextBlock(type="text", text="Hello!")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response):
+            llm.get_reply(bot, identity, history=[])
+
+    assert events.since(0) == []
