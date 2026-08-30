@@ -40,43 +40,34 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 ## 批次 00：地基（不对客户展示）
 
 > 没有客户看得见的东西，但后面五批全部压在这一批上。
-> **这一批是整个工程唯一有回归风险的地方**——`whatsapp_gateway` 同时扛着 demo 号和公司真实客服号（`acuven_aichat`）。demo 坏了是丢脸，客服号坏了是事故。所以它单独成批、单独验收，在动它之后、堆功能之前先确认那条线没坏。
-> （2026-08-30：`crm_os` 已从网关的 demo 路由里移除，不再是下游之一。）
+>
+> **2026-08-30：这一批原有 7 个任务，现在 4 个。** demo 线已脱离 `whatsapp_gateway`——
+> Meta 的 Callback URL 直接指向 `chatbot.acuventech.com/webhook/whatsapp`，`ai_chatbot`
+> 用自己的凭据收发。原任务 1、2、4 全是「向网关借凭据」的管道，任务 3 是动网关后的回归验证；
+> 既然不再经过网关，四个一起塌缩成下面的任务 1。
+>
+> 连带消失的还有这一批原本「**整个工程唯一有回归风险**」的属性——那个风险来自
+> `whatsapp_gateway` 同时扛着公司真实客服号（`acuven_aichat`），而现在我们根本不碰它。
 
-- [ ] **任务 1：网关内网 API —— 媒体下载代理**
-  项目：`whatsapp_gateway`
-  文件：`app/routers/internal_media.py`（新增）、`app/services/whatsapp.py`（加 `fetch_media`）、`tests/test_internal_media.py`（新增）
-  目标：`POST /internal/media/fetch`，body `{"media_id": "..."}`，校验 `X-Internal-Secret`。内部两步：`GET /{media_id}` 拿临时 URL，再带 token 下载二进制，返回二进制流 + `Content-Type`
-  验收：pytest 覆盖密钥校验（缺失/错误 401）、Graph 两步调用的 mock；再用真实 `media_id` curl 拉一张图下来能打开
+- [ ] **任务 1：Meta 媒体客户端（收图 / 收文件 / 发文件 / 主动外发）**
+  文件：`backend/app/services/whatsapp_media.py`（新增）、`backend/app/config.py`、`backend/tests/test_whatsapp_media.py`（新增）
+  目标：三个函数，全部直连 Graph API，用 `ai_chatbot` 自己的 `WHATSAPP_ACCESS_TOKEN`：
+  - `fetch_media(media_id)` —— 两步：`GET /{media_id}` 拿临时 URL，再带 token 下载二进制，返回 bytes + `Content-Type`
+  - `upload_media(bytes, mime, filename)` —— multipart 传给 `POST /{phone_number_id}/media`，返回 `media_id`
+  - `send_message(payload)` —— `POST /{phone_number_id}/messages`，供主动推送用（收到消息时的回复走现有 webhook 同步路径，不用这个）
+  验收：pytest 用 mock HTTP 覆盖三个函数的 URL / header / body；再用真实 `media_id` 拉一张图下来能打开，上传一个 PDF 拿到 `media_id`
 
-- [ ] **任务 2：网关内网 API —— 媒体上传 + 主动外发**
-  项目：`whatsapp_gateway`
-  文件：`app/routers/internal_media.py`（扩展）、`app/routers/internal_send.py`（新增）、`app/services/whatsapp.py`、对应测试
-  目标：`POST /internal/media/upload`（multipart）→ 返回 `media_id`；`POST /internal/send`（body 为 Meta 发送 payload）→ 直接调 Graph 外发，返回结果。两个都校验 `X-Internal-Secret`
-  验收：pytest；curl 上传一个 PDF 拿到 `media_id`；用 `/internal/send` 给自己手机发一条文本消息，手机收到
-
-- [ ] **任务 3：网关回归验证**
-  项目：`whatsapp_gateway`（不改代码，只验证）
-  目标：确认新增三条 API 之后，现有三个下游链路完全不受影响
-  验收：用户拿手机走一遍——给 demo 号发一句，直接进 `ai_chatbot` 拿到回复（**不再有顶层菜单**）。再确认 `acuven_aichat` 那条线（公司客服号）正常
-  说明：这是用户任务，Claude 只负责在验收前把三个容器日志的观察点写清楚
-
-- [ ] **任务 4：ai_chatbot 侧的网关客户端封装**
-  文件：`backend/app/services/gateway.py`（新增）、`backend/app/config.py`、`backend/tests/test_gateway.py`（新增）
-  目标：封装 `fetch_media(media_id)` / `upload_media(bytes, mime, filename)` / `send_message(payload)` 三个函数，统一带 `X-Internal-Secret`；config 新增 `gateway_internal_base_url`
-  验收：pytest 用 mock HTTP 验证三个函数的请求 URL、header、body 格式正确
-
-- [ ] **任务 5：LLM 工具调用循环**
+- [ ] **任务 2：LLM 工具调用循环**
   文件：`backend/app/services/llm.py`、`backend/app/tools/registry.py`（新增）、`backend/tests/test_llm.py`
   目标：从单轮 `messages.create` 改成 SDK 的 tool runner（`@beta_tool` + `client.beta.messages.tool_runner()`）。工具列表按 bot 从 registry 取，**工具为空时行为与现在完全一致**——这是回归的安全绳
   验收：pytest 覆盖「无工具时输出不变」和「有工具时会调用并把结果喂回去」；`docker compose up` 后网页端问一句，确认回复正常（旧行为回归）
 
-- [ ] **任务 6：事件总线 + 导演台 SSE 骨架**
+- [ ] **任务 3：事件总线 + 导演台 SSE 骨架**
   文件：`backend/app/console/events.py`（新增）、`backend/app/routers/console.py`（新增）、`backend/app/services/llm.py`（在 tool runner 的 per-turn 钩子里 emit）
   目标：内存 ring buffer 存事件（工具名、入参、返回、耗时、状态）；`GET /console/stream` 走 SSE 推给前端；每次工具调用前后各 emit 一条
   验收：`curl -N localhost:8000/console/stream` 订阅，另开一个终端发一条会触发工具的消息，看到事件实时滚出来
 
-- [ ] **任务 7：模型选型与 prompt 缓存**
+- [ ] **任务 4：模型选型与 prompt 缓存**
   文件：`backend/app/config.py`、`backend/app/services/llm.py`、`backend/app/bots/registry.py`
   目标：bot 元数据加 `model` 字段——旗舰/深度档用 `claude-opus-5`，轻量档留 `claude-sonnet-5`；给 `tools` + `system` 打 `cache_control` 断点，易变内容排到断点之后
   验收：连发两轮消息，日志打印 `usage.cache_read_input_tokens`，确认第二轮 > 0（缓存真的命中了）
@@ -110,8 +101,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   验收：调一次，`crm.kelvinpeng.com` 的**看板上那张卡在那里**，标题和金额对得上；卡里能看到那条活动记录
 
 - [ ] **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
-  文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/gateway.py`（用上传接口）
-  目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走网关 `media.upload` → 构造 document 消息 payload
+  文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）
+  目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走 `upload_media()` → 构造 document 消息 payload
   验收：手机上收到 PDF 发票并能打开，内容对得上刚才那张单
 
 - [ ] **任务 11：retail bot 改造成工具驱动**
@@ -138,7 +129,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   验收：手机发消息，笔记本上的页面实时滚出对应的工具调用；会话成本以马币显示且随对话累加
 
 - [ ] **任务 12.1：WhatsApp 端「正在输入」状态**
-  文件：`whatsapp_gateway/app/services/whatsapp.py`（加 typing indicator）、`backend/app/routers/whatsapp_webhook.py`
+  文件：`backend/app/services/whatsapp.py`（加 typing indicator）、`backend/app/routers/whatsapp_webhook.py`
   目标：收到消息立刻发 typing indicator，回复发出后停止
   **这不是锦上添花，是防止前面所有工作被误解。** 接了真 ERP 之后一次回复要串好几个工具调用，延迟明显变长——没有输入提示，客户看到的是「卡住了」，**你辛苦做的真实调用反而变成了性能差的观感**。原本挂在可选项里，因此提为正式任务
   验收：真机发一条会触发多个工具调用的消息，对话框顶部先出现「正在输入…」，回复到达后消失
@@ -147,7 +138,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   文件：`frontend/src/pages/Console.tsx`、`backend/app/routers/console.py`、`backend/app/services/llm.py`
   目标：导演台上一个开关，**关掉工具**，让同一个 bot 只靠 JSON 背答案。同一个问题问两遍——关：「蓝牙耳机有货，库存充足」（编的，听起来一样自信）；开：「SP-1001，仓库还有 47 件」+ 导演台滚出真实调用
   **整场演示想说的话，就是这两句的差别。** 与其反复解释「我们接了真系统」，不如让他自己看两遍
-  成本极低：任务 5 的验收里本来就要求「**工具为空时行为与现在完全一致**」作为回归安全绳——这条代码路径本来就存在、本来就要测，只是此前没人想过它可以当武器用
+  成本极低：任务 2 的验收里本来就要求「**工具为空时行为与现在完全一致**」作为回归安全绳——这条代码路径本来就存在、本来就要测，只是此前没人想过它可以当武器用
   验收：开关拨两次，同一个问题两种答案；关的时候导演台没有工具调用，开的时候有
 
 - [ ] **任务 13：批次 01 真机验收**（用户任务）
@@ -169,7 +160,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 - [ ] **任务 14：图片消息接入**
   文件：`backend/app/routers/whatsapp_webhook.py`（`dispatch_message` 支持 `type == "image"`）、`backend/app/services/llm.py`（多模态 content block）、测试
-  目标：收到图片 → 走网关 `media.fetch` 下载 → 转成 Claude 的 image content block 塞进对话；去掉现在的「只支持文本」提示
+  目标：收到图片 → 用 `fetch_media()` 下载 → 转成 Claude 的 image content block 塞进对话；去掉现在的「只支持文本」提示
   验收：pytest 覆盖 image 分支；真机发一张商品照片，bot 能描述它
 
 - [ ] **任务 15：语音转录抽象层 + 一个实现**（依赖阻塞项 C）
@@ -179,7 +170,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 - [ ] **任务 15.1：文档消息接入 —— 客户发 PDF，bot 当场能答**
   文件：`backend/app/routers/whatsapp_webhook.py`（支持 `type == "document"`）、`backend/app/services/llm.py`（document content block + citations）、测试
-  目标：收到文档 → 走网关 `media.fetch` 下载 → 作为 Claude 的 `document` content block 塞进对话，**打开 `citations: {enabled: true}`** → 回答时带出处（PDF 是 `page_location`，标到页码）
+  目标：收到文档 → 用 `fetch_media()` 下载 → 作为 Claude 的 `document` content block 塞进对话，**打开 `citations: {enabled: true}`** → 回答时带出处（PDF 是 `page_location`，标到页码）
   **这一步不需要 RAG**。Claude 原生吃 PDF，上限 32 MB / 600 页，直接喂即可。语料真的多到塞不下时才考虑检索，而且下一步应该是「关键词检索工具」（给 Claude 一个 `search_docs(query)` 接 MySQL 全文索引，让它自己决定搜什么），**不是向量库**——Anthropic 没有 embedding 接口，上向量意味着引入新供应商、切块调参、召回不准时极难排查。结构化业务数据用关键词检索天然更合适，形态也和整个工具驱动的设计一致
   验收：真机发一份 PDF 过去，问一个只有文件里才有的问题，**回答正确且带页码出处**；再问一个文件里没有的，它应该说不知道而不是编
 
@@ -211,7 +202,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 - [ ] **任务 19：主动推送**
   文件：`backend/app/services/notify.py`（新增）、`backend/app/tools/erp.py`（下单成功后触发）
-  目标：下单成功 N 秒后，走网关 `/internal/send` 主动推一条消息。24 小时窗口内用普通文本，窗口外用已审核模板
+  目标：下单成功 N 秒后，用 `send_message()` 主动推一条消息。24 小时窗口内用普通文本，窗口外用已审核模板
   验收：真机下单后手机自动「叮」一声收到确认消息
 
 - [ ] **任务 19.1：演示收尾总结 —— 让他把演示带回去**
@@ -222,7 +213,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 - [ ] **任务 20：人工接管状态机**
   文件：`backend/app/session_store.py`（加接管标志）、`backend/app/routers/whatsapp_webhook.py`、测试
-  目标：客户说「找真人」→ 会话标记为人工模式，bot 静默；**用户在导演台上直接打字回复**（走网关 `/internal/send` 外发）；用户发暗号 → bot 接管回来
+  目标：客户说「找真人」→ 会话标记为人工模式，bot 静默；**用户在导演台上直接打字回复**（走 `send_message()` 外发）；用户发暗号 → bot 接管回来
   ⚠️ **不能搬 `acuven_aichat` 的 `smb_message_echoes`**。那条线是公司客服号 `+60 11-3618 2335`，跑在 WhatsApp Business App 上（Coexistence），所以人能拿手机直接回。**demo 号 `+60 17-394 8123` 是纯 Cloud API 号码，没有手机 App 可开**，手机上根本回不了它的消息
   接管入口因此放在导演台（任务 12/27 本来就要做，加一个输入框）。演示效果反而更好：观众同时看到两块屏——客户手机上来消息，大屏上标着「人工接管中」，老板当场敲字
   验收：pytest 覆盖状态迁移；真机走一轮，客户侧全程无感
@@ -301,7 +292,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - [ ] **任务 30：banking 下架 + 全量回归 + 部署**
   文件：删除 `backend/app/bots/data/banking.json`、`.github/workflows/deploy.yml`（如需）
   目标：下架 banking；五个 bot 全部回归一遍；部署到线上
-  验收：`chatbot.acuventech.com` 线上完整走通；WhatsApp 真机五个 bot 各问一句；网关三条下游链路正常
+  验收：`chatbot.acuventech.com` 线上完整走通；WhatsApp 真机五个 bot 各问一句
 
 ---
 
@@ -327,4 +318,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - 2026-08-30（轻量档）：`hotel` + `saas` 原本 30 个任务一个都碰不到，会保持静态 JSON 形态，和工具驱动的 `retail` 并列在菜单里落差太大。新增任务 11.2 给它们套同样的工具外壳，读 JSON / 写内存。剩下的差别（retail 后台真的长出东西）反而可以坦白讲成卖点：「接你们自己的系统是同样的工具接口」。
 - 2026-08-30（RAG 的定位）：用户问怎么做 RAG。结论是**现在不需要**——六个 bot 全部素材 31 KB 约一万多 token，上下文有 100 万，prompt caching 一开重复读取几乎免费；RAG 解决的是装不下，差三个数量级。但「读客户自己的文档」值得做，**不是为了性能，是为了那句话：把你们的手册丢进来，五分钟变客服**。落成任务 15.1，用 Claude 原生的 `document` block + citations，零检索基础设施。真到装不下那天，下一步是关键词检索工具（`search_docs` 接 MySQL 全文索引），**不是向量库**：Anthropic 无 embedding 接口，上向量要引入新供应商 + 切块调参，且召回不准时极难 debug；结构化业务数据用关键词天然更合适。
 - 2026-08-30（说服力五条）：盘完 33 个任务发现它们**全在教 bot「能做什么」，没有一个针对客户心里的异议**。补五条：**会说「我不知道」**（任务 11.3，抗砸场——客户一定会试着问倒它，而「乱答」是老板最怕的）、**成本以马币显示**（任务 12，「会不会很贵」是中小企业主真正的拦路问题，一行乘法就能终结）、**rojak 混语开场**（剧本 1 + 任务 11 验收，不是新功能是把已有能力演出来，本地化说服力极强）、**「正在输入」从可选项提为任务 12.1**（工具调用变慢后，没有它会让真实调用显得像性能差）、**演示收尾总结**（任务 19.1，利用「对话留在他手机里」这个 WhatsApp 独有优势——唯一一条你不在场时还能继续说服人的功能）。
-- 2026-08-30（说服力第二轮）：再补五条。**对照组开关**（任务 12.2）—— 关掉工具跑同一个问题，让客户自己看两遍「编的」和「真的」，整场演示的核心主张变成当场可验证的实验；便宜得离谱，因为任务 5 的回归安全绳本来就要求这条路径存在且被测。**客户中途改主意**（剧本 1 加一步，7→8 步）—— 所有演示在客户按剧本走时都漂亮，一旦反悔就露馅，而真实生意里天天发生；接得住证明是助理，接不住证明是流程图。**三人并发**（任务 13 验收）—— 破除「一次只能应付一个人」的直觉，可能零代码但必须提前验。**故障演练开关**（任务 27.1）—— 「坏了怎么办」老板一定会想、未必会问，主动演比等他问有力。**PDPA 一页纸**（任务 29.1）—— 不写代码，但缺了它有些客户签不了字。另把「现场导入客户自己的 CSV」记进可选项。
+- 2026-08-30（说服力第二轮）：再补五条。**对照组开关**（任务 12.2）—— 关掉工具跑同一个问题，让客户自己看两遍「编的」和「真的」，整场演示的核心主张变成当场可验证的实验；便宜得离谱，因为任务 2 的回归安全绳本来就要求这条路径存在且被测。**客户中途改主意**（剧本 1 加一步，7→8 步）—— 所有演示在客户按剧本走时都漂亮，一旦反悔就露馅，而真实生意里天天发生；接得住证明是助理，接不住证明是流程图。**三人并发**（任务 13 验收）—— 破除「一次只能应付一个人」的直觉，可能零代码但必须提前验。**故障演练开关**（任务 27.1）—— 「坏了怎么办」老板一定会想、未必会问，主动演比等他问有力。**PDPA 一页纸**（任务 29.1）—— 不写代码，但缺了它有些客户签不了字。另把「现场导入客户自己的 CSV」记进可选项。
+- 2026-08-30（demo 线脱离网关）：用户第三次追问「号码不同，还需要网关分发吗」。前两次我都在推迟，而且给过一个循环论证（「网关必需，因为它持有凭据」——凭据在它手里恰恰是这个架构的结果，不是理由）。查证后做了一个 10 分钟可逆实验：把 Meta 的 Callback URL 从 `whatsappgateway.acuventech.com` 改到 `chatbot.acuventech.com/webhook/whatsapp`，`ai_chatbot` 用自己的凭据收发。**通了**——握手 200、消息直连进来、去重工作（5 个 POST 只触发一次业务逻辑）、出站 Graph API 200，网关侧零流量。
+  判定成立的三个前提：① `ai_chatbot` 的 v1 直连路径（`GET/POST /webhook/whatsapp` + 四个凭据字段）当初刻意保留了，改动量约等于零；② 今天取消了测试 WABA 的订阅后，App 下只剩 demo 号一个 WABA，**没有东西需要分流**；③ 客服号本就该用自己的 App（它要走 Coexistence → Tech Provider → App Review，不该把 demo 的 App 拖进去），所以两条线永远不会挤同一个 callback URL。
+  收益：批次 00 从 7 个任务缩到 4 个，省约 3 个 session，并且这一批「整个工程唯一有回归风险」的属性消失——因为不再碰那个同时扛着公司真实客服线的服务。代价：`acuven_aichat` 将来上线时要自己长一个公网 webhook（它现在只有内网路由）。网关继续部署着不动，零成本，客服号接入时再评估去留。
