@@ -28,7 +28,10 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ## 开工前的三个阻塞项（需要用户处理）
 
-- [ ] **A. `erp_os` / `crm_os` 的 demo API 账号**——或者授权 Claude 上 VPS 自建。阻塞任务 8 及之后所有 ERP 相关任务。
+- [x] ~~**A. `erp_os` / `crm_os` 的 demo API 账号**~~——**2026-08-30 实测已解决，两边都不用新建账号**：
+  - `erp_os`：`admin@demo.my` / `Admin@123`（出处 `erp_os/demo/setlist-15min.md`），对 `erp.kelvinpeng.com/api/auth/login` 实测 200
+  - `crm_os`：`admin@crm.com` / `Admin123`（出处 `crm_os/backend/seed.py:82`），对 `crm.kelvinpeng.com/api/auth/login` 实测 200，role=admin
+  - ⚠️ **两边都没有 API key 机制**，只有邮箱+密码换 JWT。access token 15 分钟过期、refresh 一次性、登录限流 10 次/分（连错 5 次锁 5 分钟）。所以客户端**必须缓存 token + 到期前刷新**，绝不能每次调用都登录——一场演示连调五六个工具就会撞限流
 - [ ] **B. Meta 后台三个入口确认能点**——媒体权限、模板提审、Flows。用户已确认后台可用，但任务 18 的模板提审要在批次 03 第一天就提交（审核要几小时到 1-2 天）。
 - [ ] **C. 语音转录选型拍板**——外部 API（准、快、多一个供应商）vs 自托管 faster-whisper（无外部依赖、CPU 上每条慢 3-5 秒、吃 VPS 内存）。阻塞任务 15。建议先接外部 API 把戏跑通，转录做成抽象层，之后换实现只是换一个类。
 
@@ -37,7 +40,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 ## 批次 00：地基（不对客户展示）
 
 > 没有客户看得见的东西，但后面五批全部压在这一批上。
-> **这一批是整个工程唯一有回归风险的地方**——`whatsapp_gateway` 是 `ai_chatbot_demo`、`crm_os`、`acuven_aichat` 三家共用的。所以它单独成批、单独验收，在动它之后、堆功能之前先确认那两条线没坏。
+> **这一批是整个工程唯一有回归风险的地方**——`whatsapp_gateway` 同时扛着 demo 号和公司真实客服号（`acuven_aichat`）。demo 坏了是丢脸，客服号坏了是事故。所以它单独成批、单独验收，在动它之后、堆功能之前先确认那条线没坏。
+> （2026-08-30：`crm_os` 已从网关的 demo 路由里移除，不再是下游之一。）
 
 - [ ] **任务 1：网关内网 API —— 媒体下载代理**
   项目：`whatsapp_gateway`
@@ -54,7 +58,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - [ ] **任务 3：网关回归验证**
   项目：`whatsapp_gateway`（不改代码，只验证）
   目标：确认新增三条 API 之后，现有三个下游链路完全不受影响
-  验收：用户拿手机走一遍——顶层菜单 → 进 `ai_chatbot` demo 问一句拿到回复 → 回菜单 → 进 `crm_os` demo 问一句拿到回复。再确认 `acuven_aichat` 那条线（公司客服号）正常
+  验收：用户拿手机走一遍——给 demo 号发一句，直接进 `ai_chatbot` 拿到回复（**不再有顶层菜单**）。再确认 `acuven_aichat` 那条线（公司客服号）正常
   说明：这是用户任务，Claude 只负责在验收前把三个容器日志的观察点写清楚
 
 - [ ] **任务 4：ai_chatbot 侧的网关客户端封装**
@@ -81,18 +85,27 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ## 批次 01：旗舰戏 —— 零售 × 真 ERP
 
-> 给 B 类客户的主菜。演的时候左边浏览器开着 `erp.kelvinpeng.com` 的订单列表。
-> 剧本：客户说「我要买两个蓝牙耳机」→ bot 查真实 SKU 和库存 → 回按钮 → 客户点确认 → bot 真的建单 → **刷新 ERP 后台那张单在那里** → bot 把 PDF 发票发进 WhatsApp。全程大屏滚着工具调用。
+> 给 B 类客户的主菜。演的时候左边浏览器开着**两块后台**：`erp.kelvinpeng.com` 的订单列表 + `crm.kelvinpeng.com` 的管道看板。
+>
+> **剧本 1 —— 旗舰戏（7 步）**：客户说「我要买两个蓝牙耳机」→ bot 查真实 SKU 和库存 → 回按钮 → 客户点确认 → bot 真的建单 → **刷新 ERP 后台那张单在那里，同时 CRM 看板上长出一张线索卡** → bot 把 PDF 发票发进 WhatsApp。全程大屏滚着工具调用。
+>
+> 两块后台同时长东西是刻意的：ERP 那张单打动已经有 ERP 需求的 B 类客户，**CRM 那张卡打动所有做生意的人**——他们每天都在 WhatsApp 里丢单子。
 
-- [ ] **任务 8：ERP 只读工具**（依赖阻塞项 A）
-  文件：`backend/app/tools/erp.py`（新增）、`backend/app/services/erp_client.py`（新增）、`backend/tests/test_erp_tools.py`（新增）
-  目标：`erp_client` 封装 `erp_os` REST 调用（base url + demo 账号鉴权）；三个只读工具：`erp_search_sku(keyword)`、`erp_get_inventory(sku)`、`crm_lookup_customer(name_or_phone)`
-  验收：pytest（mock HTTP）；再对着真实 `erp.kelvinpeng.com` 各调一次，返回的是真数据
+- [ ] **任务 8：ERP / CRM 只读工具 + 鉴权基类**
+  文件：`backend/app/services/api_client.py`（新增，登录+token 缓存+刷新基类）、`backend/app/services/erp_client.py`、`backend/app/services/crm_client.py`（均新增）、`backend/app/tools/erp.py`（新增）、`backend/tests/test_erp_tools.py`（新增）
+  目标：`erp_os` 和 `crm_os` 的认证方式**完全一样**（邮箱+密码 → JWT，15 分钟过期，refresh 一次性），所以先写一个共用基类管登录/缓存/刷新，两个 client 各自只填 base url 和账号。三个只读工具：`erp_search_sku(keyword)`、`erp_get_inventory(sku)`、`crm_lookup_customer(name_or_phone)`
+  验收：pytest（mock HTTP）覆盖「token 未过期时不重新登录」「过期时自动 refresh」「refresh 失败回退重新登录」；再对着真实 `erp.kelvinpeng.com` / `crm.kelvinpeng.com` 各调一次，返回的是真数据
 
 - [ ] **任务 9：ERP 写入工具 —— 创建销售订单**
   文件：`backend/app/tools/erp.py`（扩展）、测试
   目标：`erp_create_sales_order(customer_id, items)`，走 `erp_os` 的 `sales_order` 路由，返回订单号
   验收：调一次，然后**在浏览器里打开 `erp.kelvinpeng.com` 的订单列表，那张单在那里，状态正确**
+
+- [ ] **任务 9.1：CRM 写入工具 —— 自动建线索**
+  文件：`backend/app/tools/crm.py`（新增）、`backend/tests/test_crm_tools.py`（新增）
+  目标：`crm_create_lead(name, phone, requirement, amount)` —— 依次调 `POST /api/contacts`（建联系人）、`POST /api/deals`（建商机，带 `amount`，**会出现在管道看板上**）、`POST /api/deals/{id}/activities`（记一条来源=WhatsApp 的活动）
+  ⚠️ **不要设 `is_gateway=True`**。`crm_os` 有 `utils/demo_scope.py` 按这个标记做范围过滤，设了反而可能在主列表里看不见，正好毁掉这个镜头
+  验收：调一次，`crm.kelvinpeng.com` 的**看板上那张卡在那里**，标题和金额对得上；卡里能看到那条活动记录
 
 - [ ] **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
   文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/gateway.py`（用上传接口）
@@ -103,6 +116,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   文件：`backend/app/bots/data/retail.json`、`backend/app/bots/registry.py`
   目标：`retail` 的 `persona_prompt` 改成「用工具查，不要编」；`context_data` 里的静态商品/订单表删掉（改由工具实时查），只留 FAQ 和政策类文本；bot 元数据加 `tools` 字段声明它能用哪些工具
   验收：问「我的订单到哪了」，日志显示走的是工具调用而不是背 JSON
+
+- [ ] **任务 11.2：轻量档也套上工具循环**（`hotel` + `saas`）
+  文件：`backend/app/tools/local.py`（新增）、`backend/app/bots/data/hotel.json`、`backend/app/bots/data/saas.json`、测试
+  目标：客户在菜单里平等看到五个行业，点进 `retail` 是活的、点进 `hotel` 还在背 JSON，落差太明显，会显得「只有一个是真的」。给轻量档套同样的工具外壳——`hotel_search_rooms` / `hotel_get_booking` / `hotel_modify_booking`，`saas_search_known_issues` / `saas_get_tickets` / `saas_create_ticket`
+  **读走现有 JSON**（`context_data` + 选中身份的 `profile`），零新增数据；**写落会话级内存**——纯只读会露馅，SaaS 客服不能建工单、酒店客服不能改预订，客户一试就穿帮
+  验收：`hotel` 和 `saas` 各问一句，**导演台上滚出工具调用**，形态和 `retail` 一致；建一张工单后在同一段对话里能查回来
 
 - [ ] **任务 12：导演台 v1 页面**
   文件：`frontend/src/pages/Console.tsx`（新增）、`frontend/src/api.ts`
@@ -144,6 +163,10 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 ## 批次 03：临门一脚
 
 > 前面所有功能都是「客户问，它答」，只有主动推送是**它自己动了**——这一下对老板的杀伤力被严重低估。转人工则是成交前最后一个问题的答案：「那 AI 搞不定怎么办？」
+>
+> **剧本 3 —— 它自己动了 + 兜底（5 步，接在剧本 4b 之后）**：客户刚点完两份椰浆饭 → 约 30 秒后手机「叮」，bot 主动推送「您的订单已出餐，骑手预计 10 分钟送达」（**客户没问**）→ 客户回一句超纲的「能让骑手放门口吗？想加一份辣椒酱，我补钱」→ bot 判断超出自动处理范围，「帮您转接同事」，**bot 静默** → **老板在导演台上直接打字回复**，大屏显示「人工接管中」→ 老板打暗号，bot 接管回来
+>
+> ⚠️ **这一批建的是能力，不是这出戏**。剧本 3 演在餐饮，而餐饮点餐流程在批次 04（任务 25）——依赖是倒的。不为此重排批次：**本批把能力挂在当时唯一存在的下单流程（零售）上**，任务 21 只验能力；等批次 04 做完 food，剧本 3 才真正成立，演出验收挂在任务 26。`notify.py` 本就该做成通用的，挂零售和挂餐饮是同一个钩子的两处调用。
 
 - [ ] **任务 18：模板消息文案 + 提审**（用户任务，批次第一天就做）
   文件：`docs/whatsapp-templates.md`（新增，Claude 写）
@@ -158,18 +181,23 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 - [ ] **任务 20：人工接管状态机**
   文件：`backend/app/session_store.py`（加接管标志）、`backend/app/routers/whatsapp_webhook.py`、测试
-  目标：客户说「找真人」→ 会话标记为人工模式，bot 静默；用户在自己手机上直接回消息；用户发暗号 → bot 接管回来
+  目标：客户说「找真人」→ 会话标记为人工模式，bot 静默；**用户在导演台上直接打字回复**（走网关 `/internal/send` 外发）；用户发暗号 → bot 接管回来
+  ⚠️ **不能搬 `acuven_aichat` 的 `smb_message_echoes`**。那条线是公司客服号 `+60 11-3618 2335`，跑在 WhatsApp Business App 上（Coexistence），所以人能拿手机直接回。**demo 号 `+60 17-394 8123` 是纯 Cloud API 号码，没有手机 App 可开**，手机上根本回不了它的消息
+  接管入口因此放在导演台（任务 12/27 本来就要做，加一个输入框）。演示效果反而更好：观众同时看到两块屏——客户手机上来消息，大屏上标着「人工接管中」，老板当场敲字
   验收：pytest 覆盖状态迁移；真机走一轮，客户侧全程无感
-  参考：`acuven_aichat` 的 `smb_message_echoes` 做法，直接搬
 
 - [ ] **任务 21：批次 03 真机验收**（用户任务）
-  验收：主动推送收到；人工接管一轮进出正常
+  验收：**验的是能力，不是剧本 3**（那出戏要等批次 04 的餐饮流程）。零售下单后主动推送收到；说「找真人」后 bot 静默、导演台上回一句客户能收到、打暗号后 bot 接管回来
 
 ---
 
 ## 批次 04：广度 —— 原生表单和两个新行业
 
 > 让 A 类客户在列表里看见自己的行业，是他掏钱的关键。餐饮和房产最贴近马来西亚中小企业，后台也最简单好做。
+>
+> **剧本 4a —— 不跳出 App 的表单（房产，5 步）**：客户问「蒲种三房，60 万以内」→ bot 列 2 个房源 → 客户说想看房 → **bot 弹出原生表单**（姓名 / 日期 / 房源），客户在 WhatsApp 里填完，**全程不跳出 App** → 提交后大屏上房产后台出现那条预约，**CRM 看板同时长出线索卡**
+>
+> **剧本 4b —— 点餐（餐饮，4 步）**：客户「两份椰浆饭一杯拉茶」→ bot 加购物车 → 报总价 → 确认下单，后台订单状态流转。**演完立刻接剧本 3**，两段连成 9 步。
 > **不新开项目**：作为 `backend/app/verticals/{food,realestate}/`，共用 vps_infra 里开一个 MySQL db，后台页面挂在导演台同一个域名下——保持一个部署单元，不增加运维负担。
 
 - [ ] **任务 22：verticals 骨架 + 数据库**
@@ -194,7 +222,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   验收：真机走完一遍点餐，后台能看到订单和状态流转
 
 - [ ] **任务 26：批次 04 真机验收**（用户任务）
-  验收：房产表单预约通；餐饮点餐通；两个后台页面都能看到数据
+  验收：剧本 4a 走通（表单不跳出 App，房产后台 + CRM 看板都出现记录）；**剧本 4b + 剧本 3 连演 9 步走通**——点餐 → 主动推送「已出餐」→ 客户提超纲要求 → 转人工 → 导演台回复 → 暗号接管回来
 
 ---
 
@@ -214,8 +242,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 - [ ] **任务 29：自动演示模式**
   文件：`frontend/src/pages/Console.tsx` 或独立页、`backend/app/routers/console.py`
-  目标：点播放键，bot 自己走完一整段最精彩的对话。**工具调用是真的**，只有用户那几句是脚本喂的
-  验收：点一下，一段完整的戏自动演完，中途不需要人操作
+  目标：点播放键，bot 自己走完**剧本 1（旗舰戏七步）**。**工具调用是真的**，只有用户那几句是脚本喂的
+  为什么是剧本 1：排除法——剧本 2 要真人拍照和说话，脚本喂不了；剧本 3 依赖主动推送的时序和真人打字，自动化很别扭；剧本 4a 的原生表单必须真人点提交。只有剧本 1 能纯脚本驱动，而且道具最齐（ERP 订单 + CRM 看板同时长东西）
+  验收：点一下，七步自动演完，中途不需要人操作，两块后台都能看到新数据
 
 - [ ] **任务 30：banking 下架 + 全量回归 + 部署**
   文件：删除 `backend/app/bots/data/banking.json`、`.github/workflows/deploy.yml`（如需）
@@ -238,3 +267,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - 2026-08-27（立项）：v1 的 `tasks/todo.md` 归档为 `tasks/todo-v1-mvp.md`。
 - 2026-08-27（架构侦察）：确认 `ai_chatbot_demo` **自己不持有 Meta 凭据**——它挂在 `whatsapp_gateway` 后面，通过 `POST /internal/whatsapp/inbound` 收消息、**同步返回** payload 列表由网关代发。七件武器里有四件（收图、收语音、发文件、主动推送）突破了这个同步请求-响应契约。解法不是把凭据复制一份给 demo（那会让两个项目抢同一个号的状态），而是给网关加三条反向内网 API 借出能力。`dispatch_message` 的返回值语义保持不变，`crm_os` 和 `acuven_aichat` 零改动——这是批次 00 单独验收的全部理由。
 - 2026-08-27（选型）：ERP 一侧决定走 `erp_os` 自己的 REST 路由（`sales_order` / `sku` / `inventory` / `invoice` / `customer` 都是现成的），不裸连 MySQL。理由：写入要经过业务逻辑，否则演示时刷新后台看到的可能是一张状态不对的脏单，当场翻车。
+- 2026-08-30（决定）：**`crm_os` 从网关的 demo 路由里彻底移除**，WhatsApp 线专供 `ai_chatbot`。网关侧已落地（`demos_registry` 删掉 crm 条目，demo 号加 `default_route="ai_chatbot"` 直连、不再发选择菜单）。CRM demo 只在网页/现场演示。菜单代码保留，服务于未注册号码兜底。
+- 2026-08-30（阻塞项 A 解除）：两套系统的 demo 账号本来就 seed 好了，实测线上可登录，**不需要新建**。同时确认两边都无 API key 机制，只有短命 JWT，因此新增鉴权基类（任务 8）。顺带发现 `crm_os` 的 `POST /api/auth/register` **完全开放**——无鉴权、无邀请码，任何人都能注册出一个 `sales` 角色账号。现在里面是 seed 假数据所以影响有限，真放客户资料前必须堵上。归属 crm_os 项目。
+- 2026-08-30（补剧本）：原计划只有批次 01/02 写了剧本，03/04/05 只有工程验收条件——一段自己写着「杀伤力被严重低估」的功能却没有能讲给客户听的戏。补齐剧本 3、4，并指定任务 29 演剧本 1。**剧本会反过来定义验收标准**（剧本 1 那七步直接定义了任务 13），所以补在开工前而不是做到那批再说。
+- 2026-08-30（剧本 3 挪到餐饮）：「你的餐出锅了」比「订单已确认」画面感强，加辣椒酱这种要求本来就该人来拍板。挪完后演出分布从「零售 3 出」变成零售 2 出、餐饮 1 出（最长的一出，9 步）、房产 1 出。
+- 2026-08-30（轻量档）：`hotel` + `saas` 原本 30 个任务一个都碰不到，会保持静态 JSON 形态，和工具驱动的 `retail` 并列在菜单里落差太大。新增任务 11.2 给它们套同样的工具外壳，读 JSON / 写内存。剩下的差别（retail 后台真的长出东西）反而可以坦白讲成卖点：「接你们自己的系统是同样的工具接口」。
