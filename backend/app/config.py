@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str = ""
     whatsapp_app_secret: str = ""
     whatsapp_daily_msg_limit: int = 100
+    # Meta will hand us documents up to 100MB; anything past this is bigger than we
+    # can put in front of the model, so refuse it before pulling it into memory.
+    whatsapp_media_max_bytes: int = 5 * 1024 * 1024
 
     demo_access_password: str = ""
 

@@ -49,7 +49,11 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 > 连带消失的还有这一批原本「**整个工程唯一有回归风险**」的属性——那个风险来自
 > `whatsapp_gateway` 同时扛着公司真实客服号（`acuven_aichat`），而现在我们根本不碰它。
 
-- [ ] **任务 1：Meta 媒体客户端（收图 / 收文件 / 发文件 / 主动外发）**
+- [x] **任务 1：Meta 媒体客户端（收图 / 收文件 / 发文件 / 主动外发）**——**2026-08-31 代码完成**，5 个新 pytest 全过（全套 41 passed）。两点偏离 + 一个遗留：
+  - `send_message(payload)` 做成 `whatsapp.send_raw()` 的薄委托，没重复实现 URL/header——`send_raw` 本来就是同一个 `POST /{phone_number_id}/messages`
+  - `fetch_media` 在下载前用元数据的 `file_size` 卡新配置 `whatsapp_media_max_bytes`（默认 5MB），免得 90MB 视频拉进内存后才发现喂不给模型
+  - ⚠️ **验收的真机半段未做**：需要真实 `media_id`（得有人往 demo 号发张图）。本机无 `.env`，凭据在 VPS `/opt/ai_chatbot/.env`；且 Claude Code 权限分类器会拦「读 .env 凭据打 Graph API」，这一步得用户自己在 VPS 上跑
+
   文件：`backend/app/services/whatsapp_media.py`（新增）、`backend/app/config.py`、`backend/tests/test_whatsapp_media.py`（新增）
   目标：三个函数，全部直连 Graph API，用 `ai_chatbot` 自己的 `WHATSAPP_ACCESS_TOKEN`：
   - `fetch_media(media_id)` —— 两步：`GET /{media_id}` 拿临时 URL，再带 token 下载二进制，返回 bytes + `Content-Type`
