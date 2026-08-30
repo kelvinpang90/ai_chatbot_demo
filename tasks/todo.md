@@ -66,7 +66,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **安全绳做成了真的分叉，不是「传空数组」**：`get_tools(bot.id)` 为空时走原来的 `messages.create`，一个字节都没动；有工具才走 `beta.messages.tool_runner`。理由是「行为完全一致」这句话，传 `tools=[]` 去 beta 端点即使能跑也已经不是同一个请求了，而线上四个 bot 正在接客。本地起 uvicorn 实测：retail 发一句，traceback 显示走的是 `/v1/messages` 的 `messages.create`，**没碰 beta 端点**
   - **`max_iterations=8`**：runner 默认无上限（`_beta_runner.py:126`，`max_iterations=None` 就永远不停）。演示时一个刹不住的工具循环比答得不完美糟糕得多。有测试钉住这个上限
   - **没动模型选型**——`settings.anthropic_model` 还是 `claude-sonnet-5`，那是任务 4 的事，这里不抢
-  - ⚠️ **待验**：真实 key 下网页端问一句拿到正常回复。本地只有假 key（拿到的是 `FALLBACK_REPLY`，正好证明兜底也没坏），线上要 `DEMO_ACCESS_PASSWORD` 才能登录，用户自己点一下最快
+  - **旧行为回归已验收**：2026-08-31 部署后往 demo 号发 WhatsApp，真实 key 下正常回复。WhatsApp 和网页端共用 `llm.get_reply`，这一条同时覆盖两边（本地假 key 下拿到的是 `FALLBACK_REPLY`，顺带证明兜底路径也没坏）
 
   文件：`backend/app/services/llm.py`、`backend/app/tools/registry.py`（新增）、`backend/tests/test_llm.py`
   目标：从单轮 `messages.create` 改成 SDK 的 tool runner（`@beta_tool` + `client.beta.messages.tool_runner()`）。工具列表按 bot 从 registry 取，**工具为空时行为与现在完全一致**——这是回归的安全绳
