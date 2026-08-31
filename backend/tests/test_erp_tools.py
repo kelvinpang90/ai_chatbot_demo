@@ -116,6 +116,17 @@ def test_a_real_transport_failure_degrades_instead_of_escaping(failure):
         assert erp.erp_get_inventory("fan") == erp.UNAVAILABLE
 
 
+def test_a_typo_in_the_base_url_degrades_instead_of_escaping():
+    """The whole path, not just the client: a bad ERP_BASE_URL must reach the bot
+    as "I could not check that", the same as any other outage."""
+    with patch.object(erp_client.settings, "erp_base_url", "http://[::1"):
+        with patch.object(erp_client.settings, "erp_email", "a@b.c"):
+            with patch.object(erp_client.settings, "erp_password", "x"):
+                erp_client.reset()
+                assert erp.erp_search_sku("fan") == erp.UNAVAILABLE
+                assert erp.erp_get_inventory("fan") == erp.UNAVAILABLE
+
+
 def test_the_client_is_shared_so_the_cached_token_is_too():
     assert erp_client.client() is erp_client.client()
 

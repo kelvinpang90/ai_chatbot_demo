@@ -177,6 +177,45 @@ def test_every_transport_failure_arrives_as_one_error_type(failure):
             client.get("/api/skus")
 
 
+def test_a_malformed_base_url_is_wrapped_like_any_other_outage():
+    """A typo in ERP_BASE_URL reaches us through a hand-edited .env on the VPS.
+
+    `httpx.InvalidURL` derives from Exception, not HTTPError, so it used to sail
+    past the boundary and out of the tool as a raw httpx error.
+    """
+    client = JsonApiClient(
+        name="erp", base_url="http://[::1", email="a@b.c", password="x"
+    )
+
+    with pytest.raises(ApiClientError, match="failed"):
+        client.get("/api/skus")
+
+
+def test_the_transport_error_list_still_covers_everything_reachable():
+    """Pins the audit, so a new httpx release cannot quietly reopen this hole.
+
+    Anything httpx can raise that is not in TRANSPORT_ERRORS must be unreachable
+    for a client that reads its responses whole -- cookies we never set, or a
+    stream we never leave unread.
+    """
+    escapes = {
+        name
+        for name, obj in vars(httpx).items()
+        if isinstance(obj, type)
+        and issubclass(obj, BaseException)
+        and not issubclass(obj, api_client.TRANSPORT_ERRORS)
+    }
+
+    assert escapes == {
+        "CookieConflict",  # needs cookies; we set none
+        "StreamError",  # the four below need an unread response; get/post read theirs
+        "StreamConsumed",
+        "StreamClosed",
+        "ResponseNotRead",
+        "RequestNotRead",
+    }
+
+
 def test_a_dead_host_on_the_data_call_is_also_wrapped():
     client = _client()
 

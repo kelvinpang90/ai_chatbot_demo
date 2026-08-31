@@ -146,6 +146,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **P1-2：公开仓库里有有效的管理员凭据。接受，且比 finding 描述的更严重。** 实测 `gh repo view`：`ai_chatbot_demo`、`erp_os`、`crm_os` **三个都是 PUBLIC**。凭据不止在 `config.py`——`crm_os/backend/seed.py:82` 明文写着种子密码，`erp_os` 里 `Admin@123` 出现在 5 个文件（含 `README.md`、`CLAUDE.md`、种子脚本、一个 `.pptx`）。而且 `git log -S` 显示它早在 `c4f32e3` 就进了本仓库的 `todo.md`，**不是任务 8 引入的，任务 8 只是又抄进了 `config.py`**——但这不构成辩护，只说明暴露面更大。
     **已做**：`config.py` 的账号密码改成必填环境变量（空默认值），base url 不是秘密所以保留；`.env.example` 补上四个变量；凭据缺失时报 `no credentials configured -- set ERP_EMAIL and ERP_PASSWORD` 并优雅降级（有测试）；本文件里的明文密码已清除。
     ✅ **轮换：用户明确决定不做（2026-09-01），风险已知情接受**——demo 系统、数据不重要，改坏了重跑 seed。所以旧密码在 git 历史里长期有效这一点是**已接受的现状**，不是待办。（当时给出的轮换路径留档备查：ERP 走 `POST /api/users/{id}/reset-password`、CRM 走 `PUT /api/users/{id}`，并须同步改 `crm_os/backend/seed.py` 和 `erp_os/backend/scripts/seed_master_data.py`，否则 re-seed 会把已知密码装回去。）
+  - **P2（复验轮新增）：`httpx.InvalidURL` 仍能逃出边界。接受，已修。** 这条正是我请审查方专门去找的「边界包装有没有漏网路径」——**我自己判断不了，因为包装是我写的**。实测 `ERP_BASE_URL=http://[::1` → `RAISED, UNCAUGHT -> InvalidURL: Invalid port: ':1'`。
+    反驳的举证责任是「证明畸形 base URL 不可能进入运行环境」，我达不到——`docker-compose.prod.yml` 用 `env_file` 把 VPS 上**手工编辑**的 `.env` 原样透传，零校验，而这四个变量恰好是 2026-09-01 手工加进去的。手改 env 正是 typo 高发地。
+    **修法**：枚举了 httpx 全部异常，把逃逸集合固化成 `TRANSPORT_ERRORS = (HTTPError, InvalidURL)`。剩下 6 个（`CookieConflict` + `StreamError` 家族 5 个）**刻意不catch**——前者要 cookie 我们从不设，后者要「响应没读完」而 `get`/`post` 都是一次读完；把它们也吞掉只会掩盖自己的 bug。
+    **没有做启动时校验 URL**：想过，否决了。畸形 URL 会让整个应用起不来，而这四个变量只影响两个工具——一个可选工具的配置 typo 不该拖垮 demo 号赖以存活的 webhook。降级 + 日志点名（`erp api: GET /api/skus failed: Invalid port`）是更合适的严重性。
+    新增 3 个测试，其中一个**钉住枚举本身**（断言不在 `TRANSPORT_ERRORS` 里的 httpx 异常恰好是那 6 个），这样 httpx 将来新增一个逃逸异常会直接把测试打红，而不是等下一次线上翻车。
+
     ⚠️ **部署前必须先在 VPS 的 `/opt/ai_chatbot/backend/.env` 补上 `ERP_EMAIL` / `ERP_PASSWORD` / `CRM_EMAIL` / `CRM_PASSWORD`**，否则任务 9 起的工具会全部返回「查不到」。这正是当初把凭据写成默认值想避免的那个「会忘的步骤」——安全性优先，代价就是这一步不能省。
 
   文件：`backend/app/services/api_client.py`（新增，登录+token 缓存+刷新基类）、`backend/app/services/erp_client.py`、`backend/app/services/crm_client.py`（均新增）、`backend/app/tools/erp.py`、`backend/app/tools/crm.py`（均新增）、`backend/app/config.py`、`backend/tests/test_api_client.py`、`backend/tests/test_erp_tools.py`、`backend/tests/test_crm_tools.py`（均新增）

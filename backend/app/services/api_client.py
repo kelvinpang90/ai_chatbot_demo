@@ -22,6 +22,17 @@ DEFAULT_ACCESS_TTL_SECONDS = 15 * 60
 EXPIRY_MARGIN_SECONDS = 60
 
 
+# Everything httpx can throw at a caller that reads its responses whole.
+#
+# `HTTPError` is the base for transport failures and error statuses, but not for
+# everything: `InvalidURL` derives straight from `Exception`, so a typo in
+# ERP_BASE_URL sailed past the boundary as a raw httpx error. The rest of that
+# family stays out on purpose -- `CookieConflict` needs cookies we never set, and
+# the `StreamError` group needs a response we left unread, while `get`/`post`
+# read theirs in full. Catching those would only hide our own bugs.
+TRANSPORT_ERRORS = (httpx.HTTPError, httpx.InvalidURL)
+
+
 class ApiClientError(RuntimeError):
     """Anything that stopped us getting an answer out of the back office.
 
@@ -75,7 +86,7 @@ class JsonApiClient:
                 f"{self.base_url}{path}", json=json, timeout=REQUEST_TIMEOUT_SECONDS
             )
             response.raise_for_status()
-        except httpx.HTTPError as exc:
+        except TRANSPORT_ERRORS as exc:
             # Covers the refused login and the rate limit as well as the dead socket:
             # none of httpx's exceptions derive from OSError.
             raise ApiClientError(f"{self.name} api: POST {path} failed: {exc}") from exc
@@ -145,7 +156,7 @@ class JsonApiClient:
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=REQUEST_TIMEOUT_SECONDS,
                 )
-            except httpx.HTTPError as exc:
+            except TRANSPORT_ERRORS as exc:
                 raise ApiClientError(f"{self.name} api: GET {path} failed: {exc}") from exc
             if response.status_code == 401 and not force_login:
                 continue
