@@ -115,12 +115,14 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 >
 > 两块后台同时长东西是刻意的：ERP 那张单打动已经有 ERP 需求的 B 类客户，**CRM 那张卡打动所有做生意的人**——他们每天都在 WhatsApp 里丢单子。
 >
-> ⚠️ **剧本里的 "earbuds" 在真实 ERP 里不存在**（2026-08-31 任务 8 实测）。线上商品库是电风扇——`Pensonic Stand Fan 16 Inch PF-1607`（MYR 79.90）等。
+> ✅ **剧本里的 "earbuds" 已经在真实 ERP 里了**（2026-09-01 建好并冷启动复验通过）。当初任务 8 实测发现线上只有电风扇，用户决定补 SKU 而不是改剧本。
 >
-> ✅ **2026-09-01 用户决定：补 SKU，不改剧本。** 脚本已写好放在 `E:\projects\erp_create_earbuds.py`（仓库外，因为它是一次性数据修复，不是产品代码），**待执行**——Claude Code 的权限分类器拦截「带凭据写外部系统」，只读调用放行、写入不放行，所以这一步得用户自己跑，命令见任务 8 的记录。
-> 脚本内容：建品牌 `Sony` → 建 `SKU-ELE-0001 Sony WF-C710N Wireless Earbuds`（MYR 299.00 未税 / SST 10%、分类 Peripherals、单位 PCS）→ 用「建调整单 + confirm」两步给三个仓库上库存（KL 42 / 槟城 25 / 新山 18）。**幂等**，重跑不会建重复数据。走的全是 `erp_os` 自己的 REST 路由，不裸连 MySQL。
-> 库存数字是照剧本挑的：客人要 2 个、中途改成 3 个，都远在库存之内；三个仓库数字不同，导演台上才看得出真实的分仓明细。
-> **跑完请复查** `erp_search_sku("earbuds")` 不再返回「查无此商品」，然后这条警告就可以删掉。
+> **`SKU-ELE-0001` / `Sony WF-C710N Wireless Earbuds` / MYR 299.00 未税（SST 10%）**，分类 Peripherals、单位 PCS、品牌 Sony（id 70，线上原本没有任何音频/电子品牌）。库存 **KL 42 / 槟城 25 / 新山 18，合计 85**。
+> 冷启动实测：`erp_search_sku("earbuds")` 和 `erp_search_sku("Sony")` 都命中，`erp_get_inventory("earbuds")` 返回 `total_available: 85.0` 且三仓明细正确。
+> 库存数字是照剧本挑的：客人要 2 个、中途改成 3 个都远在库存内；三个仓库数字不同，导演台上才看得出真实的分仓明细。
+>
+> ⚠️ **这是 ERP 数据库里的数据，不在版本控制里——`erp_os` 一旦重新 seed，这个 SKU 就没了，剧本第一句会当场查不到东西。** 重建脚本留在 `E:\projects\erp_create_earbuds.py`（仓库外，一次性数据修复不是产品代码），**幂等**，重跑即可。走的全是 `erp_os` 自己的 REST 路由，不裸连 MySQL。
+> 另注：**带凭据「写」外部系统会被 Claude Code 的权限分类器拦**（只读放行），所以这类脚本只能由用户手工跑——任务 9 起写 ERP 的验收步骤同理。
 
 - [x] **任务 8：ERP / CRM 只读工具 + 鉴权基类**——**2026-08-31 完成并对真实服务验收**。28 个新测试全过（全套 85 passed）。三个工具都打了真实的 `erp.kelvinpeng.com` / `crm.kelvinpeng.com`，返回的是真数据：
   - `erp_search_sku("a")` → `SKU-APL-0001 Pensonic Stand Fan 16 Inch PF-1607 / MYR 79.90` 等 5 条
