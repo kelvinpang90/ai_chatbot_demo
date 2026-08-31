@@ -18,6 +18,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 5. **每个批次的最后一个任务是「真机验收」，必须由用户拿手机完成，Claude 做不了。** 这类任务不要试图用模拟 webhook 糊弄过去——模拟能验证代码路径，验证不了「拍照识别准不准」「PDF 在手机上打不打得开」「语音听不听得懂马来语」。
 
+6. **标了 🔍 的任务走双 agent 审查**：开发方 commit 后**先不推**，换另一个 agent 冷审。交接就一句话——**「读 `tasks/REVIEW.md`，审查任务 N」**，规则、验证命令、输出格式和纪律全在 [tasks/REVIEW.md](REVIEW.md) 里，不用每次重写提示词。findings 逐条修或驳，驳的理由写回本文件，复验通过再推。**不要全上**——只标写真实数据和状态机那几个。
+
 ## 已定下的前提（不再重新讨论）
 
 - 主战场是 WhatsApp 真机；网页降级为「导演台」大屏 + 一条备份聊天线
@@ -135,18 +137,18 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   目标：`erp_os` 和 `crm_os` 的认证方式**完全一样**（邮箱+密码 → JWT，15 分钟过期，refresh 一次性），所以先写一个共用基类管登录/缓存/刷新，两个 client 各自只填 base url 和账号。三个只读工具：`erp_search_sku(keyword)`、`erp_get_inventory(sku)`、`crm_lookup_customer(name_or_phone)`
   验收：pytest（mock HTTP）覆盖「token 未过期时不重新登录」「过期时自动 refresh」「refresh 失败回退重新登录」；再对着真实 `erp.kelvinpeng.com` / `crm.kelvinpeng.com` 各调一次，返回的是真数据
 
-- [ ] **任务 9：ERP 写入工具 —— 创建销售订单**
+- [ ] 🔍 **任务 9：ERP 写入工具 —— 创建销售订单**
   文件：`backend/app/tools/erp.py`（扩展）、测试
   目标：`erp_create_sales_order(customer_id, items)`，走 `erp_os` 的 `sales_order` 路由，返回订单号
   验收：调一次，然后**在浏览器里打开 `erp.kelvinpeng.com` 的订单列表，那张单在那里，状态正确**
 
-- [ ] **任务 9.1：CRM 写入工具 —— 自动建线索**
+- [ ] 🔍 **任务 9.1：CRM 写入工具 —— 自动建线索**
   文件：`backend/app/tools/crm.py`（新增）、`backend/tests/test_crm_tools.py`（新增）
   目标：`crm_create_lead(name, phone, requirement, amount)` —— 依次调 `POST /api/contacts`（建联系人）、`POST /api/deals`（建商机，带 `amount`，**会出现在管道看板上**）、`POST /api/deals/{id}/activities`（记一条来源=WhatsApp 的活动）
   ⚠️ **不要设 `is_gateway=True`**。`crm_os` 有 `utils/demo_scope.py` 按这个标记做范围过滤，设了反而可能在主列表里看不见，正好毁掉这个镜头
   验收：调一次，`crm.kelvinpeng.com` 的**看板上那张卡在那里**，标题和金额对得上；卡里能看到那条活动记录
 
-- [ ] **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
+- [ ] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
   文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）
   目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走 `upload_media()` → 构造 document 消息 payload
   验收：手机上收到 PDF 发票并能打开，内容对得上刚才那张单
@@ -258,7 +260,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   为什么值得单独做：**那段对话留在他自己手机里，是 WhatsApp demo 相对网页 demo 的独有优势**，而计划里此前没有任何一处刻意利用它。他回公司能直接给合伙人看，而不是靠回忆复述——**这是唯一一条能在你不在场时继续说服人的功能**
   验收：点「结束演示」，手机收到总结消息，里面的订单号和数字都对得上刚才真实发生的事
 
-- [ ] **任务 20：人工接管状态机**
+- [ ] 🔍 **任务 20：人工接管状态机**
   文件：`backend/app/session_store.py`（加接管标志）、`backend/app/routers/whatsapp_webhook.py`、测试
   目标：客户说「找真人」→ 会话标记为人工模式，bot 静默；**用户在导演台上直接打字回复**（走 `send_message()` 外发）；用户发暗号 → bot 接管回来
   ⚠️ **不能搬 `acuven_aichat` 的 `smb_message_echoes`**。那条线是公司客服号 `+60 11-3618 2335`，跑在 WhatsApp Business App 上（Coexistence），所以人能拿手机直接回。**demo 号 `+60 17-394 8123` 是纯 Cloud API 号码，没有手机 App 可开**，手机上根本回不了它的消息

@@ -1,0 +1,73 @@
+# 审查方须知
+
+交接方式就是一句话:**「读 `tasks/REVIEW.md`,审查任务 N」**。剩下的都在这里,不用每次重写。
+
+你是**独立审查方**。开发方写在 `todo.md` 里的自述不是证据,它本身就是被审查的对象之一。
+
+---
+
+## 第一阶段:冷审
+
+⚠️ **先不要读 `tasks/todo.md` 的当前版本**——里面是开发方为自己的决定写的辩护,读了会顺着它的框架走,而那套框架正是需要被挑战的东西。
+
+只取两样:**开发前的规格** 和 **实际改动**。
+
+```bash
+git log --oneline origin/master..HEAD                        # 本次待审的 commit(约定:一个任务一个 commit)
+git show HEAD~1:tasks/todo.md | sed -n '/任务 N/,/^- \[/p'   # 规格:开发方动手前的样子
+git diff HEAD~1..HEAD                                        # 改动
+```
+
+多于一个 commit 时,用 `origin/master..HEAD` 定范围,base 取该范围第一个 commit 的父提交。
+
+### 必须自己跑,不许只读代码
+
+```bash
+docker run --rm -v "E:\projects\ai_chatbot_demo\backend:/app" -w /app python:3.13-slim \
+  sh -c "pip install -q -r requirements-dev.txt && python -m pytest -q -p no:cacheprovider"
+```
+
+必须是 `python -m pytest`,裸 `pytest` 不会把 cwd 加进 `sys.path`,所有测试模块会 `ModuleNotFoundError: No module named 'app'`。
+
+`erp.kelvinpeng.com` / `crm.kelvinpeng.com` 是活的,凭据是 `backend/app/config.py` 里的默认值,可以直接调工具验证真实行为是否和代码宣称的一致。容器里加 `-e PYTHONPATH=/app -e PYTHONIOENCODING=utf-8`。
+
+### 每条 finding 的格式
+
+- `file:line`
+- 问题是什么(一句话)
+- 具体失败场景:**什么输入/状态 → 什么错误结果**
+- **标注「跑出来的」还是「只是读代码推测的」**——后者假阳性率高得多,不标等于没报
+
+### 固定四问(每次都要回答)
+
+1. 验收标准的**每一条**是否真被测试覆盖?测试会不会在实现有 bug 时照样通过?
+2. **端到端验证过吗?**「函数能返回数据」和「这套东西在真实链路里能用」不是同一件事。这是本项目最容易在漂亮验收报告里被糊过去的一点。
+3. 安全 / 配置问题?
+4. 偏离原始规格的地方,哪些**没有**正当理由?
+
+---
+
+## 第二阶段:对质
+
+交完第一份 findings **之后**再做这一步:
+
+```bash
+git show HEAD -- tasks/todo.md    # 开发方的自辩
+```
+
+逐条判断它的理由哪些不成立。然后回答一个自评问题:**第一阶段你漏掉了哪些它自己主动承认的问题?** 这说明你的审查有什么盲区。
+
+---
+
+## 纪律(少一条这流程就退化成走过场)
+
+- **不准改代码,只报告。** 一改就失去了「这条 finding 是不是真的」的信号,而且变成两个作者、零个审查。
+- **谁写的谁不审。** 按任务轮换,不按厂商固定角色。
+- **记账。** 每次记「报了 N 条,真的 M 条」。跑几轮后 M/N 会告诉你这流程值不值双倍成本。
+
+## 哪些任务值得走这套
+
+这套流程让单个任务的耗时和 token 大致翻倍,**不要全上**。
+
+- **值得**:写真实数据的(任务 9 建销售订单、9.1 建 CRM 线索、10 生成发票)、状态机(任务 20 人工接管)
+- **不值得**:错了一眼就看得出来的(任务 28 网页视觉重做、12 导演台页面)
