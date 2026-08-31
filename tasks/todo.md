@@ -110,9 +110,28 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 > 「改主意」那一步是刻意加的。**所有演示在客户老实按剧本走时都很漂亮，一旦他中途反悔就露馅**——而真实生意里天天发生：算了改成三个、等等先别下单、刚才那单能取消吗。接得住，证明它是个**会听懂的助理**；接不住，证明它是个**流程图**。老板分得清这两者。工具循环天然支持（Claude 自己会决定重查、改参数），**但必须专门验**，否则第一次被打断就翻车。
 >
 > 两块后台同时长东西是刻意的：ERP 那张单打动已经有 ERP 需求的 B 类客户，**CRM 那张卡打动所有做生意的人**——他们每天都在 WhatsApp 里丢单子。
+>
+> ⚠️ **剧本里的 "earbuds" 在真实 ERP 里不存在**（2026-08-31 任务 8 实测）。线上商品库是电风扇——`Pensonic Stand Fan 16 Inch PF-1607`（MYR 79.90）、`Khind Stand Fan 16 Inch SF16D` 等。**任务 11 之前必须二选一**：把开场白改成风扇（*"Boss 这个 stand fan 还有 stock 吗? 我要 2 个, 可以 COD 吗?"*），或者往 ERP 里加一个 earbuds SKU 并补库存。原样上台，第一句就查不到东西。
 
-- [ ] **任务 8：ERP / CRM 只读工具 + 鉴权基类**
-  文件：`backend/app/services/api_client.py`（新增，登录+token 缓存+刷新基类）、`backend/app/services/erp_client.py`、`backend/app/services/crm_client.py`（均新增）、`backend/app/tools/erp.py`（新增）、`backend/tests/test_erp_tools.py`（新增）
+- [x] **任务 8：ERP / CRM 只读工具 + 鉴权基类**——**2026-08-31 完成并对真实服务验收**。28 个新测试全过（全套 85 passed）。三个工具都打了真实的 `erp.kelvinpeng.com` / `crm.kelvinpeng.com`，返回的是真数据：
+  - `erp_search_sku("a")` → `SKU-APL-0001 Pensonic Stand Fan 16 Inch PF-1607 / MYR 79.90` 等 5 条
+  - `erp_get_inventory("a")` → 同 5 个 SKU，按仓库拆开（Main Warehouse - Kuala Lumpur 45 / Branch - Penang 28 / Branch - Johor Bahru 33），`total_available: 106`
+  - `crm_lookup_customer("David Park")` → `MedTech Innovations`，`total_deal_amount: 390000.0`；换成 `+1-858-555-1515`、`18585551515`、`8585551515` 三种写法查同一个人，都命中
+  - **token 缓存真的生效**：一个进程里连打 9 次工具，日志只有 2 行 `logging in as`（ERP 一次、CRM 一次）。这正是防限流的那条命——登录 10 次/分钟
+
+  ⚠️ **三个必须往下带的发现**：
+  - **ERP 商品库里没有 earbuds，是电风扇**（Pensonic / Khind / Milux）。而本文件的「剧本 1 —— 旗舰戏」整场戏是围绕 *"Boss 这个 earbuds 还有 stock 吗?"* 写的，`erp_search_sku("earbuds")` 实测返回「查无此商品」。**任务 11 / 13 之前必须二选一**：把剧本改成风扇，或者往 ERP 里加一个 earbuds SKU。不处理的话旗舰戏第一句就穿帮
+  - **`crm_os` 的 `?search=` 只匹配 name 和 company，不匹配 phone**（`contact_service.list_contacts:49-55`）。而手机号恰恰是 WhatsApp 场景里唯一稳定的身份标识。所以 `crm_lookup_customer` 判断参数长得像电话时**不发 `search`，改成分页拉回来在本地按「digits 后 8 位」比对**——避开了 `+60 17-394 8123` / `0173948123` / `60173948123` 三种写法和国家码的差异。分页上限 5 页 × 100 条，够这个 demo 库（实测 26 个联系人）用得很宽裕
+  - **两边只有认证「流程」一样，响应「形状」不一样**：`erp_os` 直接返回 JSON，`crm_os` 把所有响应（含 token）包在 `{"success", "data"}` 里，而且列表路由还要再套一层（`data.data` 才是行）。所以基类留了一个 `_unwrap` 钩子，`CrmClient` 覆盖它，登录和取数共用同一个钩子
+
+  另外四条判断：
+  - **工具没有挂到任何 bot 上**——`tools/registry.py` 一个字节没动，`_TOOLS_BY_BOT` 还是空的，线上四个 bot 行为完全不变。挂载是任务 11 的事（它要往 bot JSON 加 `tools` 字段），这里不抢
+  - **偏离文件清单**：`crm_lookup_customer` 放在新建的 `app/tools/crm.py`，不是 `tools/erp.py`——一个 CRM 工具住在 erp.py 里，任务 9.1 还得把它搬出来。**所以任务 9.1 的 `tools/crm.py` 和 `tests/test_crm_tools.py` 是「扩展」不是「新增」**。测试同理按被测模块拆成三个文件（`test_api_client.py` / `test_erp_tools.py` / `test_crm_tools.py`），跟仓库现有习惯一致
+  - **查库存走 `/api/inventory/branch-matrix` 而不是 `/api/inventory/stocks`**：后者强制要 `warehouse_id`，而客人问「还有货吗」问的是整间店。matrix 一次调用就能按仓库拆开，还顺带给出总数。注意它的角色门槛排除了 sales（`_RESTOCK_ROLES`），我们用 admin 登录所以没事
+  - **凭据写成 `config.py` 的默认值**，不是必填 env：两套都是 demo 系统、没有 API key 机制，账号密码本来就已经明文记在这份 todo 里了。写成默认值省掉「上线前记得改 VPS 的 .env」这个一定会忘、且忘了就当场演示失败的步骤。要覆盖照样可以走环境变量
+  - 写测试时揪出一个真 bug：`int(payload.get("expires_in") or DEFAULT)` 会把服务端真的返回的 `expires_in: 0` 当成「没给」，静默变成 15 分钟。改成显式判 `None`
+
+  文件：`backend/app/services/api_client.py`（新增，登录+token 缓存+刷新基类）、`backend/app/services/erp_client.py`、`backend/app/services/crm_client.py`（均新增）、`backend/app/tools/erp.py`、`backend/app/tools/crm.py`（均新增）、`backend/app/config.py`、`backend/tests/test_api_client.py`、`backend/tests/test_erp_tools.py`、`backend/tests/test_crm_tools.py`（均新增）
   目标：`erp_os` 和 `crm_os` 的认证方式**完全一样**（邮箱+密码 → JWT，15 分钟过期，refresh 一次性），所以先写一个共用基类管登录/缓存/刷新，两个 client 各自只填 base url 和账号。三个只读工具：`erp_search_sku(keyword)`、`erp_get_inventory(sku)`、`crm_lookup_customer(name_or_phone)`
   验收：pytest（mock HTTP）覆盖「token 未过期时不重新登录」「过期时自动 refresh」「refresh 失败回退重新登录」；再对着真实 `erp.kelvinpeng.com` / `crm.kelvinpeng.com` 各调一次，返回的是真数据
 
