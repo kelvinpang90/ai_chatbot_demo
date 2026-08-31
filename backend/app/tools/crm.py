@@ -27,7 +27,7 @@ def crm_lookup_customer(name_or_phone: str) -> str:
     """
     try:
         contacts = crm_client.client().lookup_contacts(name_or_phone)
-    except (ApiClientError, OSError):
+    except ApiClientError:
         logger.exception("crm_lookup_customer failed for %r", name_or_phone)
         return UNAVAILABLE
 

@@ -25,7 +25,7 @@ def _tokens(access: str, refresh: str, expires_in: int = 900) -> Mock:
 
 def _client() -> JsonApiClient:
     return JsonApiClient(
-        name="erp", base_url=BASE_URL, email="admin@demo.my", password="secret"
+        name="erp", base_url=BASE_URL, email="tester@example.test", password="not-a-real-password"
     )
 
 
@@ -151,6 +151,51 @@ def test_a_service_that_omits_a_ttl_still_caches_the_token():
             client.get("/api/skus")
 
     assert post.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectError("connection refused"),
+        httpx.ReadTimeout("timed out"),
+        httpx.HTTPStatusError(
+            "429", request=httpx.Request("POST", BASE_URL), response=httpx.Response(429)
+        ),
+    ],
+    ids=["dead-host", "timeout", "rate-limited"],
+)
+def test_every_transport_failure_arrives_as_one_error_type(failure):
+    """None of httpx's exceptions derive from OSError, so callers cannot catch that.
+
+    The rate limit matters most: 10 logins a minute is the limit this whole class
+    exists to stay under, and hitting it must not escape as a raw httpx error.
+    """
+    client = _client()
+
+    with patch.object(api_client.httpx, "post", side_effect=failure):
+        with pytest.raises(ApiClientError):
+            client.get("/api/skus")
+
+
+def test_a_dead_host_on_the_data_call_is_also_wrapped():
+    client = _client()
+
+    with patch.object(api_client.httpx, "post", return_value=_tokens("acc-1", "ref-1")):
+        with patch.object(
+            api_client.httpx, "get", side_effect=httpx.ConnectError("connection refused")
+        ):
+            with pytest.raises(ApiClientError):
+                client.get("/api/skus")
+
+
+def test_missing_credentials_name_the_variable_instead_of_pretending_to_log_in():
+    client = JsonApiClient(name="erp", base_url=BASE_URL, email="", password="")
+
+    with patch.object(api_client.httpx, "post") as post:
+        with pytest.raises(ApiClientError, match="ERP_EMAIL"):
+            client.get("/api/skus")
+
+    post.assert_not_called()  # never sent empty credentials to the back end
 
 
 def test_a_subclass_can_strip_a_response_envelope():

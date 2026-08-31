@@ -1,9 +1,10 @@
 import json
 from unittest.mock import patch
 
+import httpx
 import pytest
 
-from app.services import crm_client
+from app.services import api_client, crm_client
 from app.services.api_client import ApiClientError
 from app.tools import crm
 
@@ -109,6 +110,31 @@ def test_an_unknown_customer_says_so_rather_than_returning_nothing():
 def test_an_unreachable_crm_becomes_an_answer_the_bot_can_relay():
     with patch.object(crm_client.CrmClient, "get", side_effect=ApiClientError("boom")):
         assert crm.crm_lookup_customer("Tan Wei Ming") == crm.UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectError("connection refused"),
+        httpx.ReadTimeout("timed out"),
+        httpx.HTTPStatusError(
+            "429", request=httpx.Request("POST", "https://crm"), response=httpx.Response(429)
+        ),
+    ],
+    ids=["dead-host", "timeout", "rate-limited"],
+)
+def test_a_real_transport_failure_degrades_instead_of_escaping(failure):
+    """Regression: see the twin in test_erp_tools."""
+    with patch.object(api_client.httpx, "post", side_effect=failure):
+        assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+
+
+def test_missing_credentials_degrade_like_any_other_outage():
+    """A forgotten .env line must not crash a demo -- it reads as "cannot check"."""
+    crm_client.reset()
+    with patch.object(crm_client.CrmClient, "_email", "", create=True):
+        with patch.object(crm_client.CrmClient, "_password", "", create=True):
+            assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
 
 
 def test_the_tool_is_declared_with_a_schema_the_model_can_read():

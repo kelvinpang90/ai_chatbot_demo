@@ -31,8 +31,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 ## 开工前的三个阻塞项（需要用户处理）
 
 - [x] ~~**A. `erp_os` / `crm_os` 的 demo API 账号**~~——**2026-08-30 实测已解决，两边都不用新建账号**：
-  - `erp_os`：`admin@demo.my` / `Admin@123`（出处 `erp_os/demo/setlist-15min.md`），对 `erp.kelvinpeng.com/api/auth/login` 实测 200
-  - `crm_os`：`admin@crm.com` / `Admin123`（出处 `crm_os/backend/seed.py:82`），对 `crm.kelvinpeng.com/api/auth/login` 实测 200，role=admin
+  - `erp_os`：账号见环境变量 `ERP_EMAIL` / `ERP_PASSWORD`，对 `erp.kelvinpeng.com/api/auth/login` 实测 200
+  - `crm_os`：账号见环境变量 `CRM_EMAIL` / `CRM_PASSWORD`，对 `crm.kelvinpeng.com/api/auth/login` 实测 200，role=admin
+  - 🔴 **密码曾以明文写在本文件和 `config.py` 里，而这三个仓库（`ai_chatbot_demo` / `erp_os` / `crm_os`）都是 PUBLIC。** 2026-09-01 的 Codex 审查发现，已从源码移除、改为必填环境变量。但**移除不等于消除**——凭据仍留在 git 历史里，任何人 `git log -p` 都能翻出来。**必须轮换，这是未完成的用户动作**，见任务 8 的审查结论。
   - ⚠️ **两边都没有 API key 机制**，只有邮箱+密码换 JWT。access token 15 分钟过期、refresh 一次性、登录限流 10 次/分（连错 5 次锁 5 分钟）。所以客户端**必须缓存 token + 到期前刷新**，绝不能每次调用都登录——一场演示连调五六个工具就会撞限流
 - [ ] **B. Meta 后台三个入口确认能点**——媒体权限、模板提审、Flows。用户已确认后台可用，但任务 18 的模板提审要在批次 03 第一天就提交（审核要几小时到 1-2 天）。
 - [ ] **C. 语音转录选型拍板**——外部 API（准、快、多一个供应商）vs 自托管 faster-whisper（无外部依赖、CPU 上每条慢 3-5 秒、吃 VPS 内存）。阻塞任务 15。建议先接外部 API 把戏跑通，转录做成抽象层，之后换实现只是换一个类。
@@ -132,6 +133,19 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **查库存走 `/api/inventory/branch-matrix` 而不是 `/api/inventory/stocks`**：后者强制要 `warehouse_id`，而客人问「还有货吗」问的是整间店。matrix 一次调用就能按仓库拆开，还顺带给出总数。注意它的角色门槛排除了 sales（`_RESTOCK_ROLES`），我们用 admin 登录所以没事
   - **凭据写成 `config.py` 的默认值**，不是必填 env：两套都是 demo 系统、没有 API key 机制，账号密码本来就已经明文记在这份 todo 里了。写成默认值省掉「上线前记得改 VPS 的 .env」这个一定会忘、且忘了就当场演示失败的步骤。要覆盖照样可以走环境变量
   - 写测试时揪出一个真 bug：`int(payload.get("expires_in") or DEFAULT)` 会把服务端真的返回的 `expires_in: 0` 当成「没给」，静默变成 15 分钟。改成显式判 `None`
+
+  ---
+
+  🔍 **2026-09-01 Codex 独立审查（本项目第一次跑双 agent 流程）——两条 P1 全部接受，已修**（全套 97 passed，+12 个新测试）：
+
+  - **P1-1：`except (ApiClientError, OSError)` 捕不到任何真实故障。接受。** httpx 的异常**没有一个继承自 `OSError`**（`ConnectError` / `ReadTimeout` / `HTTPStatusError` 的 MRO 都止于 `Exception`），所以 ERP 挂掉、超时、**登录撞上 10 次/分钟限流**这三种情况全部穿透工具往上抛，而限流恰恰是这个基类存在的全部理由。实测复现（base url 指向死端口）：`RAISED, UNCAUGHT -> ConnectError`。
+    **为什么原测试全绿还是漏了**：原测试写的是 `side_effect=ApiClientError("boom")`——测的是「我选择去捕获的异常类型」，不是真实会发生的类型。**同义反复测试的教科书样本**，正好命中 `REVIEW.md` 固定第一问。
+    **修法不是在工具层多 catch 一个类型**，而是在 `JsonApiClient` 边界把 `httpx.HTTPError` 统一包成 `ApiClientError`：调用方只认一种异常，任务 9/9.1/10 以后新增的工具**不可能再忘记捕获 httpx**。新增 12 个测试，其中 6 个直接 patch `httpx` 抛真实异常类型（dead-host / timeout / rate-limited 三种 × 两个工具）。修完同一个复现返回优雅降级消息。
+
+  - **P1-2：公开仓库里有有效的管理员凭据。接受，且比 finding 描述的更严重。** 实测 `gh repo view`：`ai_chatbot_demo`、`erp_os`、`crm_os` **三个都是 PUBLIC**。凭据不止在 `config.py`——`crm_os/backend/seed.py:82` 明文写着种子密码，`erp_os` 里 `Admin@123` 出现在 5 个文件（含 `README.md`、`CLAUDE.md`、种子脚本、一个 `.pptx`）。而且 `git log -S` 显示它早在 `c4f32e3` 就进了本仓库的 `todo.md`，**不是任务 8 引入的，任务 8 只是又抄进了 `config.py`**——但这不构成辩护，只说明暴露面更大。
+    **已做**：`config.py` 的账号密码改成必填环境变量（空默认值），base url 不是秘密所以保留；`.env.example` 补上四个变量；凭据缺失时报 `no credentials configured -- set ERP_EMAIL and ERP_PASSWORD` 并优雅降级（有测试）；本文件里的明文密码已清除。
+    🔴 **未完成，需要用户动手**：**轮换密码**。移出源码不等于消除——凭据仍在三个公开仓库的 git 历史里。轮换时必须同步改 `crm_os/backend/seed.py` 和 `erp_os/backend/scripts/seed_master_data.py`，否则一次 re-seed 就把已知密码又装回去。
+    ⚠️ **部署前必须先在 VPS 的 `/opt/ai_chatbot/backend/.env` 补上 `ERP_EMAIL` / `ERP_PASSWORD` / `CRM_EMAIL` / `CRM_PASSWORD`**，否则任务 9 起的工具会全部返回「查不到」。这正是当初把凭据写成默认值想避免的那个「会忘的步骤」——安全性优先，代价就是这一步不能省。
 
   文件：`backend/app/services/api_client.py`（新增，登录+token 缓存+刷新基类）、`backend/app/services/erp_client.py`、`backend/app/services/crm_client.py`（均新增）、`backend/app/tools/erp.py`、`backend/app/tools/crm.py`（均新增）、`backend/app/config.py`、`backend/tests/test_api_client.py`、`backend/tests/test_erp_tools.py`、`backend/tests/test_crm_tools.py`（均新增）
   目标：`erp_os` 和 `crm_os` 的认证方式**完全一样**（邮箱+密码 → JWT，15 分钟过期，refresh 一次性），所以先写一个共用基类管登录/缓存/刷新，两个 client 各自只填 base url 和账号。三个只读工具：`erp_search_sku(keyword)`、`erp_get_inventory(sku)`、`crm_lookup_customer(name_or_phone)`

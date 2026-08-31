@@ -1,9 +1,10 @@
 import json
 from unittest.mock import patch
 
+import httpx
 import pytest
 
-from app.services import erp_client
+from app.services import api_client, erp_client
 from app.services.api_client import ApiClientError
 from app.tools import erp
 
@@ -90,6 +91,29 @@ def test_an_unreachable_erp_becomes_an_answer_the_bot_can_relay():
     with patch.object(erp_client.ErpClient, "get", side_effect=ApiClientError("boom")):
         assert erp.erp_search_sku("earbuds") == erp.UNAVAILABLE
         assert erp.erp_get_inventory("earbuds") == erp.UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectError("connection refused"),
+        httpx.ReadTimeout("timed out"),
+        httpx.HTTPStatusError(
+            "429", request=httpx.Request("POST", "https://erp"), response=httpx.Response(429)
+        ),
+    ],
+    ids=["dead-host", "timeout", "rate-limited"],
+)
+def test_a_real_transport_failure_degrades_instead_of_escaping(failure):
+    """Regression: these three used to escape the tool and blow up the reply.
+
+    The original tests raised ApiClientError -- the type the tool had chosen to
+    catch -- so they passed while every failure that actually happens went
+    uncaught. Patch httpx itself, not the exception we hoped for.
+    """
+    with patch.object(api_client.httpx, "post", side_effect=failure):
+        assert erp.erp_search_sku("fan") == erp.UNAVAILABLE
+        assert erp.erp_get_inventory("fan") == erp.UNAVAILABLE
 
 
 def test_the_client_is_shared_so_the_cached_token_is_too():

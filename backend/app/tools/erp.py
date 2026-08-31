@@ -39,7 +39,7 @@ def erp_search_sku(keyword: str) -> str:
     """
     try:
         skus = erp_client.client().search_skus(keyword)
-    except (ApiClientError, OSError):
+    except ApiClientError:
         logger.exception("erp_search_sku failed for %r", keyword)
         return UNAVAILABLE
 
@@ -76,7 +76,7 @@ def erp_get_inventory(sku: str) -> str:
     """
     try:
         rows = erp_client.client().branch_inventory(sku)
-    except (ApiClientError, OSError):
+    except ApiClientError:
         logger.exception("erp_get_inventory failed for %r", sku)
         return UNAVAILABLE
 

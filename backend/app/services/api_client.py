@@ -23,7 +23,13 @@ EXPIRY_MARGIN_SECONDS = 60
 
 
 class ApiClientError(RuntimeError):
-    """The back end refused us, and starting over with fresh credentials did not help."""
+    """Anything that stopped us getting an answer out of the back office.
+
+    Every failure mode this class knows about arrives as this one type -- a refused
+    login, a rate limit, a dead host, a timeout. Callers catch one thing, and a tool
+    added later cannot forget to catch `httpx.ConnectError` the way the first three
+    did.
+    """
 
 
 class _Tokens(NamedTuple):
@@ -64,10 +70,15 @@ class JsonApiClient:
     # -- auth ----------------------------------------------------------------
 
     def _post(self, path: str, json: dict) -> Any:
-        response = httpx.post(
-            f"{self.base_url}{path}", json=json, timeout=REQUEST_TIMEOUT_SECONDS
-        )
-        response.raise_for_status()
+        try:
+            response = httpx.post(
+                f"{self.base_url}{path}", json=json, timeout=REQUEST_TIMEOUT_SECONDS
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            # Covers the refused login and the rate limit as well as the dead socket:
+            # none of httpx's exceptions derive from OSError.
+            raise ApiClientError(f"{self.name} api: POST {path} failed: {exc}") from exc
         return self._unwrap(response.json())
 
     def _tokens_from(self, payload: Any) -> _Tokens:
@@ -82,6 +93,13 @@ class JsonApiClient:
         )
 
     def _login(self) -> _Tokens:
+        if not self._email or not self._password:
+            # Say which knob is missing. Unset credentials otherwise surface as a
+            # puzzling 401 from a service that is perfectly healthy.
+            raise ApiClientError(
+                f"{self.name} api: no credentials configured -- set "
+                f"{self.name.upper()}_EMAIL and {self.name.upper()}_PASSWORD"
+            )
         logger.info("%s api: logging in as %s", self.name, self._email)
         return self._tokens_from(
             self._post("/api/auth/login", {"email": self._email, "password": self._password})
@@ -98,7 +116,7 @@ class JsonApiClient:
             return self._tokens_from(
                 self._post("/api/auth/refresh", {"refresh_token": refresh})
             )
-        except (httpx.HTTPError, KeyError, TypeError):
+        except (ApiClientError, KeyError, TypeError):
             logger.info("%s api: refresh rejected, logging in again", self.name)
             return self._login()
 
@@ -120,12 +138,15 @@ class JsonApiClient:
         """
         for force_login in (False, True):
             token = self._access_token(force_login=force_login)
-            response = httpx.get(
-                f"{self.base_url}{path}",
-                params=params,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
+            try:
+                response = httpx.get(
+                    f"{self.base_url}{path}",
+                    params=params,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+            except httpx.HTTPError as exc:
+                raise ApiClientError(f"{self.name} api: GET {path} failed: {exc}") from exc
             if response.status_code == 401 and not force_login:
                 continue
             if response.status_code >= 400:
