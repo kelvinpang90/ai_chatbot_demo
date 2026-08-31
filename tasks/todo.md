@@ -152,6 +152,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     **没有做启动时校验 URL**：想过，否决了。畸形 URL 会让整个应用起不来，而这四个变量只影响两个工具——一个可选工具的配置 typo 不该拖垮 demo 号赖以存活的 webhook。降级 + 日志点名（`erp api: GET /api/skus failed: Invalid port`）是更合适的严重性。
     新增 3 个测试，其中一个**钉住枚举本身**（断言不在 `TRANSPORT_ERRORS` 里的 httpx 异常恰好是那 6 个），这样 httpx 将来新增一个逃逸异常会直接把测试打红，而不是等下一次线上翻车。
 
+  ✅ **2026-09-01 复验 PASS，任务 8 的「开发 → 冷审 → 修复 → 复验」闭环走完**（本项目第一次跑这套流程）。审查方实测确认：100 passed、`ERP_BASE_URL=http://[::1` 下两个 ERP 工具都返回 `UNAVAILABLE`、原始 `InvalidURL` 只留在日志异常链里不外泄、`TRANSPORT_ERRORS` 的排除论证成立、不做启动校验的取舍接受，**无新增 finding**。
+  **校准结果：报了 3 条，真的 3 条，误报 0**（记账见 [tasks/REVIEW.md](REVIEW.md)）。三条教训也记在那里——最要紧的一条是：开发方漏掉公开仓库凭据那条，不是因为看不见，而是**为自己的决定准备好了辩护，却没验证辩护的前提**。
+
     ⚠️ **部署前必须先在 VPS 的 `/opt/ai_chatbot/backend/.env` 补上 `ERP_EMAIL` / `ERP_PASSWORD` / `CRM_EMAIL` / `CRM_PASSWORD`**，否则任务 9 起的工具会全部返回「查不到」。这正是当初把凭据写成默认值想避免的那个「会忘的步骤」——安全性优先，代价就是这一步不能省。
 
   文件：`backend/app/services/api_client.py`（新增，登录+token 缓存+刷新基类）、`backend/app/services/erp_client.py`、`backend/app/services/crm_client.py`（均新增）、`backend/app/tools/erp.py`、`backend/app/tools/crm.py`（均新增）、`backend/app/config.py`、`backend/tests/test_api_client.py`、`backend/tests/test_erp_tools.py`、`backend/tests/test_crm_tools.py`（均新增）
