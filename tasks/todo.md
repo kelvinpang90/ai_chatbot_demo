@@ -88,9 +88,13 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **system prompt 拆成两块**：稳定块（人设 + `context_data` + 语言/长度/安全指令 + 免责声明）打 `cache_control`，易变块（identity profile）排在断点之后。**原模板里 identity 在中间，被挪到了末尾**——这是缓存能跨身份复用的前提，有测试钉住「两个不同身份的稳定块必须字节相同」
   - **一个断点同时覆盖 tools**：请求渲染顺序是 tools → system → messages，断点标的是「缓存前缀到此为止」，所以打在 system 稳定块尾部就把工具定义一起包进去了，不需要第二个标记
   - **TTL 用默认 5 分钟**，没上 1 小时：同一段对话里两轮间隔远小于 5 分钟，读一次就免费续期；1h TTL 把每次写入从 1.25× 抬到 2×，只在长间隔才回本，而这里的绝对差额是几厘钱
-  - ⚠️ **重要发现：轻量档很可能根本缓存不了。** 缓存有最小前缀门槛——**Opus 5 是 512 token，Sonnet 5 是 1024**。粗估各 bot 的 system prompt 只有 **~800-960 token**（按字符数估的，不准，等生产日志里的 `input_tokens` 才算数）。所以旗舰档（opus）会缓存，**`hotel` / `saas`（sonnet）大概率静默不缓存**——不报错，就是 `cache_read=0`。断点照样留着：以后前缀长了会自动开始生效。任务 11 把 retail 的静态商品表换成工具后前缀会缩水、但工具定义会加回来，净效果要重新测
+  - **缓存前缀的真实大小：`retail` = 1097 token**（生产日志实测）。缓存有最小前缀门槛——**Opus 5 是 512，Sonnet 5 是 1024**。旗舰档远远够。轻量档**卡在门槛线上，两可**：按实测/估算比例 1.195 换算，`hotel` ≈ 1065（大概率能缓存）、`saas` ≈ 949、`banking` ≈ 998（大概率不能，静默失效，只表现为 `cache_read=0`，不报错）。要确认就挑一个轻量档 bot 连发两轮看日志。断点对所有 bot 都留着：不花钱，前缀长了会自动开始生效
+  - 任务 11 把 retail 的静态商品表换成工具后，前缀会缩水但工具定义会加回来，净效果要重新量——**别假设它还在 1024 以上**
   - **日志**：每次回复打一行 `claude usage bot=... model=... input=... output=... cache_write=... cache_read=...`，`docker logs ai_chatbot_backend | grep "claude usage"` 就能看
-  - ⚠️ **待验**：真实 key 下连发两轮，确认第二轮 `cache_read > 0`。**必须挑 `retail`（opus）测**，挑轻量档会因为上面那条门槛看起来像失败
+  - **已验收**（2026-08-31，WhatsApp 真机 + VPS 日志）：选 retail / 身份 vip_tan 连发两轮，
+    `round 1: model=claude-opus-5 input=327 cache_write=1097 cache_read=0`，
+    `round 2: model=claude-opus-5 input=440 cache_write=0 cache_read=1097`。
+    第二轮命中，且日志证实 per-bot 模型选型在线上生效
   文件：`backend/app/config.py`、`backend/app/services/llm.py`、`backend/app/bots/registry.py`
   目标：bot 元数据加 `model` 字段——旗舰/深度档用 `claude-opus-5`，轻量档留 `claude-sonnet-5`；给 `tools` + `system` 打 `cache_control` 断点，易变内容排到断点之后
   验收：连发两轮消息，日志打印 `usage.cache_read_input_tokens`，确认第二轮 > 0（缓存真的命中了）
