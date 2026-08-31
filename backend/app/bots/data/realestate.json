@@ -1,5 +1,6 @@
 {
   "id": "realestate",
+  "model": "claude-opus-5",
   "name": {"zh": "房产咨询助手", "en": "Real Estate Assistant", "ms": "Pembantu Hartanah"},
   "description": {
     "zh": "房源搜索、看房预约、房贷计算",

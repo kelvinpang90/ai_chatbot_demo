@@ -82,7 +82,15 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   目标：内存 ring buffer 存事件（工具名、入参、返回、耗时、状态）；`GET /console/stream` 走 SSE 推给前端；每次工具调用前后各 emit 一条
   验收：`curl -N localhost:8000/console/stream` 订阅，另开一个终端发一条会触发工具的消息，看到事件实时滚出来
 
-- [ ] **任务 4：模型选型与 prompt 缓存**
+- [x] **任务 4：模型选型与 prompt 缓存**——**2026-08-31 代码完成**，全套 57 passed。
+  - **模型写进每个 bot 的 JSON**：`retail` / `food` / `realestate` = `claude-opus-5`；`hotel` / `saas` / `banking` = `claude-sonnet-5`。`BotConfig.model` 为空时回落到 `settings.anthropic_model`
+  - **`config.py` 没动**——任务清单里列了它，但 `anthropic_model` 本来就是现成的回落项，没有需要新增的东西，硬加一个反而多一处真相来源
+  - **system prompt 拆成两块**：稳定块（人设 + `context_data` + 语言/长度/安全指令 + 免责声明）打 `cache_control`，易变块（identity profile）排在断点之后。**原模板里 identity 在中间，被挪到了末尾**——这是缓存能跨身份复用的前提，有测试钉住「两个不同身份的稳定块必须字节相同」
+  - **一个断点同时覆盖 tools**：请求渲染顺序是 tools → system → messages，断点标的是「缓存前缀到此为止」，所以打在 system 稳定块尾部就把工具定义一起包进去了，不需要第二个标记
+  - **TTL 用默认 5 分钟**，没上 1 小时：同一段对话里两轮间隔远小于 5 分钟，读一次就免费续期；1h TTL 把每次写入从 1.25× 抬到 2×，只在长间隔才回本，而这里的绝对差额是几厘钱
+  - ⚠️ **重要发现：轻量档很可能根本缓存不了。** 缓存有最小前缀门槛——**Opus 5 是 512 token，Sonnet 5 是 1024**。粗估各 bot 的 system prompt 只有 **~800-960 token**（按字符数估的，不准，等生产日志里的 `input_tokens` 才算数）。所以旗舰档（opus）会缓存，**`hotel` / `saas`（sonnet）大概率静默不缓存**——不报错，就是 `cache_read=0`。断点照样留着：以后前缀长了会自动开始生效。任务 11 把 retail 的静态商品表换成工具后前缀会缩水、但工具定义会加回来，净效果要重新测
+  - **日志**：每次回复打一行 `claude usage bot=... model=... input=... output=... cache_write=... cache_read=...`，`docker logs ai_chatbot_backend | grep "claude usage"` 就能看
+  - ⚠️ **待验**：真实 key 下连发两轮，确认第二轮 `cache_read > 0`。**必须挑 `retail`（opus）测**，挑轻量档会因为上面那条门槛看起来像失败
   文件：`backend/app/config.py`、`backend/app/services/llm.py`、`backend/app/bots/registry.py`
   目标：bot 元数据加 `model` 字段——旗舰/深度档用 `claude-opus-5`，轻量档留 `claude-sonnet-5`；给 `tools` + `system` 打 `cache_control` 断点，易变内容排到断点之后
   验收：连发两轮消息，日志打印 `usage.cache_read_input_tokens`，确认第二轮 > 0（缓存真的命中了）

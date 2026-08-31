@@ -1,5 +1,6 @@
 {
   "id": "saas",
+  "model": "claude-sonnet-5",
   "name": {"zh": "SaaS/IT 技术支持", "en": "SaaS Tech Support", "ms": "Sokongan Teknikal SaaS"},
   "description": {
     "zh": "故障排查、工单创建、产品答疑",

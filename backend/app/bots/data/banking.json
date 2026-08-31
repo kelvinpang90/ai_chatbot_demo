@@ -1,5 +1,6 @@
 {
   "id": "banking",
+  "model": "claude-sonnet-5",
   "name": {"zh": "银行金融客服", "en": "Banking Support", "ms": "Sokongan Perbankan"},
   "description": {
     "zh": "余额查询、交易明细、挂失、产品咨询",

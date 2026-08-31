@@ -1,5 +1,6 @@
 {
   "id": "retail",
+  "model": "claude-opus-5",
   "name": {"zh": "电商零售客服", "en": "Retail Support", "ms": "Sokongan Runcit"},
   "description": {
     "zh": "商品推荐、订单查询、退换货、物流追踪",

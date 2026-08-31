@@ -22,15 +22,50 @@ def _assistant_message(content: list, stop_reason: str) -> BetaMessage:
     )
 
 
-def test_build_system_prompt_includes_persona_and_identity_data():
+def test_system_blocks_carry_the_persona_and_the_identity():
     bot = get_bot("retail")
     identity = bot.identities[0]
 
-    prompt = llm.build_system_prompt(bot, identity)
+    stable, volatile = llm.build_system_blocks(bot, identity)
 
-    assert bot.persona_prompt in prompt
-    assert identity.profile["customer_name"] in prompt
-    assert "Chinese, English, or Malay" in prompt
+    assert bot.persona_prompt in stable["text"]
+    assert "Chinese, English, or Malay" in stable["text"]
+    assert identity.profile["customer_name"] in volatile["text"]
+
+
+def test_only_the_stable_block_is_marked_for_caching():
+    """The breakpoint must sit above the identity, or every visitor writes a new entry."""
+    bot = get_bot("retail")
+    stable, volatile = llm.build_system_blocks(bot, bot.identities[0])
+
+    assert stable["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in volatile
+
+
+def test_the_identity_never_leaks_into_the_cached_prefix():
+    bot = get_bot("retail")
+    first, second = bot.identities[0], bot.identities[1]
+
+    stable_first = llm.build_system_blocks(bot, first)[0]
+    stable_second = llm.build_system_blocks(bot, second)[0]
+
+    # Byte-identical across identities, which is the whole point: switching who is
+    # talking must not throw away the cached prefix.
+    assert stable_first == stable_second
+    assert first.profile["customer_name"] not in stable_first["text"]
+
+
+def test_each_tier_gets_the_model_its_bot_declares():
+    assert llm.model_for(get_bot("retail")) == "claude-opus-5"  # flagship
+    assert llm.model_for(get_bot("food")) == "claude-opus-5"  # deep vertical
+    assert llm.model_for(get_bot("hotel")) == "claude-sonnet-5"  # light tier
+    assert llm.model_for(get_bot("saas")) == "claude-sonnet-5"
+
+
+def test_a_bot_that_declares_no_model_falls_back_to_the_setting():
+    bot = get_bot("retail").model_copy(update={"model": None})
+
+    assert llm.model_for(bot) == llm.settings.anthropic_model
 
 
 def test_get_reply_returns_fallback_on_api_error():
@@ -44,8 +79,8 @@ def test_get_reply_returns_fallback_on_api_error():
     assert reply == llm.FALLBACK_REPLY
 
 
-def test_bot_without_tools_takes_the_original_single_turn_path():
-    """The regression safety line: no tools means the same endpoint, same parameters."""
+def test_bot_without_tools_takes_the_plain_single_turn_path():
+    """No tools still means the plain endpoint, never the beta one."""
     bot = get_bot("retail")
     identity = bot.identities[0]
     response = _assistant_message([BetaTextBlock(type="text", text="Hello!")], "end_turn")
@@ -58,10 +93,35 @@ def test_bot_without_tools_takes_the_original_single_turn_path():
     assert reply == "Hello!"
     mock_parse.assert_not_called()  # never touched the beta endpoint
     kwargs = mock_create.call_args.kwargs
-    assert kwargs["model"] == llm.settings.anthropic_model
+    assert kwargs["model"] == llm.model_for(bot)
     assert kwargs["max_tokens"] == llm.MAX_REPLY_TOKENS
-    assert kwargs["system"] == llm.build_system_prompt(bot, identity)
+    assert kwargs["system"] == llm.build_system_blocks(bot, identity)
     assert "tools" not in kwargs
+
+
+def test_the_tool_path_uses_the_same_model_and_cached_system_blocks():
+    bot = get_bot("retail")
+    identity = bot.identities[0]
+
+    @beta_tool
+    def check_stock(sku: str) -> str:
+        """Look up how many units of a SKU are on hand.
+
+        Args:
+            sku: The product code to look up.
+        """
+        return "12 units in stock"
+
+    final = _assistant_message([BetaTextBlock(type="text", text="Hi")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[check_stock]):
+        with patch.object(llm._client.beta.messages, "parse", return_value=final) as mock_parse:
+            llm.get_reply(bot, identity, history=[])
+
+    kwargs = mock_parse.call_args.kwargs
+    assert kwargs["model"] == "claude-opus-5"
+    # Tools render before system, so the one breakpoint covers them too.
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
 def test_bot_with_tools_calls_the_tool_and_feeds_the_result_back():

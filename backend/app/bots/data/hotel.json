@@ -1,5 +1,6 @@
 {
   "id": "hotel",
+  "model": "claude-sonnet-5",
   "name": {"zh": "酒店旅游预订助手", "en": "Hotel & Travel Assistant", "ms": "Pembantu Hotel & Percutian"},
   "description": {
     "zh": "房型查询、预订、行程建议、入住须知",

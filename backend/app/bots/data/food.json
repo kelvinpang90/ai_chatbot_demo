@@ -1,5 +1,6 @@
 {
   "id": "food",
+  "model": "claude-opus-5",
   "name": {"zh": "餐饮外卖点餐助手", "en": "Food Delivery Assistant", "ms": "Pembantu Penghantaran Makanan"},
   "description": {
     "zh": "菜单浏览、下单、配送状态查询",
