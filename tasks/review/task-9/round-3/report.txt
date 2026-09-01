@@ -1,0 +1,22 @@
+任务 9 / 第 3 轮 / commit 62a9c9ae
+verdict: findings
+
+报了 4 条，进修复队列 2 条，降级 2 条。
+
+[MUST FIX] P2-1 P2  backend/app/tools/erp.py:262
+    JsonApiClient goes to the trouble of carrying erp_os's own refusal reason across the boundary, and erp_create_sales_order throws it away: every refused create becomes one constant string and every refused confirm becomes another, including a cause the ERP never gave.
+    证据: repro repro/test_p2_1_the_erps_own_reason_never_reaches_the_customer.py
+[MUST FIX] P2-2 P2  backend/app/tools/erp.py:166
+    Round 1's P1 is only half closed. erp_find_customer stops the model inventing a customer_id, but returns up to five accounts with no rule anywhere for choosing between them -- every guard-rail written addresses the empty result, none the ambiguous one.
+    证据: repro repro/test_p2_2_five_candidate_customers_and_no_rule_for_choosing.py::test_five_candidates_come_back_with_no_rule_for_choosing_between_them
+[降级] P2-3 P3  tasks/todo.md:174
+    Task 9's acceptance criterion -- 'call it once, then open erp.kelvinpeng.com's order list and the order is there with the right status' -- has never been satisfied. The live ERP holds 250 sales orders, all seeded on 2026-08-29, and not one created by this code.
+    证据: command # in python:3.13-slim, ERP_EMAIL/ERP_PASSWORD from the config defaults at 11f1408:
+# tok = httpx.post(BASE+'/api/auth/login', json={...}).json()['access_token']
+# page through GET /api/sales-orders?page=N&page_size=100 and count document_no without 'SEED'
+python probe4.py
+    ! command 证据只对 security/config 类开放，category='spec-deviation' → 降级
+[降级] P3-1 P3  backend/app/tools/erp.py:80
+    The bot quotes a price excluding tax and then books an order whose total includes it. Pre-existing (_price is task 8's code, unchanged here), but task 9 is the first place the gap turns into a binding number.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）
