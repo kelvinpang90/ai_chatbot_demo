@@ -1,0 +1,15 @@
+任务 9 / 第 2 轮 / commit 28e61cac
+verdict: findings
+
+报了 3 条，进修复队列 2 条，降级 1 条。
+
+[MUST FIX] P1-1 P1  backend/app/services/api_client.py:218
+    may_have_landed is computed from the exception alone, never from the HTTP method, so a catalogue GET that fails before the order is posted makes the tool report that the order may already exist and must not be placed again.
+    证据: repro repro/test_p1_1_a_read_before_the_write_claims_the_order_may_exist.py::test_a_read_that_timed_out_before_the_write_does_not_claim_the_order_may_exist
+[MUST FIX] P2-1 P2  backend/app/tools/erp.py:250
+    A 500 that erp_os generated itself means the transaction was rolled back, but it is reported as "the order may exist, do not place it again" -- and an unresolvable customer_id is exactly the input that produces it.
+    证据: repro repro/test_p2_1_a_rolled_back_500_is_reported_as_maybe_booked.py::test_an_error_erp_os_handled_itself_is_not_reported_as_maybe_booked
+[降级] P3-1 P3  backend/tests/test_erp_tools.py:423
+    test_the_tool_set_can_produce_an_erp_customer_id_for_the_order, the assertion left behind to encode round 1's P1-1, cannot fail for any implementation that returns the id it was handed.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）

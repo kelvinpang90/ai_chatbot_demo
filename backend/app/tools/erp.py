@@ -217,6 +217,10 @@ def erp_create_sales_order(
     agreed to the products and quantities. Check stock with erp_get_inventory
     first. Prices are taken from the catalogue, never from the conversation.
 
+    The customer_id must come from erp_find_customer. Never guess one and never
+    reuse an id from the CRM: every integer is some real customer's account, so a
+    guess bills a stranger and nobody notices.
+
     Args:
         customer_id: The ERP customer this order belongs to, as returned by
             erp_find_customer. Every integer is somebody's real account, so a

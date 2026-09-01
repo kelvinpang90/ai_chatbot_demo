@@ -58,6 +58,33 @@ def _detail(response: Any) -> str:
         return ""
 
 
+def _composed_by_the_service(response: Any) -> bool:
+    """Did the application itself answer, or something standing in front of it?
+
+    This is the difference between a 500 and a 502, and for a write it decides
+    whether the row exists. erp_os and crm_os answer an error they handled with
+    their own JSON envelope, and handling it means the request-scoped session was
+    already rolled back when that response was written (erp_os: `get_db` rolls
+    back and re-raises, the catch-all handler turns it into a 500
+    INTERNAL_ERROR). An unknown customer_id is exactly this shape -- a foreign
+    key violation, not a validation error -- so treating it as "the order might
+    exist" would forbid the one retry that could still make the sale.
+
+    A 502 or 504 from the proxy is an HTML page or nothing at all, and says
+    nothing about what the application did with the request it is still holding.
+
+    Known edge: a service that failed *after* committing, in an after-commit
+    hook, also answers this way. erp_os only publishes such events on confirm,
+    never on create, and mistaking a confirmed order for an unconfirmed one
+    costs a phone call, while mistaking a booked order for a failed one costs a
+    duplicate order.
+    """
+    try:
+        return isinstance(response.json(), dict)
+    except Exception:
+        return False
+
+
 class ApiClientError(RuntimeError):
     """Anything that stopped us getting an answer out of the back office.
 
@@ -215,7 +242,13 @@ class JsonApiClient:
                     f"{self.name} api: {method} {path} failed: {exc}",
                     # A connection that was never made cannot have written
                     # anything; a request that went out and never came back can.
-                    may_have_landed=not isinstance(exc, NEVER_REACHED_THE_SERVICE),
+                    # A read cannot have written anything either, whatever
+                    # happened to it -- the tool that priced an order from the
+                    # catalogue asks the same client, and a slow catalogue must
+                    # not be reported as an order that might exist.
+                    may_have_landed=(
+                        method != "GET" and not isinstance(exc, NEVER_REACHED_THE_SERVICE)
+                    ),
                 ) from exc
             if response.status_code == 401 and not force_login:
                 continue
@@ -227,10 +260,15 @@ class JsonApiClient:
                     f"{self.name} api: {method} {path} returned "
                     f"{response.status_code}: {_detail(response)}",
                     # A 4xx is the service refusing the request, so nothing was
-                    # written. A 5xx is the service failing partway through, and a
-                    # 504 from a proxy says nothing at all about what the ERP did
-                    # with the request it is still holding.
-                    may_have_landed=response.status_code >= 500,
+                    # written -- and so is a 5xx the service composed itself,
+                    # which it only does after rolling its transaction back. What
+                    # is left is the gateway answering for a service that never
+                    # said what it did.
+                    may_have_landed=(
+                        method != "GET"
+                        and response.status_code >= 500
+                        and not _composed_by_the_service(response)
+                    ),
                 )
             return self._unwrap(response.json())
 

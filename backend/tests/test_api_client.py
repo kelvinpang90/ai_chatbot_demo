@@ -369,11 +369,8 @@ def test_a_failure_knows_whether_the_request_could_have_been_acted_on(failure, m
     assert raised.value.may_have_landed is may_have_landed
 
 
-@pytest.mark.parametrize(
-    ("status", "may_have_landed"),
-    [(400, False), (404, False), (422, False), (500, True), (502, True), (504, True)],
-)
-def test_a_refusal_is_certain_but_a_server_error_is_not(status, may_have_landed):
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_a_refusal_is_certain(status):
     client = _client()
 
     with patch.object(
@@ -382,16 +379,76 @@ def test_a_refusal_is_certain_but_a_server_error_is_not(status, may_have_landed)
         with pytest.raises(ApiClientError) as raised:
             client.post("/api/sales-orders", json={})
 
-    assert raised.value.may_have_landed is may_have_landed
+    assert raised.value.may_have_landed is False
 
 
-def test_a_read_failure_claims_nothing_about_writes():
-    """The flag defaults off, so only a failure with a reason says "maybe"."""
+def test_a_5xx_the_service_composed_itself_is_also_certain():
+    """erp_os only writes its own error envelope after rolling back: `get_db`
+    rolls the session back and re-raises, and the catch-all handler turns that
+    into 500 INTERNAL_ERROR. An unknown customer_id lands here as a foreign key
+    violation, and calling that "the order might exist" would forbid the retry
+    that could still make the sale."""
+    client = _client()
+    handled = _json_response({"error_code": "INTERNAL_ERROR"}, status_code=500)
+
+    with patch.object(
+        api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), handled]
+    ):
+        with pytest.raises(ApiClientError) as raised:
+            client.post("/api/sales-orders", json={})
+
+    assert raised.value.may_have_landed is False
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_a_gateway_answering_for_a_silent_service_is_not_certain(status):
+    """nginx hands back an HTML page for a service that never said what it did."""
+    client = _client()
+    gateway = Mock(spec=httpx.Response)
+    gateway.status_code = status
+    gateway.text = "<html><head><title>504 Gateway Time-out</title></head></html>"
+    gateway.json.side_effect = ValueError("not json")
+
+    with patch.object(
+        api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), gateway]
+    ):
+        with pytest.raises(ApiClientError) as raised:
+            client.post("/api/sales-orders", json={})
+
+    assert raised.value.may_have_landed is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [httpx.ReadTimeout("timed out"), httpx.RemoteProtocolError("disconnected")],
+    ids=["read-timeout", "disconnected"],
+)
+def test_a_read_never_claims_a_write_may_have_happened(failure):
+    """Review round 2, P1-1. The order tool reads the catalogue before it posts
+    anything, through this same client. A slow catalogue used to reach the tool
+    as "the order may already exist, do not place it again" -- losing the sale
+    and forbidding the retry, with nothing ever written."""
     client = _client()
 
     with patch.object(api_client.httpx, "post", return_value=_tokens("acc-1", "ref-1")):
-        with patch.object(api_client.httpx, "get", side_effect=httpx.ConnectError("refused")):
+        with patch.object(api_client.httpx, "get", side_effect=failure):
             with pytest.raises(ApiClientError) as raised:
-                client.get("/api/skus")
+                client.get("/api/skus/12")
+
+    assert raised.value.may_have_landed is False
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_a_read_that_got_a_server_error_claims_nothing_either(status):
+    client = _client()
+    gateway = Mock(spec=httpx.Response)
+    gateway.status_code = status
+    gateway.text = "<html>502</html>"
+    gateway.json.side_effect = ValueError("not json")
+
+    with patch.object(api_client.httpx, "post", return_value=_tokens("acc-1", "ref-1")):
+        with patch.object(api_client.httpx, "get", return_value=gateway):
+            with pytest.raises(ApiClientError) as raised:
+                client.get("/api/skus/12")
 
     assert raised.value.may_have_landed is False

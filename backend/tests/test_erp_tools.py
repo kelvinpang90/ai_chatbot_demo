@@ -367,15 +367,47 @@ def test_a_write_that_never_left_the_process_does_say_nothing_happened(_credenti
             )
 
 
-def test_a_server_error_on_the_write_is_treated_as_unknown(_credentials):
+def test_a_gateway_timeout_on_the_write_is_treated_as_unknown(_credentials):
     """A 504 from the proxy says nothing about what erp_os did with the request."""
-    with patch.object(
-        api_client.httpx, "post", side_effect=[_response(_LOGIN), _response({}, 504)]
-    ):
+    gateway = Mock(spec=httpx.Response)
+    gateway.status_code = 504
+    gateway.text = "<html><title>504 Gateway Time-out</title></html>"
+    gateway.json.side_effect = ValueError("not json")
+
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), gateway]):
         with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
             assert erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}]) == (
                 erp.ORDER_UNKNOWN
             )
+
+
+def test_an_error_erp_os_handled_itself_says_the_order_was_not_placed(_credentials):
+    """Review round 2, P2-1. A customer_id that is not in the customers table is
+    a foreign key violation, which erp_os answers as a 500 carrying its own
+    INTERNAL_ERROR envelope -- written after `get_db` rolled the transaction
+    back. Nothing was booked, so the bot must be free to look the customer up
+    properly and try again."""
+    handled = _response({"error_code": "INTERNAL_ERROR"}, 500, text='{"error_code":"INTERNAL_ERROR"}')
+
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), handled]):
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            answer = erp.erp_create_sales_order(9999, [{"sku_id": 12, "quantity": 1}])
+
+    assert answer == erp.ORDER_FAILED
+    assert answer != erp.ORDER_UNKNOWN
+
+
+def test_a_slow_catalogue_read_does_not_invent_an_order_that_was_never_posted(_credentials):
+    """Review round 2, P1-1. The tool reads /api/skus/{id} to price the line
+    before it posts anything. That read timing out used to arrive as "the order
+    may exist, do not place it again" -- the sale lost, the retry forbidden, and
+    no order anywhere."""
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN)]) as post:
+        with patch.object(api_client.httpx, "get", side_effect=httpx.ReadTimeout("timed out")):
+            answer = erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
+
+    assert [c for c in post.call_args_list if "/api/sales-orders" in c.args[0]] == []
+    assert answer == erp.ORDER_FAILED
 
 
 def test_a_refused_confirm_does_not_promise_it_will_clear_by_itself(_credentials):
@@ -421,17 +453,27 @@ CUSTOMER_ROW = {
 
 
 def test_the_tool_set_can_produce_an_erp_customer_id_for_the_order(_credentials):
-    """The fix for P1-1, stated as the thing that has to be true.
+    """The fix for round 1's P1-1, stated as the things that have to stay true.
 
-    The reviewer's own repro asserts that crm_lookup_customer returns an int,
-    which it never can -- crm_os keys contacts by UUID and always will. What the
-    finding is really about is whether *some* tool hands the model a value that
-    erp_create_sales_order's customer_id will accept. This is that assertion.
+    The reviewer's own repro asserts crm_lookup_customer returns an int, which it
+    never can -- crm_os keys contacts by UUID and always will. The finding is
+    really about whether *some* tool hands the model a value that
+    erp_create_sales_order's customer_id will accept.
+
+    Round 2 then pointed out that the first version of this test could not fail:
+    it mocked a row with an integer id and asserted the id was an integer. The
+    three assertions below fail on the regressions that would actually happen --
+    the tool being dropped from TOOLS, the docstring that points the model at it
+    being edited away, or the id field being renamed.
     """
-    order_schema = next(
-        t for t in erp.TOOLS if t.name == "erp_create_sales_order"
-    ).input_schema
-    assert order_schema["properties"]["customer_id"]["type"] == "integer"
+    by_name = {tool.name: tool for tool in erp.TOOLS}
+    assert "erp_find_customer" in by_name, "the only source of an ERP customer id"
+
+    order = by_name["erp_create_sales_order"]
+    assert order.input_schema["properties"]["customer_id"]["type"] == "integer"
+    # Having the tool is not enough; the model has to be told to use it, and told
+    # what a guessed id costs.
+    assert "erp_find_customer" in order.description
 
     with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
         with patch.object(
@@ -439,8 +481,9 @@ def test_the_tool_set_can_produce_an_erp_customer_id_for_the_order(_credentials)
         ):
             found = json.loads(erp.erp_find_customer("Sunrise"))
 
+    # The key the model reads has to be the one the order tool asks for.
+    assert order.input_schema["required"] == ["customer_id", "items"]
     assert isinstance(found[0]["customer_id"], int)
-    assert found[0]["customer_id"] == 7
 
 
 def test_a_customer_is_searched_by_name_in_one_call(_credentials):

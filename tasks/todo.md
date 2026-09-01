@@ -229,6 +229,32 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   文件（第 1 轮修复新增）：`backend/app/services/phone.py`（新增，两边共用的电话匹配）、`backend/app/services/crm_client.py`（改成 import 它）
 
+  ---
+
+  🔍 **2026-09-01 第 2 轮复验——报 3 条，2 条进队列，全部接受并修掉**（全套 155 passed，两条 repro 都由红转绿）。
+  **这两条 queue=true 都是第 1 轮修复自己引入的回归**，也就是说：修 P2-1 的那个补丁，制造了两个新的、方向相反的错误。这一条比 finding 本身更值得记住。
+
+  - **P1-1：`may_have_landed` 只看异常类型，不看 HTTP 方法。接受，已修。**
+    `erp_create_sales_order` 在 POST 之前先要 `GET /api/skus/{id}` 给每一行定价。那个**读**超时，走的是同一个 `_request`，于是带着 `may_have_landed=True` 冒到工具层，工具只有一句话可说：`ORDER_UNKNOWN`——「订单可能已经存在，不要再下一次」。**而 `/api/sales-orders` 根本没被调用过。** 单子丢了，客人被告知「已经在处理」，模型被明令禁止重试那唯一能救回这一单的动作。
+    **修法**：`method != "GET"` 是 `may_have_landed` 为真的前提。读操作**永远**不声称写入可能发生过——它本来就没写。
+    ⚠️ 我原有的那条 `test_a_read_failure_claims_nothing_about_writes` 没抓到它，因为它用的是 `ConnectError`（本来就是 False 的那一类）。**测了一个恒为真的分支**，和任务 8 那条同义反复测试是同一个毛病，换了件衣服。
+
+  - **P2-1：erp_os 自己生成的 500 意味着事务已回滚，不是「可能已落地」。接受，已修。**
+    我把所有 5xx 一律归入「不确定」。但 `erp_os` 的 `get_db` 是**先 rollback 再 re-raise**，异常落到 `main.py` 的兜底 handler 才变成 500 + `{"error_code":"INTERNAL_ERROR"}`（我自己去 `core/deps.py:39-47` 和 `main.py:212-218` 核对过，审查方的论证成立）。所以这种 500 是一次**拒绝**，什么都没写。
+    更要命的是**哪种输入会产生它**：`create_so` 完全不校验 `customer_id`，直接赋值再 flush，所以一个不存在的客户 id 会撞 FK 约束 → IntegrityError → 兜底 handler → 500。**这正是最常见的输入错误**，却被我报成「别再下单了」——于是那张永远没建成的单，永远不会被重下。
+    **修法**：区分「服务自己写的错误」和「网关替它答的错误」——前者带自己的 JSON 信封（`response.json()` 能解析成 dict），说明请求进了应用、事务回滚了；后者（nginx 的 502/504）是 HTML 或空，对 erp_os 手上那个请求做了什么一无所知。只有后者算不确定。
+    **一个已知边界，写在代码注释里**：如果服务是在 commit **之后**、在 after-commit 钩子里失败的，它也会返回自己的 500 信封，而那时数据已经落地。`erp_os` 只在 confirm 发这类事件，建单不发；而且这个方向错了只是多打一个电话（把已确认的单说成待确认），反方向错了是**两张真单**。
+    ⚠️ 我原有的 `test_a_rejected_order_says_nothing_was_booked` mock 的是 400 + `{"detail":"Customer 999 not found."}`——**`erp_os` 根本没有代码能产生这个响应**。这是审查方指出来的：我编了一个理想中的错误形状，然后测试它，所以套件一直是绿的。
+
+  - **P3-1（降级）：我第 1 轮留下的那条「等价断言」测试无法跑红。接受，已重写。**
+    原版 mock 了一行 `id=7` 的客户，然后断言返回的 id 是 int——任何把收到的东西原样传出去的实现都能过。**这就是我上一轮才刚指控别人的那个毛病。** 重写成三条能被真实回归打红的断言：`erp_find_customer` 还在不在 `TOOLS` 里、`erp_create_sales_order` 的**工具描述**里还有没有那句引导、`customer_id` 的字段名对不对得上。
+    写完立刻见效：它当场跑红了——`beta_tool` 的 `description` 只取 docstring 的首段，我那句「id 必须来自 `erp_find_customer`」写在 `Args:` 里，压根不在工具描述里（只在参数 schema 里）。已经把这条规则提到 docstring 正文，这是模型第一眼看到的位置。
+
+  📌 **轮次到顶了（上限 2），按 `tasks/REVIEW.md` 的停机条件停手，等用户拍板：**
+  - **修了什么**：第 2 轮两条 queue=true 全部接受并修掉，它们的 repro 都由红转绿；降级那条也重写了。全套 155 passed。
+  - **还在争什么**：只有第 1 轮 P1-1 那条 repro 转不绿，理由在上面（它断言 `crm_os` 的 UUID 是 int，恒为假）。问题本身已修。
+  - **该不该 push**：**第 2 轮的修复没有经过第 3 轮复验**，而前两轮的记录已经证明「我修完自己看没问题」这句话在这个任务上错了两次。所以我的判断是**先不 push**。真实建单验收也还没做（没凭据）。用户如果要继续，删掉 `tasks/review/state.env` 可以重开轮次。
+
 - [ ] 🔍 **任务 9.1：CRM 写入工具 —— 自动建线索**
   文件：`backend/app/tools/crm.py`（新增）、`backend/tests/test_crm_tools.py`（新增）
   目标：`crm_create_lead(name, phone, requirement, amount)` —— 依次调 `POST /api/contacts`（建联系人）、`POST /api/deals`（建商机，带 `amount`，**会出现在管道看板上**）、`POST /api/deals/{id}/activities`（记一条来源=WhatsApp 的活动）
