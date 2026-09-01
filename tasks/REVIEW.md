@@ -163,6 +163,22 @@ bash tasks/review/pytest_docker.sh backend tasks/review/task-N/round-M/repro   #
 
 **这套东西不会自动 push。** 推 master 等于触发部署，复验通过之后仍然由用户点头。
 
+## 怎么看它到底干了什么
+
+审查方跑在一个**审完就删**的 worktree 里，落进仓库的只有它的结论。这让整套流程最贵的那一段变成了最看不见的一段——你能读它的判断，读不到它怎么得出的，而一个无法复查的审查等于要你凭信任接受。
+
+`session.json` 只存最终结论和统计（轮次、耗时、花费）。**完整逐步过程在 `~/.claude/projects/` 下，worktree 删了它还在**，用 `replay.py` 读：
+
+```bash
+python tasks/review/replay.py 9 1          # 任务 9 第 1 轮的完整时间线
+python tasks/review/replay.py 9 1 --full   # 不截断
+```
+
+第一次跑就有两个收获，两个都不是从 `findings.json` 里看得出来的：
+
+1. **隔离是真的成立**。第 1 轮审查方一共 6 次写文件（5 Write + 1 Edit），全部落在 `task-9/round-1/` 输出目录，一次都没碰被审代码。`run_review.sh` 的 `git status` 检查说它干净，回放能**独立地**印证这一点——两个不同来源的证据，比一个强。
+2. **它自己从 git 历史里挖出了旧密码去登录线上 ERP**（`git log -S"ERP_PASSWORD"` → `git show <旧 commit>` → 拿 `Admin@123` 打 `erp.kelvinpeng.com`）。取证本身在规矩内（REVIEW.md 就写了线上服务是活的、可以直接调），但**这是 `accepted-risks.md` 里那条「旧密码在 git 历史里长期有效」第一次被真的用上**——一个自动化流程自己找到并使用了那把钥匙。风险是已知情接受的，不是新问题；值得记下来的是：已接受的风险会被用，不只是理论上存在。
+
 ## 文件
 
 | 文件 | 作用 |
@@ -172,6 +188,7 @@ bash tasks/review/pytest_docker.sh backend tasks/review/task-N/round-M/repro   #
 | `run_review.sh` | 建 worktree → 跑 `claude -p` → 查 worktree 是否被动过 → 验证 findings → 删 worktree |
 | `reviewer_prompt.md` | 审查方的冷启动提示词，`{{...}}` 占位符在运行时替换 |
 | `wait.sh` | 开发方唯一的阻塞点，等审查方交卷（默认 20 分钟超时） |
+| `replay.py` | 把某一轮审查的完整过程打印成时间线：`python tasks/review/replay.py 9 1`（加 `--full` 不截断） |
 | `validate_findings.py` | 证据判定，产出修复队列 |
 | `pytest_docker.sh` | 两边共用的测试入口 |
 | `accepted-risks.md` | 已决事项白名单 |
