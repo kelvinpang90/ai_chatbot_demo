@@ -18,7 +18,17 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 5. **每个批次的最后一个任务是「真机验收」，必须由用户拿手机完成，Claude 做不了。** 这类任务不要试图用模拟 webhook 糊弄过去——模拟能验证代码路径，验证不了「拍照识别准不准」「PDF 在手机上打不打得开」「语音听不听得懂马来语」。
 
-6. **标了 🔍 的任务走双 agent 审查**：开发方 commit 后**先不推**，换另一个 agent 冷审。交接就一句话——**「读 `tasks/REVIEW.md`，审查任务 N」**，规则、验证命令、输出格式和纪律全在 [tasks/REVIEW.md](REVIEW.md) 里，不用每次重写提示词。findings 逐条修或驳，驳的理由写回本文件，复验通过再推。**不要全上**——只标写真实数据和状态机那几个。
+6. **标了 🔍 的任务走双 agent 审查**：开发方 commit 后**先不推**，换另一个 agent 冷审。**2026-09-01 起交接自动化了**——commit message 里加一行 trailer：
+
+   ```
+   Review: required (task 9)
+   ```
+
+   Stop hook 会在后台起一个冷审 session（独立 worktree，改不到你的工作区），然后把你拽回来跑 `bash tasks/review/wait.sh` 等结果。规则、证据要求、输出格式全在 [tasks/REVIEW.md](REVIEW.md) 里，不用重写提示词。
+
+   findings 只有 `queue=true` 的你必须负责——那些带着一个能跑红的 repro 测试，修到它转绿为止。降级的可以看可以不理。驳回的理由写回本文件。轮次上限 2 轮，超了自动升给用户。复验通过再推。
+
+   **不要全上**——只标写真实数据和状态机那几个。
 
 ## 已定下的前提（不再重新讨论）
 
