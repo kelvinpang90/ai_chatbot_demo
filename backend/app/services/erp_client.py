@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
+from app.services import phone
 from app.services.api_client import JsonApiClient
 
 # The VPS runs on UTC and the shop does not. Between midnight and 8am local time
@@ -58,6 +59,43 @@ class ErpClient(JsonApiClient):
     def sku(self, sku_id: int) -> dict:
         """One product, including the fields an order line needs."""
         return self.get(f"/api/skus/{sku_id}")
+
+    def find_customers(self, term: str, *, limit: int = DEFAULT_RESULT_LIMIT) -> list[dict]:
+        """Customers matching a name, code, contact person, email or phone.
+
+        An order needs an erp_os customer id, and erp_os ids have nothing to do
+        with crm_os's, so this is the only honest source of one.
+
+        `?search=` covers code, name, contact_person and email but not phone
+        (`repositories/customer.py:55-64`) -- the same gap crm_os has. The one
+        identifier a WhatsApp conversation always carries is the phone number, so
+        that case pages the book and matches here.
+        """
+        if phone.looks_like_a_phone(term):
+            return self._customers_by_phone(term, limit=limit)
+        return self._customers_page(search=term, page_size=limit)
+
+    def _customers_page(
+        self, *, search: str | None = None, page: int = 1, page_size: int = phone.PAGE_SIZE
+    ) -> list[dict]:
+        payload = self.get(
+            "/api/customers",
+            params={"search": search, "page": page, "page_size": page_size},
+        )
+        return payload.get("items", [])
+
+    def _customers_by_phone(self, term: str, *, limit: int) -> list[dict]:
+        matches: list[dict] = []
+        for page in range(1, phone.MAX_SCAN_PAGES + 1):
+            rows = self._customers_page(page=page)
+            for row in rows:
+                if phone.matches(row.get("phone", ""), term):
+                    matches.append(row)
+                    if len(matches) >= limit:
+                        return matches
+            if len(rows) < phone.PAGE_SIZE:
+                break
+        return matches
 
     def create_sales_order(
         self,

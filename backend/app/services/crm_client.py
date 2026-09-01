@@ -1,42 +1,18 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from app.config import settings
+from app.services import phone
 from app.services.api_client import JsonApiClient
 
-# The CRM stores whatever the salesperson typed -- "+60 17-394 8123", "017-3948123",
-# "60173948123" are all the same person. Comparing the tail sidesteps both the
-# punctuation and the country code, and 8 digits is long enough not to collide in a
-# book this size.
-PHONE_SUFFIX_DIGITS = 8
-
-# Below this a term is a house number or an order quantity, not a phone number.
-MIN_PHONE_DIGITS = 7
-
-# crm_os caps a page at 100 server-side regardless of what we ask for.
-PAGE_SIZE = 100
-
-# The phone scan pages through contacts, so it needs a stop. 500 is far more than
-# the demo book holds, and a miss reads as "not a customer yet" -- which, for the
-# lead the next task creates, is the right answer anyway.
-MAX_SCAN_PAGES = 5
+# The phone-matching rules moved to app.services.phone when the ERP side needed
+# the same ones: "which digits count" must not drift apart between two systems
+# that answer questions about the same person.
+PAGE_SIZE = phone.PAGE_SIZE
+MAX_SCAN_PAGES = phone.MAX_SCAN_PAGES
 
 DEFAULT_RESULT_LIMIT = 5
-
-
-# Digits plus the punctuation people put between them. A name has none of this.
-_PHONE_SHAPED = re.compile(r"^[\d\s+()\-.]+$")
-
-
-def _digits(value: str) -> str:
-    return re.sub(r"\D", "", value or "")
-
-
-def _looks_like_a_phone(term: str) -> bool:
-    term = term.strip()
-    return bool(_PHONE_SHAPED.match(term)) and len(_digits(term)) >= MIN_PHONE_DIGITS
 
 
 class CrmClient(JsonApiClient):
@@ -71,17 +47,16 @@ class CrmClient(JsonApiClient):
         WhatsApp number is the one identifier we always have for the person typing,
         and a lookup that silently could not use it would be worse than none.
         """
-        if _looks_like_a_phone(term):
+        if phone.looks_like_a_phone(term):
             return self._by_phone(term, limit=limit)
         return self._contacts_page(search=term)[:limit]
 
     def _by_phone(self, term: str, *, limit: int) -> list[dict]:
-        wanted = _digits(term)[-PHONE_SUFFIX_DIGITS:]
         matches: list[dict] = []
         for page in range(1, MAX_SCAN_PAGES + 1):
             rows = self._contacts_page(page=page)
             for row in rows:
-                if _digits(row.get("phone", "")).endswith(wanted):
+                if phone.matches(row.get("phone", ""), term):
                     matches.append(row)
                     if len(matches) >= limit:
                         return matches

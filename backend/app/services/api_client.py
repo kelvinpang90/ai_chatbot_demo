@@ -32,6 +32,18 @@ EXPIRY_MARGIN_SECONDS = 60
 # read theirs in full. Catching those would only hide our own bugs.
 TRANSPORT_ERRORS = (httpx.HTTPError, httpx.InvalidURL)
 
+# The subset that proves the request never left this process: no connection was
+# ever established, so nothing can have been written on the far side. Every other
+# transport failure happens with the request already in flight -- a read timeout
+# is the ERP taking too long to answer, not the ERP declining to act -- and for a
+# write the honest report is "we do not know", not "nothing happened".
+NEVER_REACHED_THE_SERVICE = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.InvalidURL,
+    httpx.UnsupportedProtocol,
+    httpx.ProxyError,
+)
 
 # Long enough for a validation error naming the field, short enough to keep a
 # stack trace and a console line readable.
@@ -53,7 +65,17 @@ class ApiClientError(RuntimeError):
     login, a rate limit, a dead host, a timeout. Callers catch one thing, and a tool
     added later cannot forget to catch `httpx.ConnectError` the way the first three
     did.
+
+    `may_have_landed` is the part that matters to a write. A read that fails is
+    just a read that failed; a POST that fails can still have been committed, and
+    the difference decides whether the customer is told "your order was not
+    placed" or "we are checking". Defaults to False so a failure only claims
+    uncertainty when something actually justifies it.
     """
+
+    def __init__(self, message: str, *, may_have_landed: bool = False) -> None:
+        super().__init__(message)
+        self.may_have_landed = may_have_landed
 
 
 class _Tokens(NamedTuple):
@@ -189,7 +211,12 @@ class JsonApiClient:
                     **kwargs,
                 )
             except TRANSPORT_ERRORS as exc:
-                raise ApiClientError(f"{self.name} api: {method} {path} failed: {exc}") from exc
+                raise ApiClientError(
+                    f"{self.name} api: {method} {path} failed: {exc}",
+                    # A connection that was never made cannot have written
+                    # anything; a request that went out and never came back can.
+                    may_have_landed=not isinstance(exc, NEVER_REACHED_THE_SERVICE),
+                ) from exc
             if response.status_code == 401 and not force_login:
                 continue
             if response.status_code >= 400:
@@ -198,7 +225,12 @@ class JsonApiClient:
                 # bare status code cannot tell them apart.
                 raise ApiClientError(
                     f"{self.name} api: {method} {path} returned "
-                    f"{response.status_code}: {_detail(response)}"
+                    f"{response.status_code}: {_detail(response)}",
+                    # A 4xx is the service refusing the request, so nothing was
+                    # written. A 5xx is the service failing partway through, and a
+                    # 504 from a proxy says nothing at all about what the ERP did
+                    # with the request it is still holding.
+                    may_have_landed=response.status_code >= 500,
                 )
             return self._unwrap(response.json())
 

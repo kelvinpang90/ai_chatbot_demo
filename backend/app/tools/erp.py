@@ -25,9 +25,23 @@ ORDER_FAILED = (
     "The order could not be created in the ERP system. Nothing was booked -- "
     "tell the customer their order was not placed."
 )
+# The write went out and no answer came back. Claiming either outcome here is a
+# guess, and the two guesses are not equally cheap: told "it failed", a customer
+# reorders, and now there are two real orders for one intent.
+ORDER_UNKNOWN = (
+    "The ERP system stopped responding while the order was being placed, so it "
+    "is NOT known whether the order exists. Do not place it again. Tell the "
+    "customer their order is being checked and a colleague will confirm it "
+    "within a few minutes."
+)
 BAD_ITEMS = (
     "The order items were not in the expected shape. Each one needs a numeric "
     "sku_id from erp_search_sku and a quantity greater than zero."
+)
+NO_CUSTOMER = (
+    "No matching customer found in the ERP system. An order needs an existing "
+    "ERP customer -- do not invent a customer_id, ask the customer for the name "
+    "or company the account is under."
 )
 
 
@@ -36,11 +50,26 @@ def _not_confirmed(document_no: str) -> str:
 
     Silence here would be the worst outcome of the three -- a salesperson who
     believes an order is live, and a warehouse that has not set anything aside.
+    The ERP refused the confirmation for a reason it will keep refusing (usually
+    not enough stock in that branch), so this does not promise it will clear on
+    its own.
     """
     return (
-        f"Order {document_no} was created but could NOT be confirmed, so no stock "
-        "is reserved and it cannot be shipped or invoiced yet. Tell the customer "
-        "a colleague will confirm the order shortly."
+        f"Order {document_no} was created but the ERP REFUSED to confirm it, so no "
+        "stock is reserved and it cannot be shipped or invoiced. The order is "
+        "sitting as a draft for a colleague to sort out -- most often this means "
+        "the branch does not have enough stock. Tell the customer their order is "
+        "on hold and someone will call them back."
+    )
+
+
+def _confirmation_unknown(document_no: str) -> str:
+    """The order is real; whether the stock was reserved is not known."""
+    return (
+        f"Order {document_no} was created, but the ERP stopped responding before "
+        "it confirmed whether the stock was reserved. Do not create the order "
+        "again. Tell the customer the order is placed and a colleague is "
+        "confirming the details."
     )
 
 
@@ -132,6 +161,43 @@ def erp_get_inventory(sku: str) -> str:
         ]
     )
 
+
+@beta_tool
+def erp_find_customer(name_or_phone: str) -> str:
+    """Find the customer account an order should be billed to, in the ERP.
+
+    Call this before erp_create_sales_order: the customer_id that order needs
+    comes from here and nowhere else. A CRM contact id is a different system's
+    identifier and will book the order onto the wrong account. If nothing comes
+    back, say so -- never guess an id.
+
+    Args:
+        name_or_phone: The customer or company name, or a phone number in any
+            format.
+    """
+    try:
+        customers = erp_client.client().find_customers(name_or_phone)
+    except ApiClientError:
+        logger.exception("erp_find_customer failed for %r", name_or_phone)
+        return UNAVAILABLE
+
+    if not customers:
+        return NO_CUSTOMER
+
+    return _as_json(
+        [
+            {
+                "customer_id": customer.get("id"),
+                "code": customer.get("code"),
+                "name": customer.get("name"),
+                "phone": customer.get("phone"),
+                "currency": customer.get("currency"),
+            }
+            for customer in customers
+        ]
+    )
+
+
 class OrderLine(TypedDict):
     """One line of a sales order. Price and tax come from the catalogue."""
 
@@ -152,7 +218,10 @@ def erp_create_sales_order(
     first. Prices are taken from the catalogue, never from the conversation.
 
     Args:
-        customer_id: The ERP customer this order belongs to.
+        customer_id: The ERP customer this order belongs to, as returned by
+            erp_find_customer. Every integer is somebody's real account, so a
+            guessed one silently bills a stranger -- if erp_find_customer found
+            nobody, do not call this tool.
         items: The products being ordered, each with a sku_id from erp_search_sku
             and a quantity.
         warehouse_id: The branch to ship from, as returned by erp_get_inventory.
@@ -174,16 +243,19 @@ def erp_create_sales_order(
         order = client.create_sales_order(
             customer_id=customer_id, lines=lines, warehouse_id=warehouse_id
         )
-    except ApiClientError:
+    except ApiClientError as exc:
         logger.exception("erp_create_sales_order failed for customer %s", customer_id)
-        return ORDER_FAILED
+        # "It failed" and "I do not know" are different instructions to the person
+        # on the other end: one of them makes them order again.
+        return ORDER_UNKNOWN if exc.may_have_landed else ORDER_FAILED
 
     document_no = order.get("document_no", "")
     try:
         order = client.confirm_sales_order(order["id"])
-    except (ApiClientError, KeyError):
+    except (ApiClientError, KeyError) as exc:
         logger.exception("confirming sales order %s failed", document_no)
-        return _not_confirmed(document_no)
+        unknown = isinstance(exc, ApiClientError) and exc.may_have_landed
+        return _confirmation_unknown(document_no) if unknown else _not_confirmed(document_no)
 
     return _as_json(
         {
@@ -207,4 +279,4 @@ def erp_create_sales_order(
     )
 
 
-TOOLS = [erp_search_sku, erp_get_inventory, erp_create_sales_order]
+TOOLS = [erp_search_sku, erp_get_inventory, erp_find_customer, erp_create_sales_order]

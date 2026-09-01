@@ -332,3 +332,66 @@ def test_a_transport_failure_on_a_write_is_wrapped_like_any_other():
     ):
         with pytest.raises(ApiClientError, match="POST /api/sales-orders"):
             client.post("/api/sales-orders", json={})
+
+
+@pytest.mark.parametrize(
+    ("failure", "may_have_landed"),
+    [
+        (httpx.ConnectError("refused"), False),
+        (httpx.ConnectTimeout("no route"), False),
+        (httpx.UnsupportedProtocol("ftp://"), False),
+        (httpx.ReadTimeout("timed out"), True),
+        (httpx.WriteTimeout("timed out"), True),
+        (httpx.RemoteProtocolError("server disconnected"), True),
+        (httpx.ReadError("dropped"), True),
+    ],
+    ids=[
+        "refused",
+        "connect-timeout",
+        "bad-scheme",
+        "read-timeout",
+        "write-timeout",
+        "disconnected",
+        "read-error",
+    ],
+)
+def test_a_failure_knows_whether_the_request_could_have_been_acted_on(failure, may_have_landed):
+    """The distinction a write depends on: a connection that was never made
+    cannot have written anything, but a request that went out and never came
+    back can have. Getting this backwards either tells a customer their order
+    failed when it exists, or leaves a phantom order they were promised."""
+    client = _client()
+
+    with patch.object(api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), failure]):
+        with pytest.raises(ApiClientError) as raised:
+            client.post("/api/sales-orders", json={})
+
+    assert raised.value.may_have_landed is may_have_landed
+
+
+@pytest.mark.parametrize(
+    ("status", "may_have_landed"),
+    [(400, False), (404, False), (422, False), (500, True), (502, True), (504, True)],
+)
+def test_a_refusal_is_certain_but_a_server_error_is_not(status, may_have_landed):
+    client = _client()
+
+    with patch.object(
+        api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), _json_response({}, status)]
+    ):
+        with pytest.raises(ApiClientError) as raised:
+            client.post("/api/sales-orders", json={})
+
+    assert raised.value.may_have_landed is may_have_landed
+
+
+def test_a_read_failure_claims_nothing_about_writes():
+    """The flag defaults off, so only a failure with a reason says "maybe"."""
+    client = _client()
+
+    with patch.object(api_client.httpx, "post", return_value=_tokens("acc-1", "ref-1")):
+        with patch.object(api_client.httpx, "get", side_effect=httpx.ConnectError("refused")):
+            with pytest.raises(ApiClientError) as raised:
+                client.get("/api/skus")
+
+    assert raised.value.may_have_landed is False

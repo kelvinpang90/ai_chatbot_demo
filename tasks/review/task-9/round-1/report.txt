@@ -1,0 +1,19 @@
+任务 9 / 第 1 轮 / commit 40d4a8a3
+verdict: findings
+
+报了 4 条，进修复队列 2 条，降级 2 条。
+
+[MUST FIX] P1-1 P1  backend/app/tools/erp.py:144
+    erp_create_sales_order requires an integer ERP customer_id that no tool in the repository can produce, and books whatever number it is handed without checking it.
+    证据: repro repro/test_p1_1_no_source_for_the_erp_customer_id.py::test_the_only_customer_lookup_tool_yields_an_id_the_order_tool_can_use
+[MUST FIX] P2-1 P2  backend/app/tools/erp.py:24
+    A POST that timed out is reported to the customer as a definite non-write: ORDER_FAILED says 'Nothing was booked -- tell the customer their order was not placed', which contradicts the client's own documented reasoning.
+    证据: repro repro/test_p2_1_timeout_denies_a_booked_order.py::test_a_timed_out_write_is_not_reported_as_nothing_was_booked
+[降级] P2-2 P3  backend/app/tools/erp.py:142
+    The task's stated acceptance criterion -- call it once and see the order in erp.kelvinpeng.com's list -- was never performed: the live ERP contains zero non-seed sales orders.
+    证据: command curl -s -X POST https://erp.kelvinpeng.com/api/auth/login -d '{"email":"admin@demo.my","password":"..."}' | jq -r .access_token  # then GET /api/sales-orders?page_size=100 and count non SO-SEED document_no
+    ! command 证据只对 security/config 类开放，category='spec-deviation' → 降级
+[降级] P3-1 P3  backend/app/tools/erp.py:40
+    When confirm fails for a permanent reason (insufficient stock), _not_confirmed still promises 'a colleague will confirm the order shortly' and leaves an orphan DRAFT order behind.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）

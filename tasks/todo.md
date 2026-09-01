@@ -194,10 +194,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **业务日期按 +08:00 算，不是 `date.today()`**：VPS 是 UTC，本地时间凌晨到早上 8 点之间，`date.today()` 会把单据日期写成昨天——而这个日期客户和销售在屏幕上都看得见。马来西亚没有夏令时，固定偏移是精确值不是近似。
 
-  ⚠️ **必须往下带的一条：没有任何工具能给模型提供 `customer_id`。**
-  `erp_search_sku` 给 sku_id，`erp_get_inventory` 给 warehouse_id，**ERP 的客户 id 无处可查**——`crm_lookup_customer` 查的是 CRM 的联系人，两套系统的 id 不通用。现在挂上去，模型只能编一个：编到不存在的 id 会被 ERP 拒掉（有测试，返回「没有下单成功」），**编到一个存在但不对的 id，单子就真的记在别人头上了**。
-  另注：`erp_os` 的 `/api/customers?search=` 只匹配 code / name / contact_person / email，**不匹配 phone**（`repositories/customer.py:55-64`），和当初 `crm_os` 那个坑一模一样——真要按手机号找客户，得照 `crm_lookup_customer` 的老办法分页拉回来本地比对。
-  **任务 11 必须二选一**：要么加一个 `erp_find_customer(name_or_phone)` 读工具，要么在 identity / system prompt 里注入一个固定的 demo 客户 id。**这一条没在任务 9 里顺手做掉**，因为它是「工具怎么挂上 bot」的问题，规格把那件事划给了任务 11；但不解决它，这个工具在真实链路里就是不能用的。返回值里带了 `customer`（ERP 给的客户名）算是一层兜底：模型能看见单子记在谁头上，对不上时可以当场说出来。
+  ⚠️ ~~**必须往下带的一条：没有任何工具能给模型提供 `customer_id`**，任务 11 再解决~~——**这条被审查方判成 P1 打回来了，已经在本任务里修掉**，见下面的第 1 轮审查记录。当初的原文保留在 commit `40d4a8a` 里。
 
   **验收怎么做（用户跑，Claude 跑不了）**：这个环境里没有 `ERP_EMAIL` / `ERP_PASSWORD`（本地 `backend/.env` 不存在），而且带凭据写外部系统会被权限分类器拦。用户在 `backend/` 下建好 `.env` 后：
 
@@ -210,6 +207,27 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   earbuds 的 sku_id 用 `erp_search_sku('earbuds')` 先查。然后开 `erp.kelvinpeng.com` 的订单列表：**那张单在，状态 CONFIRMED，金额 = 299.00 × 3 + SST 10%**；再跑一次 `erp_get_inventory('earbuds')`，**KL 仓的 available 应该少 3**（这一条才是「confirm 真的锁了库存」的证据）。
 
   文件：`backend/app/services/api_client.py`（加带鉴权的 `post` + 共用 `_request`）、`backend/app/services/erp_client.py`（加 `sku` / `create_sales_order` / `confirm_sales_order`）、`backend/app/tools/erp.py`（加 `erp_create_sales_order`）、`backend/tests/test_erp_tools.py`、`backend/tests/test_api_client.py`（均扩展）、`tasks/review/pytest_docker.sh`（一行环境变量）
+
+  ---
+
+  🔍 **2026-09-01 第 1 轮冷审（自动化模式第一次真跑）——报 4 条，2 条进队列，1 条修掉、1 条修实质但驳回证据形式**（全套 147 passed）：
+
+  - **P1-1：`customer_id` 无处可得。接受，已在本任务修掉，不再推给任务 11。**
+    这条我在自辩里**主动写了**，然后把它划给任务 11。审查方不接受这个划分，给了 repro 判成 P1 进队列。**它是对的**：一个必须靠模型编参数才能调用的写工具，交付的不是「待办」，是「会把单记到陌生人头上的功能」。而且 ERP 客户是 1..50 的小整数，编一个几乎必然命中一个真实的错客户——静默、且正好出现在演示要老板盯着看的那块屏上。
+    **修法**：新增只读工具 `erp_find_customer(name_or_phone)`，走 `/api/customers`，返回 int 型 ERP `customer_id`；`erp_create_sales_order` 的 docstring 明写「id 只能来自 erp_find_customer，CRM 的 contact id 是另一套系统的标识，用了就是记错账」；查无此人返回的话里直接写「不要编造 customer_id」。手机号那条老坑照 `crm_lookup_customer` 的办法处理：ERP 的 `?search=` 不匹配 phone，所以判定像电话时分页拉回来本地按后 8 位比对。
+    **顺带把电话匹配规则抽成 `app/services/phone.py`**，`crm_client` 改成从那里 import。两套系统在回答「同一个人是谁」，「哪几位数字算数」这条规则不能各留一份慢慢跑偏。
+    ❗ **但那条 repro 我修不绿，驳回的是证据形式不是问题本身。** 它的最终断言是 `isinstance(crm_lookup_customer 返回的 contact_id, int)`——而 `crm_os` 的联系人 id 是 UUID（审查方自己的 fixture 就是线上取的 `b47a5f85-...`，它自己在 docstring 里写明了）。这个断言**恒为假，且与本仓库的任何改动无关**；唯一能让它变绿的办法是把 UUID 硬转成 int，那是为了满足一条测试去制造一个真 bug。
+    这条 finding 真正问的是「工具集里有没有一条路能给出 `erp_create_sales_order` 收得下的 id」。我把这个意图翻译成了能跑的断言，放在 `test_the_tool_set_can_produce_an_erp_customer_id_for_the_order`：拿到 schema 确认 `customer_id` 要 integer，再真的调一次 `erp_find_customer` 拿到 int。**第三方检验方式**：把审查方 repro 里的 `crm.crm_lookup_customer` 换成 `erp.erp_find_customer`、`contact_id` 换成 `customer_id`，它就绿了。
+
+  - **P2-1：超时的写入被报成「肯定没下单」。接受，已修。** 这条是我自己写下的自相矛盾——`JsonApiClient.post` 的注释白纸黑字写着「超时可能已经落地，所以不重试」，工具层却对同一种失败返回 `ORDER_FAILED`：*"Nothing was booked -- tell the customer their order was not placed."* 客人听到「没下成」会**再下一次**，于是一个意图变成两张真单。
+    **修法**：`ApiClientError` 带一个 `may_have_landed`。判据是「请求到底出没出去」：`ConnectError` / `ConnectTimeout` / `InvalidURL` / `UnsupportedProtocol` / `ProxyError` 是连接就没建起来 → 确定没写入；其余传输异常（读写超时、连接被掐断）是请求已经出去了 → 不确定；HTTP 状态码上，4xx 是服务端明确拒绝 → 确定没写，**5xx 归入不确定**（502/504 尤其：网关超时对 erp_os 手上那个请求做了什么一无所知）。工具层据此分成 `ORDER_FAILED` / `ORDER_UNKNOWN`，后者明确写「不要再下一次」。
+    confirm 那一步同样分开：被拒（永久，通常是库存不够）说「ERP 拒绝确认、单子挂着等人处理」，超时（不确定）说「单子已经建了，别再建一次」。
+
+  - **P2-2（降级 P3）：真实验收没做。事实成立，但它的前提值得记一笔。** 我确实没跑过真实建单——这个环境里没有凭据。审查方为了取证**自己登录了线上 ERP**，说明[旧密码仍在 git 历史里有效](review/accepted-risks.md)这条已接受风险是真的在起作用。验收步骤仍然留给用户，方法见上面「验收怎么做」。
+
+  - **P3-1（降级）：confirm 永久失败时的措辞。接受，顺手改了。** 原话是「同事马上会确认」，但库存不够是**不会自己好转**的，而且那张 DRAFT 会一直挂着。改成「ERP 拒绝确认，单子挂着等人处理，多半是这个仓库库存不够」。**仍然不自动 cancel 那张 DRAFT**：cancel 同样会失败，而且救不救这张单是人的决定。
+
+  文件（第 1 轮修复新增）：`backend/app/services/phone.py`（新增，两边共用的电话匹配）、`backend/app/services/crm_client.py`（改成 import 它）
 
 - [ ] 🔍 **任务 9.1：CRM 写入工具 —— 自动建线索**
   文件：`backend/app/tools/crm.py`（新增）、`backend/tests/test_crm_tools.py`（新增）

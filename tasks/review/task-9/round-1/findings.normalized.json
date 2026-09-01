@@ -1,0 +1,92 @@
+{
+  "task": "9",
+  "round": "1",
+  "commit": "40d4a8a397e544ae232cfc8408625c68b728168d",
+  "base": "8850266b026899594f39bf5999240c61872b49df",
+  "verdict": "findings",
+  "suite_result": "117 passed, 1 warning in 1.85s (bash tasks/review/pytest_docker.sh <backend>)",
+  "findings": [
+    {
+      "id": "P1-1",
+      "severity": "P1",
+      "category": "correctness",
+      "file": "backend/app/tools/erp.py",
+      "line": 144,
+      "summary": "erp_create_sales_order requires an integer ERP customer_id that no tool in the repository can produce, and books whatever number it is handed without checking it.",
+      "failure": "At run time the model has exactly one customer lookup: crm_lookup_customer, which answers out of crm_os where contacts are keyed by UUID (live: id='b47a5f85-6fcc-4ec3-8d54-b77cd3c5ef9f'). erp.kelvinpeng.com keys customers as integers 1..50 in a separate id space (id 1 = 'Sunrise Hypermart Sdn Bhd', 50 customers total, all Sdn Bhd companies -- no individual WhatsApp buyer exists there at all). There is no erp_lookup_customer / erp_create_customer tool. So the model must invent an integer, and erp_os's create_so performs no validation that the customer exists or relates to the conversation -- it assigns data.customer_id straight onto the SalesOrder row (erp_os backend/app/services/sales.py:228-245). Input: the flagship retail scene, customer 'Tan Ah Kau' on WhatsApp agrees to 2 earbuds. Result: a CONFIRMED order with reserved stock booked against 'Sunrise Hypermart Sdn Bhd' or whichever id the model guessed, shown under that name on the very ERP screen the demo asks the salesperson to watch. No error, no log, nothing distinguishes it from a correct order. Scope counter-argument the developer may raise: the spec literally writes the signature as erp_create_sales_order(customer_id, items), so 'where customer_id comes from' could be deferred to task 11. That argument survives only if the tool refuses an unresolvable customer instead of booking blind; as written it does not, and the acceptance criterion ('that order is in the list, with the right status') cannot be met correctly without a customer resolution step.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p1_1_no_source_for_the_erp_customer_id.py::test_the_only_customer_lookup_tool_yields_an_id_the_order_tool_can_use",
+        "observed_failure": "/app/repro/test_p1_1_no_source_for_the_erp_customer_id.py:54: AssertionError: the only identifier any customer tool hands the model is crm_os's contact_id='b47a5f85-6fcc-4ec3-8d54-b77cd3c5ef9f', which is not an erp_os customer_id -- there is no tool that returns one, so the model must guess\nassert False\n +  where False = isinstance('b47a5f85-6fcc-4ec3-8d54-b77cd3c5ef9f', int)\nFAILED repro/test_p1_1_no_source_for_the_erp_customer_id.py::test_the_only_customer_lookup_tool_yields_an_id_the_order_tool_can_use"
+      },
+      "queue": true,
+      "effective_severity": "P1",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-1",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/tools/erp.py",
+      "line": 24,
+      "summary": "A POST that timed out is reported to the customer as a definite non-write: ORDER_FAILED says 'Nothing was booked -- tell the customer their order was not placed', which contradicts the client's own documented reasoning.",
+      "failure": "JsonApiClient.post's docstring (api_client.py:161-169) states the design explicitly: 'a timeout mid-write may well have landed, and we would rather report a failure the human can check than create a second order.' But erp_create_sales_order has only one word for 'the POST raised', and that word asserts the opposite. Input: httpx.ReadTimeout on POST /api/sales-orders (REQUEST_TIMEOUT_SECONDS is 15; the erp_os route allocates a document number, loads the tax-rate map, inserts the order plus lines and re-reads the detail inside one transaction, over the public internet). Result: the row is committed on the ERP side, the bot tells the customer their order was not placed, and the customer -- reasonably -- asks again, producing a second order. That is precisely the duplicate the no-retry policy was written to prevent, arriving through the message instead of through the retry. Cheap fix: a third message for the 'we do not know' case, in the shape of _not_confirmed, telling the model to say a colleague will check rather than asserting nothing happened.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_1_timeout_denies_a_booked_order.py::test_a_timed_out_write_is_not_reported_as_nothing_was_booked",
+        "observed_failure": "/app/repro/test_p2_1_timeout_denies_a_booked_order.py:42: AssertionError: the tool told the model the order definitely was not placed, but a ReadTimeout on the POST means the order may well exist in erp_os\nFAILED repro/test_p2_1_timeout_denies_a_booked_order.py::test_a_timed_out_write_is_not_reported_as_nothing_was_booked\n(underlying chain: app/services/api_client.py:192 raise ApiClientError('erp api: POST /api/sales-orders failed: timed out') from httpx.ReadTimeout -> erp.py:177 except ApiClientError -> return ORDER_FAILED)"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-2",
+      "severity": "P2",
+      "category": "spec-deviation",
+      "file": "backend/app/tools/erp.py",
+      "line": 142,
+      "summary": "The task's stated acceptance criterion -- call it once and see the order in erp.kelvinpeng.com's list -- was never performed: the live ERP contains zero non-seed sales orders.",
+      "failure": "Spec (base todo.md, task 9): '验收：调一次，然后在浏览器里打开 erp.kelvinpeng.com 的订单列表，那张单在那里，状态正确'. Live check: 250 sales orders exist, every single document_no matches SO-SEED-*, all created 2026-08-29 by the seeder; the count of non-seed documents is 0. Cross-check: SKU 201 (the earbuds added 2026-08-31) shows reserved=0.0000 in all three warehouses, so no confirmed order has ever touched it either. The entire write path -- payload shape, 201 handling, the two-step create-then-confirm, the response projection -- has therefore only ever run against Mock objects the developer wrote. The repo notes writes with credentials are blocked by Claude Code's permission classifier, which explains why it was not done but does not make the criterion met; it makes this a user-run step that is still outstanding. I verified the payload contract independently against the live OpenAPI schema and it does line up (SalesOrderCreate requires customer_id/warehouse_id/business_date/lines; SOLineCreate requires sku_id/uom_id/qty_ordered/unit_price_excl_tax/tax_rate_id; tax_rate_percent is correctly omitted because erp_os treats it as server-authoritative, services/sales.py:68-69) -- so this is an unverified claim, not a known-broken one.",
+      "evidence": {
+        "kind": "command",
+        "command": "curl -s -X POST https://erp.kelvinpeng.com/api/auth/login -d '{\"email\":\"admin@demo.my\",\"password\":\"...\"}' | jq -r .access_token  # then GET /api/sales-orders?page_size=100 and count non SO-SEED document_no",
+        "output": "total SOs: 250\nnon SO-SEED docs: 0\nnewest by created_at: SO-SEED-00247 CONFIRMED 2026-08-05 created_at=2026-08-29T19:00:09\nGET /api/inventory/branch-matrix?sku_query=earbuds -> sku_id 201, reserved \"0.0000\" in WH-KL / WH-PG / WH-JB"
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "command 证据只对 security/config 类开放，category='spec-deviation' → 降级"
+      ]
+    },
+    {
+      "id": "P3-1",
+      "severity": "P3",
+      "category": "correctness",
+      "file": "backend/app/tools/erp.py",
+      "line": 40,
+      "summary": "When confirm fails for a permanent reason (insufficient stock), _not_confirmed still promises 'a colleague will confirm the order shortly' and leaves an orphan DRAFT order behind.",
+      "failure": "erp_os's confirm_so reserves stock per line and raises InsufficientStockError on failure (erp_os backend/app/services/sales.py:374-386). That surfaces here as an ApiClientError indistinguishable from a dropped connection, so the customer is told a colleague will confirm shortly -- but no colleague can, the stock is not there, and the DRAFT order stays in the ERP list forever with no cancel. Over a few demos the order list fills with unconfirmable drafts on the screen the salesperson is being shown. The detail needed to tell the two apart is already in hand: ApiClientError now carries the service's own words via _detail().",
+      "evidence": {
+        "kind": "read-only",
+        "note": "Read from erp_os's confirm path plus the reviewed tool's single except clause; not reproduced, since proving it needs a live write."
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "只读代码推测，不进修复队列（可以作为线索）"
+      ]
+    }
+  ],
+  "self_check": {
+    "spec_coverage": "Partly. The unit suite is unusually good for this repo -- it drives httpx directly rather than stubbing ErpClient.post, so it would catch a wrong route, a wrong payload shape or the two writes happening in the wrong order, and it deliberately avoids the tautology that produced task 8's P1-1. I independently checked the payload against the live OpenAPI schema and it is correct, including the non-obvious call to omit tax_rate_percent (erp_os recomputes it from tax_rate_id) and the choice to send business_date in UTC+8 (erp_os does no future-date validation, so no rejection risk). What no test covers is the only acceptance criterion the spec actually wrote down: an order visible in erp.kelvinpeng.com. See P2-2 -- that criterion is unmet, not merely untested.",
+    "e2e": "No. This is the finding of the round. Every response body the tests assert against is a dict the developer typed; the live ERP has never seen a request from this code (250 sales orders, all SO-SEED-*, none newer than the 2026-08-29 seed). Separately, and worse, the chain cannot be completed even by hand without a decision that was not made: nothing produces the ERP customer_id the tool requires (P1-1). 'The function returns data' is satisfied; 'this works in the real chain' is not.",
+    "security": "Nothing new. The write tool adds no credentials, no new configuration and no user-controlled string that reaches a URL (sku_id is int()-coerced before interpolation into /api/skus/{id}). _detail() puts the ERP's error body into the exception message, which reaches logs only -- erp_os error bodies carry no secrets. AR-1 and AR-2 are unaffected by this change and are not re-reported.",
+    "spec_deviation": "Three, two of them justified. (a) Auto-confirm: the spec asked only for creation and 'the right status'; the commit adds a second write that reserves real stock. Defensible and stated in the commit message, and the half-success is handled -- accepted, not reported. (b) warehouse_id added as a third parameter: not in the spec's signature, but erp_get_inventory really does hand the model warehouse ids and the default is warehouse 1 = 'Main Warehouse - Kuala Lumpur' (verified live) -- accepted. (c) The acceptance criterion itself was skipped; that one has no justification beyond 'the tool could not run it', and is reported as P2-2 rather than absorbed."
+  },
+  "phase2": {
+    "rebuttals": "Most of the defence holds up under checking; three points do not.\n\n(1) HOLDS. 'Prices/uom/tax come from the catalogue, never the caller.' Verified against the live schema: SOLineCreate requires sku_id/uom_id/qty_ordered/unit_price_excl_tax/tax_rate_id, and GET /api/skus/201 really does return base_uom_id=1, tax_rate_id=1, unit_price_excl_tax='299.0000'. Also correct, and non-obvious, to omit tax_rate_percent: erp_os recomputes it from tax_rate_id and ignores the caller's value (services/sales.py:68-69, 220). No finding.\n\n(2) HOLDS. 'Retrying a write is safe only because a 401 is refused before the route runs.' Correct for FastAPI: require_role is a Depends, so the handler body never executes on a 401. The retry cannot double-book.\n\n(3) DOES NOT HOLD as written. Reason (2) for auto-confirming -- 'task 10's e-invoice needs it' -- is the wrong argument. einvoice.py:245 rejects anything not in (PARTIAL_SHIPPED, FULLY_SHIPPED); CONFIRMED is rejected too, with the same error. So confirming does not unblock task 10, it only moves one status closer. Reasons (1) 'DRAFT reserves no stock' and (3) 'the customer said yes, so CONFIRMED is the right status' do stand on their own -- I verified confirm_so calls inventory_svc.apply_reserve per line (services/sales.py:374-386), which is exactly the 'ask again how many are left' beat. The deviation survives; one of its three legs does not, and it should not be cited again in task 10.\n\n(4) DOES NOT HOLD. '编到不存在的 id 会被 ERP 拒掉（有测试）'. The test is test_a_rejected_order_says_nothing_was_booked, which mocks a 400 whose body is '{\"detail\":\"Customer 999 not found.\"}'. erp_os cannot send that: create_so performs no customer lookup at all, it assigns data.customer_id straight onto the row, and there is no IntegrityError handler anywhere in erp_os/backend/app. What actually happens is an unhandled FK violation on fk_so_customer (models/sales.py:47-48) surfacing as a 500. The tool's behaviour is still correct -- _request treats any status >= 400 the same, so ORDER_FAILED is returned either way -- but the test asserts a contract the service does not have. This is the task-8 lesson recurring one level up: the earlier tautology was 'the exception type I chose to catch', this one is 'the error response I imagine the service sends'. The suite's design goal of driving httpx rather than stubbing ErpClient.post was applied to the request contract and not to the response contract. Worth fixing the fixture to a 500 with a SQLAlchemy-shaped body; it is a test-quality defect, not a behaviour defect, so I am not queueing it as a finding.\n\n(5) HOLDS but is now stale. '这个环境里没有 ERP_EMAIL / ERP_PASSWORD ... 带凭据写外部系统会被权限分类器拦' -- true, and it is why P2-2 exists rather than being closed. Note the acceptance recipe in todo.md is good and specific (order visible, CONFIRMED, 299.00 x 3 + SST 10%, KL available down by 3) and I confirmed the inputs it needs are live: earbuds are sku_id 201, WH-KL available is 42.0000, reserved 0.0000, tax_rate_id 1 = 'SST 10%'. The user can run it as written.\n\n(6) On P2-1, the defence gets close and then stops. The commit says '超时之类的一律不重试（那种情况写入可能已经落地了），宁可报失败让人去查' -- correct reasoning, and the api_client docstring repeats it. But ORDER_FAILED does not say '让人去查', it says 'Nothing was booked -- tell the customer their order was not placed'. The policy was written down twice and then contradicted by the one string the customer actually hears.",
+    "blind_spot": "Both of my headline findings were things the developer had already volunteered. P1-1 (no source for customer_id) is disclosed in todo.md under a warning marker, in more detail than I wrote it, including the specific 'existing but wrong id books the order to someone else' failure and the extra fact that erp_os's /api/customers?search= does not match phone either. P2-2 (live acceptance never run) is stated in the very first line of the task entry. I rediscovered both from scratch and produced a red repro for one of them, which is worth something -- an unverified admission and a machine-checkable failing test are not the same artifact -- but as *review* it is close to zero new information. Only P2-1 and P3-1 were genuinely additive.\n\nThe pattern behind that: I spent the first two thirds of the round validating the parts the developer argued for most confidently (payload shape, tax_rate_percent, business_date timezone, the 401-retry safety argument) and found them all correct, which is exactly what a well-argued commit invites you to do. The two things that turned out to be wrong -- the ORDER_FAILED wording and the fictional 400 body in the rejection test -- both sit in places the commit message covers with a confident sentence, and a confident sentence reads as verification. Last round's lesson was 'the developer prepared a defence and never checked its premise'; the reviewer-side version is 'the reviewer checked the premises the defence pointed at'. Concretely, I checked the *request* contract against the live OpenAPI schema and never checked the *error-response* contract, which is where the tautology had moved -- I only found it in phase 2, while auditing a rebuttal, and it should have fallen out of phase 1."
+  },
+  "queued_count": 2
+}

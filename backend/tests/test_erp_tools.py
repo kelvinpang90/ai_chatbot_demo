@@ -134,7 +134,12 @@ def test_the_client_is_shared_so_the_cached_token_is_too():
 
 def test_every_tool_is_declared_with_a_schema_the_model_can_read():
     names = {tool.name for tool in erp.TOOLS}
-    assert names == {"erp_search_sku", "erp_get_inventory", "erp_create_sales_order"}
+    assert names == {
+        "erp_search_sku",
+        "erp_get_inventory",
+        "erp_find_customer",
+        "erp_create_sales_order",
+    }
     for tool in erp.TOOLS:
         assert tool.input_schema["properties"]  # arguments made it into the schema
         assert tool.description
@@ -316,3 +321,173 @@ def test_a_dead_erp_does_not_leave_the_write_tool_raising(_credentials):
             assert erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}]) == (
                 erp.ORDER_FAILED
             )
+
+
+# -- saying which of the two failures it was ---------------------------------
+#
+# Review round 1, P2-1: every write failure said "Nothing was booked -- tell the
+# customer their order was not placed", including the ones where the request went
+# out and no answer came back. A customer told that reorders, and the second
+# order is as real as the first.
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ReadTimeout("timed out"),
+        httpx.WriteTimeout("timed out"),
+        httpx.RemoteProtocolError("server disconnected"),
+    ],
+    ids=["read-timeout", "write-timeout", "disconnected"],
+)
+def test_a_write_that_went_out_unanswered_never_claims_nothing_happened(_credentials, failure):
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), failure]):
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            answer = erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
+
+    assert answer == erp.ORDER_UNKNOWN
+    assert "Nothing was booked" not in answer
+    assert "was not placed" not in answer
+    # The instruction that keeps one intent from becoming two orders.
+    assert "Do not place it again" in answer
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [httpx.ConnectError("refused"), httpx.ConnectTimeout("no route")],
+    ids=["refused", "connect-timeout"],
+)
+def test_a_write_that_never_left_the_process_does_say_nothing_happened(_credentials, failure):
+    """The other half of the same call: uncertainty that is not warranted is
+    just as bad, because it leaves a live order dangling that never existed."""
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), failure]):
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            assert erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}]) == (
+                erp.ORDER_FAILED
+            )
+
+
+def test_a_server_error_on_the_write_is_treated_as_unknown(_credentials):
+    """A 504 from the proxy says nothing about what erp_os did with the request."""
+    with patch.object(
+        api_client.httpx, "post", side_effect=[_response(_LOGIN), _response({}, 504)]
+    ):
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            assert erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}]) == (
+                erp.ORDER_UNKNOWN
+            )
+
+
+def test_a_refused_confirm_does_not_promise_it_will_clear_by_itself(_credentials):
+    """Refused is permanent -- usually not enough stock in that branch."""
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response({}, 400)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            answer = erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
+
+    assert answer == erp._not_confirmed("SO-2026-0042")
+    assert "REFUSED" in answer
+
+
+def test_a_confirm_that_timed_out_says_the_order_exists_anyway(_credentials):
+    """The order is real either way, so the one thing that must not happen is
+    the model creating it a second time."""
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), httpx.ReadTimeout("timed out")]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            answer = erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
+
+    assert answer == erp._confirmation_unknown("SO-2026-0042")
+    assert "Do not create the order again" in answer
+
+
+# -- finding the customer the order is billed to -----------------------------
+#
+# Review round 1, P1-1: erp_create_sales_order demanded an integer customer_id
+# that no tool could produce. crm_lookup_customer answers out of crm_os, whose
+# contacts are UUIDs in a different id space, so the model's only option was to
+# invent a small integer -- and every small integer is somebody's real account.
+
+CUSTOMER_ROW = {
+    "id": 7,
+    "code": "CUST-0007",
+    "name": "Sunrise Hypermart Sdn Bhd",
+    "phone": "+60 17-394 8123",
+    "currency": "MYR",
+    "credit_limit": "50000.0000",
+}
+
+
+def test_the_tool_set_can_produce_an_erp_customer_id_for_the_order(_credentials):
+    """The fix for P1-1, stated as the thing that has to be true.
+
+    The reviewer's own repro asserts that crm_lookup_customer returns an int,
+    which it never can -- crm_os keys contacts by UUID and always will. What the
+    finding is really about is whether *some* tool hands the model a value that
+    erp_create_sales_order's customer_id will accept. This is that assertion.
+    """
+    order_schema = next(
+        t for t in erp.TOOLS if t.name == "erp_create_sales_order"
+    ).input_schema
+    assert order_schema["properties"]["customer_id"]["type"] == "integer"
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(
+            api_client.httpx, "get", return_value=_response({"items": [CUSTOMER_ROW]})
+        ):
+            found = json.loads(erp.erp_find_customer("Sunrise"))
+
+    assert isinstance(found[0]["customer_id"], int)
+    assert found[0]["customer_id"] == 7
+
+
+def test_a_customer_is_searched_by_name_in_one_call(_credentials):
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(
+            api_client.httpx, "get", return_value=_response({"items": [CUSTOMER_ROW]})
+        ) as get:
+            payload = json.loads(erp.erp_find_customer("Sunrise"))
+
+    assert get.call_count == 1
+    assert get.call_args.args[0].endswith("/api/customers")
+    assert get.call_args.kwargs["params"]["search"] == "Sunrise"
+    assert payload[0]["name"] == "Sunrise Hypermart Sdn Bhd"
+
+
+@pytest.mark.parametrize(
+    "typed", ["+60 17-394 8123", "017-3948123", "60173948123", "0173948123"]
+)
+def test_a_phone_number_is_matched_locally_because_the_erp_cannot_search_on_it(
+    _credentials, typed
+):
+    """erp_os's ?search= covers code, name, contact_person and email only. The
+    phone number is the one identifier a WhatsApp conversation always has, so a
+    lookup that could not use it would be no lookup at all."""
+    others = [{**CUSTOMER_ROW, "id": 8, "phone": "03-2181 0000"}]
+    page = {"items": others + [CUSTOMER_ROW]}
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", return_value=_response(page)) as get:
+            payload = json.loads(erp.erp_find_customer(typed))
+
+    # Paging, not searching: a phone number in ?search= would return nothing.
+    assert get.call_args.kwargs["params"]["search"] is None
+    assert [row["customer_id"] for row in payload] == [7]
+
+
+def test_an_unknown_customer_tells_the_model_not_to_invent_one(_credentials):
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", return_value=_response({"items": []})):
+            answer = erp.erp_find_customer("Nobody At All")
+
+    assert answer == erp.NO_CUSTOMER
+    assert "do not invent" in answer.lower()
+
+
+def test_an_unreachable_erp_does_not_look_like_an_unknown_customer(_credentials):
+    """"Not a customer" and "I could not check" must not collapse into one
+    answer: the first one invites creating a duplicate account."""
+    with patch.object(api_client.httpx, "post", side_effect=httpx.ConnectError("refused")):
+        assert erp.erp_find_customer("Sunrise") == erp.UNAVAILABLE
