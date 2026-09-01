@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tasks\\review\\hook_stop.cmd",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

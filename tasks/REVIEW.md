@@ -85,3 +85,78 @@ git show HEAD -- tasks/todo.md    # 开发方的自辩
 1. **两条 P1 里有一条,开发方在审查前就自己发现了(异常捕获类型错误),另一条没有(公开仓库凭据)。** 没发现的那条不是因为看不见——**是因为开发方为自己的决定准备好了辩护("都是 demo 系统、密码本来就在 todo.md 里"),却从没去验证辩护赖以成立的前提(仓库是不是公开的)。** 这正是冷审存在的理由:审查方不共享你的辩护。
 2. **P2 是开发方主动指向自己盲区之后才被找到的。** 复验时开发方明确问了一句「边界包装是否有漏网路径——这件事我自己判断不了,因为包装是我写的」。审查方随即找到 `httpx.InvalidURL` 不继承 `HTTPError`。**给审查方一个具体的靶子,比让它自己找有效得多。**
 3. **测试全绿不代表没问题。** P1-1 的原测试写的是 `side_effect=ApiClientError(...)`——测的是「我选择去捕获的异常类型」,不是真实会发生的类型。同义反复测试能骗过一切自动化,只骗不过一个愿意自己动手跑复现的读者。所以第一阶段那条「**必须自己跑,不许只读代码**」是硬要求,不是客套。
+
+---
+
+# 自动化模式（2026-09-01 起）
+
+上面那套规矩不变，交接不用再靠人复制粘贴那句话了。
+
+## 怎么触发
+
+在 commit message 里加一行 trailer：
+
+```
+Review: required (task 17)
+```
+
+Stop hook 看到它就在后台起一个冷审进程，然后用 exit 2 把开发 session 拽回来，
+让它去跑 `bash tasks/review/wait.sh` 等结果。**这是 opt-in 的**——REVIEW.md 自己写了
+「不要全上，耗时翻倍」，所以只给写真实数据的和状态机那几个任务加这行。
+
+`(task N)` 决定轮次怎么算：同一个 N 的连续 commit 算同一轮循环，换个 N 自动重新计数。
+
+## 隔离靠什么
+
+**不靠纪律，靠 worktree。** 审查方跑在 `.claude/worktrees/review-<sha>` 里，HEAD 停在被审
+commit，审完整个删掉。它写的 findings 和 repro 落在 worktree **外面**的
+`tasks/review/task-N/round-M/`。
+
+收尾时会跑 `git status --porcelain`：worktree 一旦不干净，说明审查方动了被审代码，
+那这一轮它跑出来的所有 repro 都是在它自己改过的代码上跑的——全部按未经证实处理。
+「不准改代码」这条从口头纪律变成了可检测的事实。
+
+## 一条 finding 凭什么算数
+
+这是整套自动化真正的地基。两个 agent 互相写作文是没有停机条件的，
+所以「这条 finding 成不成立」必须变成机器能重跑的东西：
+
+| 证据类型 | 进修复队列 | 说明 |
+|---|---|---|
+| `repro` | ✅ | 一个 pytest 文件，在**未修改的**被审 commit 上跑红，修完必须转绿。P1 基本只认这个 |
+| `command` | ✅ 但只限 security / config | 例外通道。「仓库是公开的」写不成测试，但它是真的 |
+| `read-only` | ❌ 自动降级 P3 | 只读代码推测。可以当线索，不进队列 |
+
+`tasks/review/validate_findings.py` 负责判定，产出 `findings.normalized.json`，
+每条带一个 `queue` 布尔值。开发方**只对 `queue=true` 的负责**；降级的可以看，可以不理。
+
+两边跑测试用同一个入口，红和绿在两边是同一个意思：
+
+```bash
+bash tasks/review/pytest_docker.sh backend                              # 全套
+bash tasks/review/pytest_docker.sh backend tasks/review/task-N/round-M/repro   # 只跑复现
+```
+
+## 停机条件
+
+轮次上限 **2**。第 3 次触发时 hook 不再开审查，直接要求开发方停手、把「修了什么 / 还在争什么 /
+该不该 push」摆给用户。用户拍板后删掉 `tasks/review/state.env` 可以重开。
+
+`tasks/review/accepted-risks.md` 是已决事项白名单，每轮注入给审查方。
+想推翻某一条，必须说出**是什么新事实**让它失效，不能重述当初被驳回的理由。
+
+**这套东西不会自动 push。** 推 master 等于触发部署，复验通过之后仍然由用户点头。
+
+## 文件
+
+| 文件 | 作用 |
+|---|---|
+| `.claude/settings.json` | 注册 Stop hook |
+| `hook_stop.cmd` / `hook_stop.sh` | 守门 + 起进程 + exit 2。`.cmd` 是 Windows 上的必需品：hook 跑在 cmd.exe 里，那里的裸 `bash` 是 WSL 启动器，看到的是另一个文件系统 |
+| `run_review.sh` | 建 worktree → 跑 `claude -p` → 查 worktree 是否被动过 → 验证 findings → 删 worktree |
+| `reviewer_prompt.md` | 审查方的冷启动提示词，`{{...}}` 占位符在运行时替换 |
+| `wait.sh` | 开发方唯一的阻塞点，等审查方交卷（默认 20 分钟超时） |
+| `validate_findings.py` | 证据判定，产出修复队列 |
+| `pytest_docker.sh` | 两边共用的测试入口 |
+| `accepted-risks.md` | 已决事项白名单 |
+| `state.env` | 运行时状态，gitignore |

@@ -1,0 +1,7 @@
+# The review automation runs from a git worktree, and this repo has
+# core.autocrlf=true. Without this, checking out that worktree hands bash a
+# script full of \r and every command in it dies. Scoped to tasks/review/ on
+# purpose: a repo-wide rule would renormalise every existing file.
+tasks/review/*.sh text eol=lf
+tasks/review/*.py text eol=lf
+tasks/review/*.cmd text eol=crlf

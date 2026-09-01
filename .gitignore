@@ -7,3 +7,10 @@ venv/
 
 node_modules/
 dist/
+
+# 审查自动化的运行时状态（每台机器自己的，别进 git）
+.claude/worktrees/
+tasks/review/state.env
+tasks/review/logs/
+tasks/review/task-*/round-*/session.json
+tasks/review/task-*/round-*/session.err
