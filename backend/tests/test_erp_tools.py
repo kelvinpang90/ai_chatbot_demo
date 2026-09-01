@@ -1,5 +1,6 @@
 import json
-from unittest.mock import patch
+from datetime import datetime
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
@@ -131,9 +132,187 @@ def test_the_client_is_shared_so_the_cached_token_is_too():
     assert erp_client.client() is erp_client.client()
 
 
-def test_both_tools_are_declared_with_a_schema_the_model_can_read():
+def test_every_tool_is_declared_with_a_schema_the_model_can_read():
     names = {tool.name for tool in erp.TOOLS}
-    assert names == {"erp_search_sku", "erp_get_inventory"}
+    assert names == {"erp_search_sku", "erp_get_inventory", "erp_create_sales_order"}
     for tool in erp.TOOLS:
         assert tool.input_schema["properties"]  # arguments made it into the schema
         assert tool.description
+
+
+def test_the_order_tool_describes_its_line_items_field_by_field():
+    """A bare `array of object` would leave the model guessing the key names."""
+    schema = next(t for t in erp.TOOLS if t.name == "erp_create_sales_order").input_schema
+    line = schema["$defs"]["OrderLine"]
+
+    assert set(line["properties"]) == {"sku_id", "quantity"}
+    assert schema["properties"]["items"]["items"]["$ref"].endswith("OrderLine")
+    # Naming a warehouse is optional; ordering something is not.
+    assert set(schema["required"]) == {"customer_id", "items"}
+
+
+# -- writing an order --------------------------------------------------------
+#
+# These drive httpx itself rather than stubbing ErpClient.post. A test that
+# asserts "the method I wrote was called" passes whether or not the request it
+# builds is one erp_os would accept; these fail if the route, the payload shape
+# or the order of the two writes is wrong.
+
+SKU_DETAIL = {
+    **SKU_ROW,
+    "base_uom_id": 1,
+    "tax_rate_id": 4,
+}
+
+CONFIRMED_ORDER = {
+    "id": 77,
+    "document_no": "SO-2026-0042",
+    "status": "CONFIRMED",
+    "customer_id": 3,
+    "customer_name": "Tan Ah Kau",
+    "warehouse_name": "Main Warehouse - Kuala Lumpur",
+    "currency": "MYR",
+    "total_incl_tax": "986.70",
+    "lines": [
+        {
+            "sku_code": "SKU-00012",
+            "sku_name": "TWS Earbuds Pro",
+            "qty_ordered": "3.0",
+            "unit_price_excl_tax": "89.0000",
+            "line_total_incl_tax": "986.70",
+        }
+    ],
+}
+DRAFT_ORDER = {**CONFIRMED_ORDER, "status": "DRAFT"}
+
+_LOGIN = {"access_token": "acc", "refresh_token": "ref", "expires_in": 900}
+
+
+def _response(payload: dict, status_code: int = 200, text: str = "") -> Mock:
+    response = Mock(spec=httpx.Response)
+    response.status_code = status_code
+    response.json.return_value = payload
+    response.text = text
+    response.raise_for_status.return_value = None
+    return response
+
+
+@pytest.fixture
+def _credentials():
+    """The client refuses to log in without these, so a write test needs them."""
+    with patch.object(erp_client.settings, "erp_email", "tester@example.test"):
+        with patch.object(erp_client.settings, "erp_password", "not-a-real-password"):
+            erp_client.reset()
+            yield
+
+
+def test_an_order_is_created_then_confirmed_with_prices_from_the_catalogue(_credentials):
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)) as get:
+            payload = json.loads(
+                erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 3}], warehouse_id=2)
+            )
+
+    # The line was priced from /api/skus/12, not from anything the caller said.
+    assert get.call_args.args[0].endswith("/api/skus/12")
+    create, confirm = post.call_args_list[1], post.call_args_list[2]
+    assert create.args[0].endswith("/api/sales-orders")
+    body = create.kwargs["json"]
+    assert body["customer_id"] == 3
+    assert body["warehouse_id"] == 2
+    assert body["lines"] == [
+        {
+            "sku_id": 12,
+            "uom_id": 1,
+            "tax_rate_id": 4,
+            "qty_ordered": "3.0",
+            "unit_price_excl_tax": "89.00",
+        }
+    ]
+    # Confirming is what reserves the stock; a DRAFT order holds nothing.
+    assert confirm.args[0].endswith("/api/sales-orders/77/confirm")
+    assert payload["order_no"] == "SO-2026-0042"
+    assert payload["status"] == "CONFIRMED"
+    assert payload["customer"] == "Tan Ah Kau"
+    assert payload["lines"][0]["qty"] == "3.0"
+
+
+def test_the_order_is_dated_in_the_shop_s_own_timezone(_credentials):
+    """The VPS is on UTC; before 8am local that is still yesterday's date."""
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
+
+    expected = datetime.now(erp_client.MALAYSIA_TIME).date().isoformat()
+    assert post.call_args_list[1].kwargs["json"]["business_date"] == expected
+
+
+def test_the_order_ships_from_the_main_branch_when_no_warehouse_is_named(_credentials):
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
+
+    assert post.call_args_list[1].kwargs["json"]["warehouse_id"] == erp_client.DEFAULT_WAREHOUSE_ID
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [],
+        [{"sku_id": 12, "quantity": 0}],
+        [{"sku_id": 12, "quantity": -2}],
+        [{"sku_id": 12}],
+        [{"sku_id": "not-a-number", "quantity": 1}],
+        ["earbuds"],
+    ],
+    ids=["empty", "zero-qty", "negative-qty", "no-qty", "unparsable-sku", "not-an-object"],
+)
+def test_an_unusable_order_is_refused_before_anything_is_written(_credentials, items):
+    with patch.object(api_client.httpx, "post") as post:
+        assert erp.erp_create_sales_order(3, items) == erp.BAD_ITEMS
+
+    # The point is not the message, it is that nothing reached the ERP.
+    assert post.call_count == 0
+
+
+def test_a_rejected_order_says_nothing_was_booked(_credentials):
+    """erp_os refusing the write -- an unknown customer, a closed period."""
+    rejected = _response({}, 400, text='{"detail":"Customer 999 not found."}')
+
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), rejected]):
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            assert erp.erp_create_sales_order(999, [{"sku_id": 12, "quantity": 1}]) == (
+                erp.ORDER_FAILED
+            )
+
+
+def test_an_order_that_could_not_be_confirmed_is_reported_by_number(_credentials):
+    """The dangerous half-success: the row exists, the stock is not reserved.
+
+    Confirm is a second write, so it can fail on its own -- not enough stock in
+    that branch, or the connection dropping in between. Claiming success here
+    would leave a salesperson believing an order is live.
+    """
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), httpx.ConnectError("dropped")]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            answer = erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
+
+    assert answer == erp._not_confirmed("SO-2026-0042")
+    assert "SO-2026-0042" in answer
+    assert "not" in answer.lower()
+
+
+def test_a_dead_erp_does_not_leave_the_write_tool_raising(_credentials):
+    with patch.object(api_client.httpx, "post", side_effect=httpx.ConnectError("refused")):
+        with patch.object(api_client.httpx, "get", side_effect=httpx.ConnectError("refused")):
+            assert erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}]) == (
+                erp.ORDER_FAILED
+            )

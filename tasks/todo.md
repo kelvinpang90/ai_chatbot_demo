@@ -178,10 +178,38 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   目标：`erp_os` 和 `crm_os` 的认证方式**完全一样**（邮箱+密码 → JWT，15 分钟过期，refresh 一次性），所以先写一个共用基类管登录/缓存/刷新，两个 client 各自只填 base url 和账号。三个只读工具：`erp_search_sku(keyword)`、`erp_get_inventory(sku)`、`crm_lookup_customer(name_or_phone)`
   验收：pytest（mock HTTP）覆盖「token 未过期时不重新登录」「过期时自动 refresh」「refresh 失败回退重新登录」；再对着真实 `erp.kelvinpeng.com` / `crm.kelvinpeng.com` 各调一次，返回的是真数据
 
-- [ ] 🔍 **任务 9：ERP 写入工具 —— 创建销售订单**
-  文件：`backend/app/tools/erp.py`（扩展）、测试
-  目标：`erp_create_sales_order(customer_id, items)`，走 `erp_os` 的 `sales_order` 路由，返回订单号
-  验收：调一次，然后**在浏览器里打开 `erp.kelvinpeng.com` 的订单列表，那张单在那里，状态正确**
+- [x] 🔍 **任务 9：ERP 写入工具 —— 创建销售订单**——**2026-09-01 代码完成**，17 个新测试全过（全套 117 passed）。**真机/真服务验收还没做，只能由用户跑**（见下面「验收怎么做」）。
+
+  **签名**：`erp_create_sales_order(customer_id: int, items: list[OrderLine], warehouse_id: int = 1)`，`OrderLine = {sku_id, quantity}`。用 `TypedDict` 而不是 `list[dict]` 是实测决定的：前者在 schema 里生成 `$defs.OrderLine` 把字段名写清楚，后者只给模型一个 `array of object`，键名全靠猜。
+
+  **三个判断**：
+  - **价格、单位、税率一律从商品档案取，不接受调用方传**。`erp_os` 的行项目要 `uom_id` / `tax_rate_id` / `unit_price_excl_tax`，工具自己去 `GET /api/skus/{id}` 拿。理由不是省参数，是**模型在跟客户聊天，不是在管价目表**——如果价格能由它填，客人一句「boss 算便宜点」就能让一张真单以编出来的价钱落进 ERP，而导演台上看起来和真促销一模一样
+  - **建单之后接着 confirm，偏离了规格里的「创建」二字**。三条理由：① DRAFT 不锁库存，旗舰戏里「下完单再问一次还有几个」会显示库存没变，当场戳破「这是真的」这个主张；② 任务 10 的 e-invoice 实测要求 SO 处于 `PARTIAL_SHIPPED` / `FULLY_SHIPPED`（`erp_os/backend/app/services/einvoice.py:245`），而 DRAFT 连发货都进不去；③ 验收标准里的「状态正确」，对一张客户已经点头的单来说就是 CONFIRMED
+  - **confirm 是第二次写，它自己会失败**（那个仓库库存不够、中途断线），失败时 DRAFT 已经躺在 ERP 里了。这种半成功**不吞**：返回一句点名单号的话，明说「单建了但没确认、没锁库存、发不了货」。**没有自动去 cancel 那张 DRAFT**——cancel 同样可能失败，而且人工要不要救这张单该由人决定，留一张状态诚实的草稿比留一个静默的撤销好
+
+  **顺手修的两个**：
+  - `JsonApiClient` 原本只有 `get`，没有带鉴权的 `post`（任务 8 只读）。抽了一个 `_request` 让 `get` / `post` 共用那套「401 就重登一次再试」的逻辑，而不是把它复制一遍。**给写操作重试是要论证的**：401 由鉴权依赖在路由函数跑之前拒掉，所以重试不可能建出第二张单；超时之类的**一律不重试**（那种情况写入可能已经落地了），宁可报失败让人去查
+  - 错误信息现在带上服务端自己的说法（截断 300 字）。「库存不够」和「查无此客户」对一个在 WhatsApp 那头等着的客人是两个不同的答案，光一个 400 分不出来
+  - `tasks/review/pytest_docker.sh` **在这台机器上根本跑不起来**（`docker: the working directory 'D:/Git/app' is invalid`）——Git Bash 会把参数里的 `/app` 改写成 Windows 路径。加了一行 `export MSYS_NO_PATHCONV=1`。它是审查双方唯一的测试入口，跑不了这一轮就只能交 `blocked`，所以顺手修了；这一条不属于任务 9 的改动范围，单独说明
+
+  **业务日期按 +08:00 算，不是 `date.today()`**：VPS 是 UTC，本地时间凌晨到早上 8 点之间，`date.today()` 会把单据日期写成昨天——而这个日期客户和销售在屏幕上都看得见。马来西亚没有夏令时，固定偏移是精确值不是近似。
+
+  ⚠️ **必须往下带的一条：没有任何工具能给模型提供 `customer_id`。**
+  `erp_search_sku` 给 sku_id，`erp_get_inventory` 给 warehouse_id，**ERP 的客户 id 无处可查**——`crm_lookup_customer` 查的是 CRM 的联系人，两套系统的 id 不通用。现在挂上去，模型只能编一个：编到不存在的 id 会被 ERP 拒掉（有测试，返回「没有下单成功」），**编到一个存在但不对的 id，单子就真的记在别人头上了**。
+  另注：`erp_os` 的 `/api/customers?search=` 只匹配 code / name / contact_person / email，**不匹配 phone**（`repositories/customer.py:55-64`），和当初 `crm_os` 那个坑一模一样——真要按手机号找客户，得照 `crm_lookup_customer` 的老办法分页拉回来本地比对。
+  **任务 11 必须二选一**：要么加一个 `erp_find_customer(name_or_phone)` 读工具，要么在 identity / system prompt 里注入一个固定的 demo 客户 id。**这一条没在任务 9 里顺手做掉**，因为它是「工具怎么挂上 bot」的问题，规格把那件事划给了任务 11；但不解决它，这个工具在真实链路里就是不能用的。返回值里带了 `customer`（ERP 给的客户名）算是一层兜底：模型能看见单子记在谁头上，对不上时可以当场说出来。
+
+  **验收怎么做（用户跑，Claude 跑不了）**：这个环境里没有 `ERP_EMAIL` / `ERP_PASSWORD`（本地 `backend/.env` 不存在），而且带凭据写外部系统会被权限分类器拦。用户在 `backend/` 下建好 `.env` 后：
+
+  ```bash
+  cd backend && python -c "
+  from app.tools.erp import erp_create_sales_order as f
+  print(f(<真实客户id>, [{'sku_id': <earbuds的sku_id>, 'quantity': 3}]))"
+  ```
+
+  earbuds 的 sku_id 用 `erp_search_sku('earbuds')` 先查。然后开 `erp.kelvinpeng.com` 的订单列表：**那张单在，状态 CONFIRMED，金额 = 299.00 × 3 + SST 10%**；再跑一次 `erp_get_inventory('earbuds')`，**KL 仓的 available 应该少 3**（这一条才是「confirm 真的锁了库存」的证据）。
+
+  文件：`backend/app/services/api_client.py`（加带鉴权的 `post` + 共用 `_request`）、`backend/app/services/erp_client.py`（加 `sku` / `create_sales_order` / `confirm_sales_order`）、`backend/app/tools/erp.py`（加 `erp_create_sales_order`）、`backend/tests/test_erp_tools.py`、`backend/tests/test_api_client.py`（均扩展）、`tasks/review/pytest_docker.sh`（一行环境变量）
 
 - [ ] 🔍 **任务 9.1：CRM 写入工具 —— 自动建线索**
   文件：`backend/app/tools/crm.py`（新增）、`backend/tests/test_crm_tools.py`（新增）

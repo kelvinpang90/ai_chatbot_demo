@@ -33,6 +33,19 @@ EXPIRY_MARGIN_SECONDS = 60
 TRANSPORT_ERRORS = (httpx.HTTPError, httpx.InvalidURL)
 
 
+# Long enough for a validation error naming the field, short enough to keep a
+# stack trace and a console line readable.
+MAX_ERROR_DETAIL_CHARS = 300
+
+
+def _detail(response: Any) -> str:
+    """Whatever the service said about the failure, trimmed."""
+    try:
+        return str(response.text)[:MAX_ERROR_DETAIL_CHARS]
+    except Exception:  # pragma: no cover - a body we cannot read is not the story
+        return ""
+
+
 class ApiClientError(RuntimeError):
     """Anything that stopped us getting an answer out of the back office.
 
@@ -142,28 +155,51 @@ class JsonApiClient:
     # -- requests ------------------------------------------------------------
 
     def get(self, path: str, params: dict | None = None) -> Any:
-        """GET an authenticated endpoint, re-authenticating once if the token is stale.
+        """GET an authenticated endpoint."""
+        return self._request("GET", path, params=params)
 
-        The expiry check above is a clock comparison; the 401 retry covers what a
-        clock cannot see -- a revoked session, a restarted back end.
+    def post(self, path: str, json: dict | None = None) -> Any:
+        """POST an authenticated endpoint.
+
+        Shares the re-login retry with `get`, which needs justifying for a write:
+        a 401 is returned by the auth dependency before the route body runs, so
+        the retry cannot book the same order twice. Nothing else is retried -- a
+        timeout mid-write may well have landed, and we would rather report a
+        failure the human can check than create a second order.
         """
+        return self._request("POST", path, json=json)
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        """One authenticated call, re-authenticating once if the token is stale.
+
+        The expiry check in `_access_token` is a clock comparison; the 401 retry
+        covers what a clock cannot see -- a revoked session, a restarted back end.
+        """
+        # Call httpx by attribute rather than holding a reference: the two verbs
+        # stay independently patchable, which is how the tests raise real
+        # transport failures at exactly one of them.
+        send = httpx.get if method == "GET" else httpx.post
         for force_login in (False, True):
             token = self._access_token(force_login=force_login)
             try:
-                response = httpx.get(
+                response = send(
                     f"{self.base_url}{path}",
-                    params=params,
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=REQUEST_TIMEOUT_SECONDS,
+                    **kwargs,
                 )
             except TRANSPORT_ERRORS as exc:
-                raise ApiClientError(f"{self.name} api: GET {path} failed: {exc}") from exc
+                raise ApiClientError(f"{self.name} api: {method} {path} failed: {exc}") from exc
             if response.status_code == 401 and not force_login:
                 continue
             if response.status_code >= 400:
+                # Carry the service's own words: "insufficient stock" and "no such
+                # customer" are different answers to give a waiting customer, and a
+                # bare status code cannot tell them apart.
                 raise ApiClientError(
-                    f"{self.name} api: GET {path} returned {response.status_code}"
+                    f"{self.name} api: {method} {path} returned "
+                    f"{response.status_code}: {_detail(response)}"
                 )
             return self._unwrap(response.json())
 
-        raise ApiClientError(f"{self.name} api: GET {path} stayed unauthorized after re-login")
+        raise ApiClientError(f"{self.name} api: {method} {path} stayed unauthorized after re-login")

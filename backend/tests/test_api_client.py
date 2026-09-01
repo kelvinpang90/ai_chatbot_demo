@@ -256,3 +256,79 @@ def test_a_subclass_can_strip_a_response_envelope():
 
     assert payload == {"total": 1}
     assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer acc-1"
+
+
+# -- writes ------------------------------------------------------------------
+
+
+def test_a_write_carries_the_token_and_the_body():
+    client = _client()
+    created = _json_response({"id": 77}, status_code=201)
+
+    with patch.object(
+        api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), created]
+    ) as post:
+        payload = client.post("/api/sales-orders", json={"customer_id": 3})
+
+    assert payload == {"id": 77}
+    write = post.call_args_list[1]
+    assert write.args[0] == f"{BASE_URL}/api/sales-orders"
+    assert write.kwargs["json"] == {"customer_id": 3}
+    assert write.kwargs["headers"]["Authorization"] == "Bearer acc-1"
+
+
+def test_a_401_on_a_write_re_logs_in_and_retries_exactly_once():
+    """Safe to retry only because a 401 is refused before the route runs.
+
+    If this ever retried a request that had actually reached the handler, the
+    customer would get two orders for one confirmation.
+    """
+    client = _client()
+    created = _json_response({"id": 77}, status_code=201)
+
+    with patch.object(
+        api_client.httpx,
+        "post",
+        side_effect=[
+            _tokens("acc-1", "ref-1"),
+            _json_response({}, status_code=401),
+            _tokens("acc-9", "ref-9"),
+            created,
+        ],
+    ) as post:
+        assert client.post("/api/sales-orders", json={}) == {"id": 77}
+
+    assert _paths(post) == [
+        f"{BASE_URL}/api/auth/login",
+        f"{BASE_URL}/api/sales-orders",
+        f"{BASE_URL}/api/auth/login",
+        f"{BASE_URL}/api/sales-orders",
+    ]
+
+
+def test_a_refused_write_keeps_the_reason_the_service_gave():
+    """"Insufficient stock" and "no such customer" are different answers to give
+    a customer waiting on WhatsApp; a bare 400 cannot tell them apart."""
+    client = _client()
+    refused = _json_response({}, status_code=400)
+    refused.text = '{"detail":"Insufficient stock for SKU-ELE-0001."}'
+
+    with patch.object(
+        api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), refused]
+    ) as post:
+        with pytest.raises(ApiClientError, match="Insufficient stock"):
+            client.post("/api/sales-orders", json={})
+
+    assert post.call_count == 2  # a 400 is final, unlike a 401
+
+
+def test_a_transport_failure_on_a_write_is_wrapped_like_any_other():
+    client = _client()
+
+    with patch.object(
+        api_client.httpx,
+        "post",
+        side_effect=[_tokens("acc-1", "ref-1"), httpx.ConnectError("connection refused")],
+    ):
+        with pytest.raises(ApiClientError, match="POST /api/sales-orders"):
+            client.post("/api/sales-orders", json={})

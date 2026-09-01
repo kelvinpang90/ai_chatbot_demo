@@ -10,6 +10,11 @@
 #        repro_dir may be "" to run the suite alone.
 set -uo pipefail
 
+# Git Bash rewrites anything that looks like a Unix path in an argument, so the
+# container-side `-w /app` arrived as `D:/Git/app` and docker refused to start.
+# No effect anywhere else -- other shells do not read this.
+export MSYS_NO_PATHCONV=1
+
 BACKEND=${1:?usage: pytest_docker.sh <backend_dir> [repro_dir] [pytest args...]}
 REPRO=${2:-}
 shift 2 2>/dev/null || shift 1
