@@ -172,12 +172,14 @@ bash tasks/review/pytest_docker.sh backend tasks/review/task-N/round-M/repro   #
 
 审查方跑在一个**审完就删**的 worktree 里，落进仓库的只有它的结论。这让整套流程最贵的那一段变成了最看不见的一段——你能读它的判断，读不到它怎么得出的，而一个无法复查的审查等于要你凭信任接受。
 
-`session.json` 只存最终结论和统计（轮次、耗时、花费）。**完整逐步过程在 `~/.claude/projects/` 下，worktree 删了它还在**，用 `replay.py` 读：
+**完整逐步过程在 `~/.claude/projects/` 下**，目录名以被审 commit 结尾，worktree 删了它还在。用 `replay.py` 读：
 
 ```bash
 python tasks/review/replay.py 9 1          # 任务 9 第 1 轮的完整时间线
 python tasks/review/replay.py 9 1 --full   # 不截断
 ```
+
+⚠️ `session.json` / `session.err` 是 **gitignored 且住在 worktree 里的**，worktree 一删就没了（任务 9 收工时就这么丢了三份）。所以 `replay.py` **不读它们**——它从已提交的 `findings.json` 里取被审 commit，再按 sha 去找记录目录。往这套流程里加东西时记住这条：**只有进了 git 的文件才活得过收工。**
 
 第一次跑就有两个收获，两个都不是从 `findings.json` 里看得出来的：
 
