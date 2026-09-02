@@ -14,6 +14,16 @@ MAX_SCAN_PAGES = phone.MAX_SCAN_PAGES
 
 DEFAULT_RESULT_LIMIT = 5
 
+# crm_os column limits, enforced here because MySQL in strict mode answers an
+# overflow with an error: a title one character too long is not a truncated card,
+# it is a 500 and a lead the salesperson never sees.
+MAX_TITLE_CHARS = 200
+MAX_NAME_CHARS = 100
+MAX_PHONE_CHARS = 30
+
+# `deals.amount` is DECIMAL(15, 2), so this is the first value it cannot hold.
+MAX_AMOUNT = 10**13
+
 
 class CrmClient(JsonApiClient):
     """crm_os over its REST routes."""
@@ -63,6 +73,66 @@ class CrmClient(JsonApiClient):
             if len(rows) < PAGE_SIZE:
                 break
         return matches
+
+    # -- writes --------------------------------------------------------------
+
+    def create_contact(self, *, name: str, phone: str, title: str, amount: float) -> dict:
+        """A new person on the books, plus the lead card crm_os makes alongside them.
+
+        `POST /api/contacts` always auto-creates one Deal out of the `initial_*`
+        fields (`services/contact_service.py`), so the enquiry goes in here rather
+        than in a second call: posting to `/api/deals` afterwards would leave an
+        empty RM 0 card sitting next to the real one, on the very board the demo
+        is pointing at.
+
+        Nothing sets `is_gateway` -- the route does not accept it and the column
+        defaults to false. That is the point: `utils/demo_scope.py` filters
+        flagged contacts out of the pipeline, which would hide the card.
+        """
+        return self.post(
+            "/api/contacts",
+            json={
+                "name": name,
+                "phone": phone,
+                "initial_status": "lead",
+                "initial_title": title,
+                "initial_amount": amount,
+            },
+        )
+
+    def create_deal(self, *, contact_id: str, title: str, amount: float) -> dict:
+        """A new opportunity against somebody already on the books."""
+        return self.post(
+            "/api/deals",
+            json={
+                "contact_id": contact_id,
+                "status": "lead",
+                "title": title,
+                "amount": amount,
+            },
+        )
+
+    def deals_for_contact(self, contact_id: str) -> list[dict]:
+        """The contact's deals, newest first.
+
+        This is how the auto-created card is found: `POST /api/contacts` answers
+        with the contact alone, so the id of the deal it just made is only
+        available by asking for it.
+        """
+        return self.get("/api/deals", params={"contact_id": contact_id})
+
+    def log_activity(
+        self, *, deal_id: str, content: str, activity_type: str = "WhatsApp"
+    ) -> dict:
+        """Note what was said against the deal, so the card says where it came from.
+
+        The body repeats `deal_id` because `ActivityCreate` requires the field even
+        though the route reads it from the path; leaving it out is a 422.
+        """
+        return self.post(
+            f"/api/deals/{deal_id}/activities",
+            json={"deal_id": deal_id, "type": activity_type, "content": content},
+        )
 
 
 _client: CrmClient | None = None

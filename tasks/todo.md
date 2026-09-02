@@ -284,11 +284,42 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **还在争什么**：只有第 1 轮 P1-1 那条 repro 转不绿，理由在上面（它断言 `crm_os` 的 UUID 是 int，恒为假）。问题本身已修。
   - **该不该 push**：**第 2 轮的修复没有经过第 3 轮复验**，而前两轮的记录已经证明「我修完自己看没问题」这句话在这个任务上错了两次。所以我的判断是**先不 push**。真实建单验收也还没做（没凭据）。用户如果要继续，删掉 `tasks/review/state.env` 可以重开轮次。
 
-- [ ] 🔍 **任务 9.1：CRM 写入工具 —— 自动建线索**
+- [ ] 🔍 **任务 9.1：CRM 写入工具 —— 自动建线索**——**2026-09-02 代码完成**，14 个新测试 / 26 个用例全过（全套 181 passed）。**真机验收未做**：带凭据写外部系统会被权限分类器拦，只能用户手工跑，脚本在下面。
   文件：`backend/app/tools/crm.py`（新增）、`backend/tests/test_crm_tools.py`（新增）
   目标：`crm_create_lead(name, phone, requirement, amount)` —— 依次调 `POST /api/contacts`（建联系人）、`POST /api/deals`（建商机，带 `amount`，**会出现在管道看板上**）、`POST /api/deals/{id}/activities`（记一条来源=WhatsApp 的活动）
   ⚠️ **不要设 `is_gateway=True`**。`crm_os` 有 `utils/demo_scope.py` 按这个标记做范围过滤，设了反而可能在主列表里看不见，正好毁掉这个镜头
   验收：调一次，`crm.kelvinpeng.com` 的**看板上那张卡在那里**，标题和金额对得上；卡里能看到那条活动记录
+
+  **签名**：`crm_create_lead(name: str, phone: str, requirement: str, amount: float)`，四个都是必填，schema 里 `amount` 落成 `number`。
+
+  **偏离规格第一条，也是最重要的一条：没有调 `POST /api/deals`，改成让 `POST /api/contacts` 自己把那张卡带出来。**
+  `crm_os` 的 `contact_service.create_contact()` **每建一个联系人就自动建一张 Deal**（`crm_os/backend/app/services/contact_service.py:156-169`），字段取请求里的 `initial_status` / `initial_title` / `initial_amount`。照规格原文再 POST 一次 `/api/deals`，看板上会**并排长出两张卡**，其中一张标题空、金额 RM 0——而看板是这个任务唯一要给客户看的那个镜头。所以询价内容和金额走 `initial_*` 传进去，那张自动卡就是线索卡本身。
+  代价是 `POST /api/contacts` 只回 contact、不回它刚建的 deal id，要多一次 `GET /api/deals?contact_id=` 才能把活动挂上去。HTTP 调用次数和原方案一样是 3 次。
+
+  **偏离规格第二条（主动加的，规格里没有）：老客户不再复制一份联系人，只给他加一张新卡。** 先按手机号查一遍（复用任务 8 的 `lookup_contacts`，同一套尾号匹配规则），命中就走 `POST /api/deals` 挂在既有联系人下。理由是这场演示会拿同一个手机号反复跑，**看板上排着五个同名联系人本身就在反驳这个产品**。
+
+  **`is_gateway` 那条警告是自动达成的，但仍然钉了一个测试**：`ContactCreate` 根本不收这个字段（`crm_os/backend/app/schemas/contact.py`），列默认 false，只有 `whatsapp_service._handle_message` 那条内部路径会设成 true。走 REST 路由就不可能踩中。测试断言「请求体里不出现 `is_gateway`」——将来有人往 payload 里加字段时，这条约束不会自己提醒人。
+
+  **三种写失败分开说，沿用任务 9 的口径**：`LEAD_FAILED`（确定没写）/ `LEAD_UNKNOWN`（`may_have_landed`，明确叫模型别再建，否则看板上两张卡）/ **「卡建好了但活动没记上」不算失败**——照常返回 JSON，只把 `activity_logged` 标成 `false`。最后这条是刻意的：卡已经在看板上了，这时候回一句「Nothing was recorded」是假话，而且会把模型送回去再建一张。同理 `GET /api/deals` 那一跳失败也只降级、不抛。
+
+  **输入校验按「截断会不会说谎」分类**：名字、询价内容超长就截断（100 / 200 字，crm_os 的列宽——MySQL strict mode 下超一个字是 500 不是截断），**手机号超长或不成号码形状直接拒**——截短的手机号是**另一个号码**，销售照着打是打给陌生人，一条没法回拨的线索也不是线索。金额挡掉负数、NaN、Inf 和 ≥ 1e13（`deals.amount` 是 `DECIMAL(15,2)`）。
+
+  **活动记录写完整询价，卡标题写截断版**：`activities.content` 是 TEXT，没有长度限制，是客人原话唯一能整句留下来的地方。
+
+  **没挂到任何 bot 上**——`tools/registry.py` 一个字节没动，和任务 8 / 9 一致，挂载是任务 11 的事。
+
+  **知道但没处理的边缘情况**：① 同一个人换个号码写过来会建成两个联系人（尾号匹配管不到）；② `deals[0]` 取最新那张卡，只在「刚建的新联系人只有一张卡」这个前提下成立，老客户那条路径不走它；③ 手机号查重要翻页扫通讯录（最多 5 页），每次建线索前都有这一跳。
+
+  **验收怎么做（用户手工跑，PowerShell，仓库根目录，先开 Docker Desktop）**：
+
+  ```powershell
+  docker run --rm -v "${PWD}\backend:/app" -w /app -e PYTHONPATH=/app -e PYTHONIOENCODING=utf-8 `
+    python:3.13-slim sh -c "pip install -q -r requirements.txt && python -c ""from app.tools.crm import *; print(crm_create_lead('Ahmad Faizal', '+60 12-333 4444', '3 units Sony WF-C710N earbuds, COD to Cheras', 986.70))"""
+  ```
+
+  **三条判据**：① `crm.kelvinpeng.com` 的看板 lead 那一列出现一张卡，标题是那句询价、金额 986.70；② **只有一张，不是两张**（这是本任务最容易翻车的地方，也是上面那条偏离要挡的东西）；③ 点进卡里能看到一条 `type=WhatsApp` 的活动，内容带完整询价和 MYR 986.70。
+
+  文件：`backend/app/services/crm_client.py`（扩展，加 `create_contact` / `create_deal` / `deals_for_contact` / `log_activity` 四个写方法 + 列宽常量）、`backend/app/tools/crm.py`（扩展，加 `crm_create_lead`）、`backend/tests/test_crm_tools.py`（扩展）
 
 - [ ] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
   文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）

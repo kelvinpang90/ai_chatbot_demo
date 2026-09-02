@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+from typing import NamedTuple
 
 from anthropic import beta_tool
 
 from app.services import crm_client
 from app.services.api_client import ApiClientError
+from app.services.phone import looks_like_a_phone
 
 logger = logging.getLogger(__name__)
 
@@ -52,4 +55,179 @@ def crm_lookup_customer(name_or_phone: str) -> str:
     )
 
 
-TOOLS = [crm_lookup_customer]
+# A write needs its own vocabulary, as the ERP side found: "could not be checked"
+# is the wrong thing to say about a record that may or may not now exist.
+LEAD_FAILED = (
+    "The lead could not be saved in the CRM. Nothing was recorded -- carry on with "
+    "the customer and say a colleague will follow up shortly."
+)
+# The write went out and no answer came back. Saving it again would put two cards
+# for one customer on the board the salesperson works from.
+LEAD_UNKNOWN = (
+    "The CRM stopped responding while the lead was being saved, so it is NOT known "
+    "whether it was recorded. Do not save it again -- a colleague will check."
+)
+BAD_LEAD = (
+    "The lead details were not usable. A lead needs the customer name, their "
+    "phone number, a short description of what they are asking for, and an "
+    "estimated value of zero or more."
+)
+
+
+class _Lead(NamedTuple):
+    """A lead in the shape crm_os will take it. `title` is `requirement`, trimmed."""
+
+    name: str
+    phone: str
+    title: str
+    requirement: str
+    amount: float
+
+
+def _usable(name: str, phone: str, requirement: str, amount: float) -> _Lead | None:
+    """The lead as the CRM will accept it, or None if it is not worth writing.
+
+    Name and enquiry are trimmed to fit their columns: a shortened name is still
+    the same person and a shortened enquiry still reads. A phone number is
+    neither -- trimming one stores a different, wrong number in the field a
+    salesperson dials -- so an unusable one is refused instead. A lead nobody can
+    ring back is not a lead.
+    """
+    name = str(name or "").strip()
+    phone = str(phone or "").strip()
+    requirement = str(requirement or "").strip()
+    if not name or not requirement:
+        return None
+    if len(phone) > crm_client.MAX_PHONE_CHARS or not looks_like_a_phone(phone):
+        return None
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return None
+    # NaN slips past both comparisons below and reaches MySQL as a DECIMAL it
+    # rejects, so it is ruled out first.
+    if not math.isfinite(amount) or not 0 <= amount < crm_client.MAX_AMOUNT:
+        return None
+    return _Lead(
+        name=name[: crm_client.MAX_NAME_CHARS],
+        phone=phone,
+        title=requirement[: crm_client.MAX_TITLE_CHARS],
+        requirement=requirement,
+        amount=amount,
+    )
+
+
+def _auto_created_card(client: crm_client.CrmClient, contact_id: str | None) -> dict | None:
+    """The card `POST /api/contacts` just made, found by asking for the deals.
+
+    Failing here does not fail the lead: the contact and its card are already on
+    the board, and all that is lost is the note we wanted to hang on it. Letting
+    the error out would reach the caller as "nothing was recorded", which by this
+    point is false -- and would send the model round again to make a second card.
+    """
+    if not contact_id:
+        return None
+    try:
+        deals = client.deals_for_contact(contact_id)
+    except ApiClientError:
+        logger.exception("could not find the card just created for contact %s", contact_id)
+        return None
+    return deals[0] if deals else None
+
+
+def _card(client: crm_client.CrmClient, lead: _Lead) -> tuple[dict, dict | None]:
+    """The contact this lead belongs to, and the card that now represents it.
+
+    Somebody already on the books gets a new opportunity rather than a second copy
+    of themselves. This demo is run against the same phone number again and again,
+    and a pipeline showing five identical contacts argues against the product it
+    is there to sell.
+    """
+    existing = client.lookup_contacts(lead.phone, limit=1)
+    if existing:
+        contact = existing[0]
+        deal = client.create_deal(
+            contact_id=contact.get("id"), title=lead.title, amount=lead.amount
+        )
+        return contact, deal
+
+    contact = client.create_contact(
+        name=lead.name, phone=lead.phone, title=lead.title, amount=lead.amount
+    )
+    return contact, _auto_created_card(client, contact.get("id"))
+
+
+def _activity_note(lead: _Lead) -> str:
+    """What the salesperson reads inside the card.
+
+    Deliberately the full enquiry rather than the trimmed title: the column is
+    TEXT, and this is the one place the customer own words survive whole.
+    """
+    return (
+        f"{lead.requirement} -- estimated MYR {lead.amount:,.2f}, "
+        "captured by the WhatsApp assistant."
+    )
+
+
+@beta_tool
+def crm_create_lead(name: str, phone: str, requirement: str, amount: float) -> str:
+    """Record a sales lead in the CRM so a salesperson can follow it up.
+
+    Call this once the customer has shown real interest -- named what they want,
+    asked for a quote, agreed to buy -- and not for a passing question. It writes
+    to the live CRM: the lead shows up on the sales pipeline board immediately.
+
+    Somebody already in the CRM gets the new opportunity added to their existing
+    record instead of a duplicate entry, so this is safe to call for a returning
+    customer.
+
+    Args:
+        name: The customer name, as they gave it.
+        phone: Their phone number -- normally the WhatsApp number they are
+            writing from -- in any format.
+        requirement: What they are asking for, in their own words. This becomes
+            the title on the pipeline card.
+        amount: The estimated value in MYR. Use the quoted total when there is
+            one, otherwise a reasonable estimate, or 0 with nothing to go on.
+    """
+    lead = _usable(name, phone, requirement, amount)
+    if lead is None:
+        logger.warning("crm_create_lead got unusable details for %r", name)
+        return BAD_LEAD
+
+    client = crm_client.client()
+    try:
+        contact, deal = _card(client, lead)
+    except ApiClientError as exc:
+        logger.exception("crm_create_lead failed for %r", lead.name)
+        # "It failed" and "I do not know" send the model to two different places,
+        # and only one of them risks a duplicate card.
+        return LEAD_UNKNOWN if exc.may_have_landed else LEAD_FAILED
+
+    deal_id = deal.get("id") if deal else None
+    activity_logged = False
+    if deal_id:
+        try:
+            client.log_activity(deal_id=deal_id, content=_activity_note(lead))
+            activity_logged = True
+        except ApiClientError:
+            # The card is on the board; only the note explaining it is missing.
+            # Worth reporting, not worth calling the lead a failure.
+            logger.exception("could not note the enquiry on deal %s", deal_id)
+
+    return json.dumps(
+        {
+            "contact_id": contact.get("id"),
+            "contact_name": contact.get("name"),
+            "deal_id": deal_id,
+            "title": deal.get("title") if deal else lead.title,
+            "amount": deal.get("amount") if deal else lead.amount,
+            "status": deal.get("status") if deal else None,
+            "activity_logged": activity_logged,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+TOOLS = [crm_lookup_customer, crm_create_lead]
