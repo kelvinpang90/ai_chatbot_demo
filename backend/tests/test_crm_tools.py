@@ -474,6 +474,69 @@ def test_a_crm_500_is_a_lead_that_was_not_recorded_not_one_in_doubt(crm_credenti
     assert answer == crm.LEAD_FAILED
 
 
+def _login_response():
+    return httpx.Response(
+        200,
+        json={"success": True, "data": {"access_token": "a", "refresh_token": "r"}},
+        request=httpx.Request("POST", "https://crm/api/auth/login"),
+    )
+
+
+def _empty_book():
+    return httpx.Response(
+        200,
+        json={"success": True, "data": {"data": [], "total": 0, "page": 1, "page_size": 100}},
+        request=httpx.Request("GET", "https://crm/api/contacts"),
+    )
+
+
+@pytest.mark.parametrize("status", [520, 524], ids=["origin-unknown-error", "origin-timeout"])
+def test_a_lead_cloudflare_got_no_answer_for_is_not_called_a_failure(status, crm_credentials):
+    """Review round 3, P1-1. Cloudflare fronts crm_os, and its 520/524 mean the
+    write reached the application and no usable answer came back -- the row may
+    be there. Calling that a failure is what tells the model to try once more,
+    and puts the second card on the board."""
+    cloudflare = httpx.Response(
+        status,
+        content=b"<!DOCTYPE html><html><body>Error 520</body></html>",
+        headers={"content-type": "text/html; charset=UTF-8", "server": "cloudflare"},
+        request=httpx.Request("POST", "https://crm/api/contacts"),
+    )
+
+    with patch.object(api_client.httpx, "get", return_value=_empty_book()):
+        with patch.object(
+            api_client.httpx, "post", side_effect=[_login_response(), cloudflare]
+        ):
+            answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
+
+    assert answer == crm.LEAD_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (httpx.ConnectError("connection refused"), "LEAD_FAILED"),
+        (httpx.ReadTimeout("timed out"), "LEAD_UNKNOWN"),
+        (httpx.RemoteProtocolError("server disconnected"), "LEAD_UNKNOWN"),
+    ],
+    ids=["never-connected", "no-answer-came-back", "disconnected-mid-write"],
+)
+def test_a_transport_failure_at_the_write_decides_which_answer_the_lead_gets(
+    failure, expected, crm_credentials
+):
+    """Review round 3, P3-1: the transport tests above raise at the login POST,
+    which fails before the write and so can only ever produce LEAD_FAILED. This
+    one lets the login succeed and breaks the write itself, which is the
+    boundary that actually chooses between the two answers."""
+    with patch.object(api_client.httpx, "get", return_value=_empty_book()):
+        with patch.object(
+            api_client.httpx, "post", side_effect=[_login_response(), failure]
+        ):
+            answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
+
+    assert answer == getattr(crm, expected)
+
+
 def test_an_amount_that_rounds_past_the_column_never_reaches_the_crm():
     """Review round 1, P2-1: DECIMAL(15, 2) rounds first, then range-checks."""
     rounds_over = 9999999999999.998

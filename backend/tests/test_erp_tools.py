@@ -200,12 +200,20 @@ DRAFT_ORDER = {**CONFIRMED_ORDER, "status": "DRAFT"}
 _LOGIN = {"access_token": "acc", "refresh_token": "ref", "expires_in": 900}
 
 
-def _response(payload: dict, status_code: int = 200, text: str = "") -> Mock:
+def _response(
+    payload: dict,
+    status_code: int = 200,
+    text: str = "",
+    content_type: str = "application/json",
+) -> Mock:
     response = Mock(spec=httpx.Response)
     response.status_code = status_code
     response.json.return_value = payload
     response.text = text
     response.raise_for_status.return_value = None
+    # A real response carries this, and the client reads it to tell an error the
+    # application composed from one composed for it by a proxy.
+    response.headers = {"content-type": content_type}
     return response
 
 
@@ -376,9 +384,12 @@ def test_a_write_that_never_left_the_process_does_say_nothing_happened(_credenti
 
 def test_a_gateway_timeout_on_the_write_is_treated_as_unknown(_credentials):
     """A 504 from the proxy says nothing about what erp_os did with the request."""
-    gateway = Mock(spec=httpx.Response)
-    gateway.status_code = 504
-    gateway.text = "<html><title>504 Gateway Time-out</title></html>"
+    gateway = _response(
+        {},
+        504,
+        text="<html><title>504 Gateway Time-out</title></html>",
+        content_type="text/html; charset=UTF-8",
+    )
     gateway.json.side_effect = ValueError("not json")
 
     with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), gateway]):

@@ -1,0 +1,4 @@
+mode: print
+checked_at: 2026-09-02T16:34:53+08:00
+coverage: whole session (the reviewer process had already exited)
+dirty: none

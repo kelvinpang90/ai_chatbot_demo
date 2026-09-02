@@ -14,6 +14,19 @@ def _json_response(payload: dict, status_code: int = 200) -> Mock:
     response.status_code = status_code
     response.json.return_value = payload
     response.raise_for_status.return_value = None
+    # A real one carries this, and the client reads it to tell an error the
+    # application composed from one composed for it.
+    response.headers = {"content-type": "application/json"}
+    return response
+
+
+def _page_from(server: str, status_code: int, body: str = "<html>error</html>") -> Mock:
+    """An HTML error page, the shape everything in front of the service answers with."""
+    response = Mock(spec=httpx.Response)
+    response.status_code = status_code
+    response.text = body
+    response.json.side_effect = ValueError("not json")
+    response.headers = {"content-type": "text/html; charset=UTF-8", "server": server}
     return response
 
 
@@ -400,22 +413,32 @@ def test_a_5xx_the_service_composed_itself_is_also_certain():
     assert raised.value.may_have_landed is False
 
 
-@pytest.mark.parametrize("status", [502, 503, 504])
-def test_a_gateway_answering_for_a_silent_service_is_not_certain(status):
-    """nginx hands back an HTML page for a service that never said what it did.
+@pytest.mark.parametrize(
+    ("server", "status"),
+    [
+        ("nginx", 502),
+        ("nginx", 503),
+        ("nginx", 504),
+        ("cloudflare", 520),
+        ("cloudflare", 524),
+    ],
+)
+def test_a_proxy_answering_for_a_silent_service_is_not_certain(server, status):
+    """An HTML page from something in front of the service, which never said what
+    it did with the request it was handed.
 
-    500 left this list in review round 1 of task 9.1: it is the code a service
-    uses to say it failed, which it can only do once its own transaction is
-    rolled back.
+    Cloudflare fronts both hosts, and 520 (origin returned nothing usable) and
+    524 (origin never answered) are the case this flag exists for: a worker
+    killed after the commit looks exactly like this. Review round 3 of task 9.1
+    -- listing nginx's three codes by hand classified them as certain, and the
+    retry that followed put a second card on the board.
     """
     client = _client()
-    gateway = Mock(spec=httpx.Response)
-    gateway.status_code = status
-    gateway.text = "<html><head><title>504 Gateway Time-out</title></head></html>"
-    gateway.json.side_effect = ValueError("not json")
 
     with patch.object(
-        api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), gateway]
+        api_client.httpx,
+        "post",
+        side_effect=[_tokens("acc-1", "ref-1"), _page_from(server, status)],
     ):
         with pytest.raises(ApiClientError) as raised:
             client.post("/api/sales-orders", json={})
@@ -434,6 +457,7 @@ def test_a_5xx_the_service_composed_without_json_is_certain_too():
     plain.status_code = 500
     plain.text = "Internal Server Error"
     plain.json.side_effect = ValueError("not json")
+    plain.headers = {"content-type": "text/plain; charset=utf-8"}
 
     with patch.object(
         api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), plain]
@@ -464,13 +488,10 @@ def test_a_read_never_claims_a_write_may_have_happened(failure):
     assert raised.value.may_have_landed is False
 
 
-@pytest.mark.parametrize("status", [500, 502, 504])
+@pytest.mark.parametrize("status", [500, 502, 504, 520, 524])
 def test_a_read_that_got_a_server_error_claims_nothing_either(status):
     client = _client()
-    gateway = Mock(spec=httpx.Response)
-    gateway.status_code = status
-    gateway.text = "<html>502</html>"
-    gateway.json.side_effect = ValueError("not json")
+    gateway = _page_from("cloudflare", status)
 
     with patch.object(api_client.httpx, "post", return_value=_tokens("acc-1", "ref-1")):
         with patch.object(api_client.httpx, "get", return_value=gateway):

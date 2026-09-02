@@ -360,28 +360,6 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   **两轮的形状：P1 → 没有 P1，而且第 2 轮这三条没有一条是第 1 轮修复引入的回归**（对比任务 9：那次第 2 轮两条 queue 全是回归）。第 2 轮报的东西反而更靠外围——一条指向我主动加的功能、一条指向文案、一条指向任务 8 留下的测试债。
   **按轮次上限到此停手。必须说清楚的两件事**：① 第 2 轮的修复**没有经过第 3 轮复验**；② 真机验收还没做。要继续跑第 3 轮，删掉 `tasks/review/state.env` 即可重开。
 
-  ---
-
-  🔍 **2026-09-02 第 3 轮冷审（用户拍板重开）——报 2 条，2 条全成立，1 条进队列。那一条是 P1，而且是我第 1 轮修复引入的回归**（全套 197 passed，三轮 repro 全绿，审查方 worktree `dirty: none`）：
-
-  - **P1-1（queue，P1）：`GATEWAY_SILENCE = {502, 503, 504}` 枚举的是 nginx 的代码，可两个后台前面站着的是 Cloudflare。接受，已修。**
-    我在第 1 轮把判据从「响应体是不是 JSON」换成「哪一层 composed 的」，并且**把假设明明白白写进了注释**——「nginx 对连不上/等不到的 upstream 回 502/503/504，不会回裸 500」。假设写对了形式，**指错了对象**：`curl -I` 两个域名，`Server: cloudflare` / `cf-ray` / `cf-cache-status` 都在，nginx 在 Cloudflare 后面。Cloudflare 不用 502/504 替源站答话，它用自己的 52x：**520（源站返回了无法理解的响应）和 524（源站没在时限内答话）恰恰就是 `may_have_landed` 存在的那个场景**——请求到了应用、答案没回来，比如 worker 在 commit 之后被杀掉。
-    我的代码把这两个判成「应用自己答的 → 事务已回滚 → 什么都没写」，于是 `LEAD_FAILED` 说「没存上，**再试一次**」，而行已经在库里——**看板上长出这套设计从头到尾就是为了防止的那第二张卡**。同一行代码也管着任务 9 的 `erp_create_sales_order`，所以重复销售订单走的是同一条路。
-    **最刺的一点**：被我换掉的旧实现（「响应体不是 JSON 就算存疑」）**歪打正着是对的**——Cloudflare 的错误页是 HTML，本来就落在存疑那一档。我的「修复」把一个原本正确的行为改坏了。
-    **修法不是把 52x 补进列表**——那还是在枚举代理，下一个代理来了照样错。**把判定反过来**：只有认得出「是应用自己答的」才敢说确定没写，其余一律存疑。两个后台的应用级错误只有两种形状（erp_os 的 JSON 信封、crm_os 的 Starlette 纯文本），代理答的一律是 HTML 页面，所以按 `Content-Type` 判。**默认档位从「确定」翻成「存疑」**，因为两种错法代价不对等：报存疑而其实失败了，是有人去看一眼看板；报失败而其实写进去了，是一张重复的单或重复的卡。
-    坦白一条取舍：Cloudflare 的 521/522/523 其实是「压根没到源站」，按新判据它们也落进存疑档，比它们需要的谨慎多了一点。要分开就得再枚举一次某个代理的状态码，而多这点谨慎的代价只是一个电话。这条写进注释了。
-    另外 4xx 保持「确定没写」——加了 `status_code >= 500` 这个前置条件，否则被 WAF 拦掉的 403（HTML）会被判成存疑，而那种请求根本没到应用。
-
-  - **P3-1（read-only 降级，一并修了）：我那几个 transport 测试是在 login 那一步抛的，从来没抛在写那一步。**
-    login 失败发生在写之前，所以它们只可能产出 `LEAD_FAILED`——**真正决定 `LEAD_FAILED` 还是 `LEAD_UNKNOWN` 的那个边界，一个测试都没覆盖到**。补了一个参数化测试：让 login 成功，然后在写的那一次 POST 上抛——`ConnectError` → `LEAD_FAILED`（没连上，肯定没写）、`ReadTimeout` / `RemoteProtocolError` → `LEAD_UNKNOWN`（发出去了，没回音）。
-
-  **修复的修复，值得单记一笔**：P1-1 我第一版改完，`test_erp_tools.py` 当场挂了两个。原因是 `Mock(spec=httpx.Response)` 的 `headers` 不是真字典，`response.headers.get(...)` 拿到的是个 Mock，再去 `.split(";")[0]` 就抛 `TypeError`——**而这段代码跑在失败处理路径上，在那里再抛一次异常，客人那头看到的是 bot 死了**。所以 `_the_service_answered_for_itself` 加了和 `_detail()` 同款的兜底：读不出 header 就当「认不出」，落进存疑档，绝不往外抛。测试那边的假响应也补上了真实响应本来就带的 `Content-Type`。**这正是「修复本身就是新代码」那条教训的第二次现身**——只不过这次是当场被套件抓住的，不是等到下一轮。
-
-  ⚠️ **流程坑，已顺手修掉**：第 3 轮的产物落在主仓，而我当时人在 worktree 里，于是 `bash tasks/review/pytest_docker.sh backend tasks/review/task-9.1/round-3/repro` 里那个路径**不存在**——脚本原本的行为是 `[ -d "$REPRO" ]` 不成立就把 TARGETS 置空，**静默退回去跑全套，然后打印一个绿色的数字**。「跑了复现、全绿」和「复现根本没跑」在屏幕上长得一模一样。这和 REVIEW.md 记的 window 模式那条假通过是同一个形状。已改成路径不存在就报错退出（`tasks/review/pytest_docker.sh`），这一条不属于任务 9.1 的改动范围，单独说明。
-
-  **三轮的形状：P1 → 无 P1 → P1（回归）。** 第 3 轮这条 P1 不是新写的功能出问题，**是第 1 轮那个修复本身**，而且它把一个原本正确的行为改坏了。三轮加起来报 8 条、成立 8 条、误报 0 条。
-  **仍然没有经过复验的是第 3 轮的修复本身**，以及真机验收。
-
 - [ ] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
   文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）
   目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走 `upload_media()` → 构造 document 消息 payload

@@ -58,31 +58,47 @@ def _detail(response: Any) -> str:
         return ""
 
 
-# The status codes that mean a proxy answered for a service that never said what
-# it did. Every other 5xx was composed by the application itself, and both back
-# offices roll their request-scoped session back before they can compose
-# anything: erp_os re-raises out of `get_db` into a catch-all handler that writes
-# its JSON envelope, and crm_os -- which registers no exception handler at all --
-# rolls back the same way and lets Starlette answer with a plain "Internal Server
-# Error". So an application 5xx means nothing was written, and only these three
-# leave the question open.
-#
-# The assumption underneath, worth naming because the whole classification rests
-# on it: nginx answers for an upstream it cannot reach or wait for with 502, 503
-# or 504, never with a bare 500. A 500 always came from the application.
-#
-# Reading the tier off the body instead is the bug round 1 of task 9.1 found:
-# crm_os's 500 is text/plain, so "it did not send JSON" classified it as the
-# gateway's, and every rolled-back CRM write reached the model as "it is not
-# known whether this was saved -- do not try again". Nothing had been saved, and
-# with the retry forbidden nothing would be.
-#
-# Known edge: a service that failed *after* committing, in an after-commit hook,
-# also answers with its own 5xx. erp_os only publishes such events on confirm,
-# never on create, and mistaking a confirmed order for an unconfirmed one costs a
-# phone call, while mistaking a booked order for a failed one costs a duplicate
-# order.
-GATEWAY_SILENCE = frozenset({502, 503, 504})
+# What an error the application composed itself looks like. Both back offices
+# answer an error they handled only after `get_db` has rolled the session back --
+# erp_os through a catch-all handler that writes its JSON envelope, crm_os, which
+# registers no handler at all, through Starlette's plain-text default -- so
+# recognising one of these is recognising that nothing was written.
+APPLICATION_MEDIA_TYPES = ("application/json", "text/plain")
+
+
+def _the_service_answered_for_itself(response: Any) -> bool:
+    """Did the application compose this, or did something in front of it?
+
+    For a write that is the whole question, and certainty is deliberately the
+    exception rather than the default: the two ways of being wrong do not cost
+    the same. A write reported uncertain that had in fact failed costs somebody
+    a look at the board. A write reported failed that had in fact landed costs a
+    duplicate order, or a second card for one customer on the pipeline -- which
+    is the thing this classification exists to prevent.
+
+    Everything standing in front of these services answers with an HTML page:
+    nginx on the VPS, and Cloudflare in front of that (`server: cloudflare` on
+    both hosts). Cloudflare's 520 and 524 are exactly the uncertain case -- the
+    request reached the application and no usable answer came back -- and the
+    version of this check that listed nginx's 502/503/504 by hand called them
+    certain, which is how a killed worker turned into "try once more" and a
+    second row. Naming one proxy's codes was the mistake; this names ours
+    instead, and anything unrecognised stays uncertain.
+
+    Cloudflare's 521/522/523 really do mean the origin was never reached, so
+    they get more caution here than they need. Telling them apart would mean
+    enumerating a proxy's status codes again, and the cost of the extra caution
+    is a phone call.
+    """
+    try:
+        header = response.headers.get("content-type") or ""
+        media_type = str(header).split(";")[0].strip().lower()
+    except Exception:  # pragma: no cover - a header we cannot read is not the story
+        # Unreadable reads as unrecognised, which is the cautious answer. It must
+        # not read as an exception: this runs inside the failure path, and a
+        # second failure there reaches the customer as a dead bot.
+        return False
+    return media_type in APPLICATION_MEDIA_TYPES
 
 
 class ApiClientError(RuntimeError):
@@ -261,10 +277,15 @@ class JsonApiClient:
                     f"{response.status_code}: {_detail(response)}",
                     # A 4xx is the service refusing the request, and an
                     # application 5xx is it failing after its transaction was
-                    # rolled back: neither wrote anything. What is left is the
-                    # gateway answering for a service that never said what it did.
+                    # rolled back: neither wrote anything. Anything else in the
+                    # 5xx range was composed for a service that never said what
+                    # it did, and leaves the question open. The 4xx stays certain
+                    # even when a proxy composed it -- a request a WAF blocked
+                    # never reached the application either.
                     may_have_landed=(
-                        method != "GET" and response.status_code in GATEWAY_SILENCE
+                        method != "GET"
+                        and response.status_code >= 500
+                        and not _the_service_answered_for_itself(response)
                     ),
                 )
             return self._unwrap(response.json())

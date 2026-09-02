@@ -1,0 +1,939 @@
+diff --git a/backend/app/services/api_client.py b/backend/app/services/api_client.py
+index c298af2..f939075 100644
+--- a/backend/app/services/api_client.py
++++ b/backend/app/services/api_client.py
+@@ -58,31 +58,31 @@ def _detail(response: Any) -> str:
+         return ""
+ 
+ 
+-def _composed_by_the_service(response: Any) -> bool:
+-    """Did the application itself answer, or something standing in front of it?
+-
+-    This is the difference between a 500 and a 502, and for a write it decides
+-    whether the row exists. erp_os and crm_os answer an error they handled with
+-    their own JSON envelope, and handling it means the request-scoped session was
+-    already rolled back when that response was written (erp_os: `get_db` rolls
+-    back and re-raises, the catch-all handler turns it into a 500
+-    INTERNAL_ERROR). An unknown customer_id is exactly this shape -- a foreign
+-    key violation, not a validation error -- so treating it as "the order might
+-    exist" would forbid the one retry that could still make the sale.
+-
+-    A 502 or 504 from the proxy is an HTML page or nothing at all, and says
+-    nothing about what the application did with the request it is still holding.
+-
+-    Known edge: a service that failed *after* committing, in an after-commit
+-    hook, also answers this way. erp_os only publishes such events on confirm,
+-    never on create, and mistaking a confirmed order for an unconfirmed one
+-    costs a phone call, while mistaking a booked order for a failed one costs a
+-    duplicate order.
+-    """
+-    try:
+-        return isinstance(response.json(), dict)
+-    except Exception:
+-        return False
++# The status codes that mean a proxy answered for a service that never said what
++# it did. Every other 5xx was composed by the application itself, and both back
++# offices roll their request-scoped session back before they can compose
++# anything: erp_os re-raises out of `get_db` into a catch-all handler that writes
++# its JSON envelope, and crm_os -- which registers no exception handler at all --
++# rolls back the same way and lets Starlette answer with a plain "Internal Server
++# Error". So an application 5xx means nothing was written, and only these three
++# leave the question open.
++#
++# The assumption underneath, worth naming because the whole classification rests
++# on it: nginx answers for an upstream it cannot reach or wait for with 502, 503
++# or 504, never with a bare 500. A 500 always came from the application.
++#
++# Reading the tier off the body instead is the bug round 1 of task 9.1 found:
++# crm_os's 500 is text/plain, so "it did not send JSON" classified it as the
++# gateway's, and every rolled-back CRM write reached the model as "it is not
++# known whether this was saved -- do not try again". Nothing had been saved, and
++# with the retry forbidden nothing would be.
++#
++# Known edge: a service that failed *after* committing, in an after-commit hook,
++# also answers with its own 5xx. erp_os only publishes such events on confirm,
++# never on create, and mistaking a confirmed order for an unconfirmed one costs a
++# phone call, while mistaking a booked order for a failed one costs a duplicate
++# order.
++GATEWAY_SILENCE = frozenset({502, 503, 504})
+ 
+ 
+ class ApiClientError(RuntimeError):
+@@ -259,15 +259,12 @@ class JsonApiClient:
+                 raise ApiClientError(
+                     f"{self.name} api: {method} {path} returned "
+                     f"{response.status_code}: {_detail(response)}",
+-                    # A 4xx is the service refusing the request, so nothing was
+-                    # written -- and so is a 5xx the service composed itself,
+-                    # which it only does after rolling its transaction back. What
+-                    # is left is the gateway answering for a service that never
+-                    # said what it did.
++                    # A 4xx is the service refusing the request, and an
++                    # application 5xx is it failing after its transaction was
++                    # rolled back: neither wrote anything. What is left is the
++                    # gateway answering for a service that never said what it did.
+                     may_have_landed=(
+-                        method != "GET"
+-                        and response.status_code >= 500
+-                        and not _composed_by_the_service(response)
++                        method != "GET" and response.status_code in GATEWAY_SILENCE
+                     ),
+                 )
+             return self._unwrap(response.json())
+diff --git a/backend/app/services/crm_client.py b/backend/app/services/crm_client.py
+index be2f699..1bc8309 100644
+--- a/backend/app/services/crm_client.py
++++ b/backend/app/services/crm_client.py
+@@ -14,6 +14,16 @@ MAX_SCAN_PAGES = phone.MAX_SCAN_PAGES
+ 
+ DEFAULT_RESULT_LIMIT = 5
+ 
++# crm_os column limits, enforced here because MySQL in strict mode answers an
++# overflow with an error: a title one character too long is not a truncated card,
++# it is a 500 and a lead the salesperson never sees.
++MAX_TITLE_CHARS = 200
++MAX_NAME_CHARS = 100
++MAX_PHONE_CHARS = 30
++
++# `deals.amount` is DECIMAL(15, 2), so this is the first value it cannot hold.
++MAX_AMOUNT = 10**13
++
+ 
+ class CrmClient(JsonApiClient):
+     """crm_os over its REST routes."""
+@@ -64,6 +74,66 @@ class CrmClient(JsonApiClient):
+                 break
+         return matches
+ 
++    # -- writes --------------------------------------------------------------
++
++    def create_contact(self, *, name: str, phone: str, title: str, amount: float) -> dict:
++        """A new person on the books, plus the lead card crm_os makes alongside them.
++
++        `POST /api/contacts` always auto-creates one Deal out of the `initial_*`
++        fields (`services/contact_service.py`), so the enquiry goes in here rather
++        than in a second call: posting to `/api/deals` afterwards would leave an
++        empty RM 0 card sitting next to the real one, on the very board the demo
++        is pointing at.
++
++        Nothing sets `is_gateway` -- the route does not accept it and the column
++        defaults to false. That is the point: `utils/demo_scope.py` filters
++        flagged contacts out of the pipeline, which would hide the card.
++        """
++        return self.post(
++            "/api/contacts",
++            json={
++                "name": name,
++                "phone": phone,
++                "initial_status": "lead",
++                "initial_title": title,
++                "initial_amount": amount,
++            },
++        )
++
++    def create_deal(self, *, contact_id: str, title: str, amount: float) -> dict:
++        """A new opportunity against somebody already on the books."""
++        return self.post(
++            "/api/deals",
++            json={
++                "contact_id": contact_id,
++                "status": "lead",
++                "title": title,
++                "amount": amount,
++            },
++        )
++
++    def deals_for_contact(self, contact_id: str) -> list[dict]:
++        """The contact's deals, newest first.
++
++        This is how the auto-created card is found: `POST /api/contacts` answers
++        with the contact alone, so the id of the deal it just made is only
++        available by asking for it.
++        """
++        return self.get("/api/deals", params={"contact_id": contact_id})
++
++    def log_activity(
++        self, *, deal_id: str, content: str, activity_type: str = "WhatsApp"
++    ) -> dict:
++        """Note what was said against the deal, so the card says where it came from.
++
++        The body repeats `deal_id` because `ActivityCreate` requires the field even
++        though the route reads it from the path; leaving it out is a 422.
++        """
++        return self.post(
++            f"/api/deals/{deal_id}/activities",
++            json={"deal_id": deal_id, "type": activity_type, "content": content},
++        )
++
+ 
+ _client: CrmClient | None = None
+ 
+diff --git a/backend/app/services/phone.py b/backend/app/services/phone.py
+index ce6cafe..419f075 100644
+--- a/backend/app/services/phone.py
++++ b/backend/app/services/phone.py
+@@ -41,3 +41,34 @@ def matches(stored: str, term: str) -> bool:
+     """
+     wanted = digits(term)[-PHONE_SUFFIX_DIGITS:]
+     return bool(wanted) and digits(stored).endswith(wanted)
++
++
++# A country code is one to three digits (ITU-T E.164), so one number written
++# nationally and internationally differs by at most three leading digits, plus
++# the trunk "0" the national form puts in their place.
++MAX_COUNTRY_CODE_DIGITS = 3
++
++
++def is_the_same_number(stored: str, term: str) -> bool:
++    """Are these certainly one number -- strictly enough to write to the record?
++
++    `matches` compares the last eight digits, which is right for a lookup: a
++    salesperson's "017-3948123" and WhatsApp's "60173948123" are one person, and
++    a wrong hit there is visible in the answer the model reads. It is not right
++    for choosing whose record to write to. Eight digits collide across country
++    codes -- a Shah Alam landline "03-8555 1515" and a San Diego
++    "+1-858-555-1515" share their tail, and this CRM's demo book holds that
++    exact pair -- so the loose rule would file one customer's enquiry onto a
++    stranger, silently, on the board a salesperson works from.
++
++    This requires the whole number to agree, allowing only the difference that
++    is genuinely notation. It still cannot tell a nine-digit national number
++    from a foreign one whose country code completes it: a tighter net, not a
++    proof of identity, which is why the caller treats "not the same" as "make a
++    new record" rather than as a failure.
++    """
++    a, b = digits(stored).lstrip("0"), digits(term).lstrip("0")
++    if not a or not b:
++        return False
++    longer, shorter = (a, b) if len(a) >= len(b) else (b, a)
++    return longer.endswith(shorter) and len(longer) - len(shorter) <= MAX_COUNTRY_CODE_DIGITS
+diff --git a/backend/app/tools/crm.py b/backend/app/tools/crm.py
+index 8318c32..f255e56 100644
+--- a/backend/app/tools/crm.py
++++ b/backend/app/tools/crm.py
+@@ -2,11 +2,14 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import math
++from typing import NamedTuple
+ 
+ from anthropic import beta_tool
+ 
+ from app.services import crm_client
+ from app.services.api_client import ApiClientError
++from app.services.phone import is_the_same_number, looks_like_a_phone
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -52,4 +55,193 @@ def crm_lookup_customer(name_or_phone: str) -> str:
+     )
+ 
+ 
+-TOOLS = [crm_lookup_customer]
++# A write needs its own vocabulary, as the ERP side found: "could not be checked"
++# is the wrong thing to say about a record that may or may not now exist.
++LEAD_FAILED = (
++    "The lead was NOT saved and nothing was recorded, so there is no card for a "
++    "colleague to find and nothing to promise the customer. Try once more. If it "
++    "fails again, take the customer's details down in the conversation so someone "
++    "can enter them by hand."
++)
++# The write went out and no answer came back. Saving it again would put two cards
++# for one customer on the board the salesperson works from.
++LEAD_UNKNOWN = (
++    "The CRM stopped responding while the lead was being saved, so it is NOT known "
++    "whether it was recorded. Do not save it again -- a colleague will check."
++)
++BAD_LEAD = (
++    "The lead details were not usable. A lead needs the customer name, their "
++    "phone number, a short description of what they are asking for, and an "
++    "estimated value of zero or more."
++)
++
++
++class _Lead(NamedTuple):
++    """A lead in the shape crm_os will take it. `title` is `requirement`, trimmed."""
++
++    name: str
++    phone: str
++    title: str
++    requirement: str
++    amount: float
++
++
++def _usable(name: str, phone: str, requirement: str, amount: float) -> _Lead | None:
++    """The lead as the CRM will accept it, or None if it is not worth writing.
++
++    Name and enquiry are trimmed to fit their columns: a shortened name is still
++    the same person and a shortened enquiry still reads. A phone number is
++    neither -- trimming one stores a different, wrong number in the field a
++    salesperson dials -- so an unusable one is refused instead. A lead nobody can
++    ring back is not a lead.
++    """
++    name = str(name or "").strip()
++    phone = str(phone or "").strip()
++    requirement = str(requirement or "").strip()
++    if not name or not requirement:
++        return None
++    if len(phone) > crm_client.MAX_PHONE_CHARS or not looks_like_a_phone(phone):
++        return None
++    try:
++        amount = float(amount)
++    except (TypeError, ValueError):
++        return None
++    # NaN slips past both comparisons below and reaches MySQL as a DECIMAL it
++    # rejects, so it is ruled out first. The ceiling is tested against the
++    # rounded value because DECIMAL(15, 2) rounds before it range-checks:
++    # 9999999999999.998 is inside the limit right up until MySQL makes it 10**13
++    # and 500s the write -- which is the one thing this guard exists to prevent.
++    if not math.isfinite(amount) or not 0 <= round(amount, 2) < crm_client.MAX_AMOUNT:
++        return None
++    return _Lead(
++        name=name[: crm_client.MAX_NAME_CHARS],
++        phone=phone,
++        title=requirement[: crm_client.MAX_TITLE_CHARS],
++        requirement=requirement,
++        amount=amount,
++    )
++
++
++def _auto_created_card(client: crm_client.CrmClient, contact_id: str | None) -> dict | None:
++    """The card `POST /api/contacts` just made, found by asking for the deals.
++
++    Failing here does not fail the lead: the contact and its card are already on
++    the board, and all that is lost is the note we wanted to hang on it. Letting
++    the error out would reach the caller as "nothing was recorded", which by this
++    point is false -- and would send the model round again to make a second card.
++    """
++    if not contact_id:
++        return None
++    try:
++        deals = client.deals_for_contact(contact_id)
++    except ApiClientError:
++        logger.exception("could not find the card just created for contact %s", contact_id)
++        return None
++    return deals[0] if deals else None
++
++
++def _card(client: crm_client.CrmClient, lead: _Lead) -> tuple[dict, dict | None]:
++    """The contact this lead belongs to, and the card that now represents it.
++
++    Somebody already on the books gets a new opportunity rather than a second copy
++    of themselves. This demo is run against the same phone number again and again,
++    and a pipeline showing five identical contacts argues against the product it
++    is there to sell.
++
++    The candidates arrive on the loose suffix rule the lookup tools share, and
++    are then held to `is_the_same_number`. What is being decided here is where a
++    write goes, and the two ways of being wrong do not cost the same: a
++    duplicate contact is a visible mess somebody can merge, while a card filed
++    onto a stranger who happens to share eight digits is a silent one.
++    """
++    existing = client.lookup_contacts(lead.phone, limit=crm_client.DEFAULT_RESULT_LIMIT)
++    contact = next(
++        (row for row in existing if is_the_same_number(row.get("phone", ""), lead.phone)),
++        None,
++    )
++    if contact:
++        deal = client.create_deal(
++            contact_id=contact.get("id"), title=lead.title, amount=lead.amount
++        )
++        return contact, deal
++
++    contact = client.create_contact(
++        name=lead.name, phone=lead.phone, title=lead.title, amount=lead.amount
++    )
++    return contact, _auto_created_card(client, contact.get("id"))
++
++
++def _activity_note(lead: _Lead) -> str:
++    """What the salesperson reads inside the card.
++
++    Deliberately the full enquiry rather than the trimmed title: the column is
++    TEXT, and this is the one place the customer own words survive whole.
++    """
++    return (
++        f"{lead.requirement} -- estimated MYR {lead.amount:,.2f}, "
++        "captured by the WhatsApp assistant."
++    )
++
++
++@beta_tool
++def crm_create_lead(name: str, phone: str, requirement: str, amount: float) -> str:
++    """Record a sales lead in the CRM so a salesperson can follow it up.
++
++    Call this once the customer has shown real interest -- named what they want,
++    asked for a quote, agreed to buy -- and not for a passing question. It writes
++    to the live CRM: the lead shows up on the sales pipeline board immediately.
++
++    Somebody already in the CRM gets the new opportunity added to their existing
++    record instead of a duplicate entry, so this is safe to call for a returning
++    customer.
++
++    Args:
++        name: The customer name, as they gave it.
++        phone: Their phone number -- normally the WhatsApp number they are
++            writing from -- in any format.
++        requirement: What they are asking for, in their own words. This becomes
++            the title on the pipeline card.
++        amount: The estimated value in MYR. Use the quoted total when there is
++            one, otherwise a reasonable estimate, or 0 with nothing to go on.
++    """
++    lead = _usable(name, phone, requirement, amount)
++    if lead is None:
++        logger.warning("crm_create_lead got unusable details for %r", name)
++        return BAD_LEAD
++
++    client = crm_client.client()
++    try:
++        contact, deal = _card(client, lead)
++    except ApiClientError as exc:
++        logger.exception("crm_create_lead failed for %r", lead.name)
++        # "It failed" and "I do not know" send the model to two different places,
++        # and only one of them risks a duplicate card.
++        return LEAD_UNKNOWN if exc.may_have_landed else LEAD_FAILED
++
++    deal_id = deal.get("id") if deal else None
++    activity_logged = False
++    if deal_id:
++        try:
++            client.log_activity(deal_id=deal_id, content=_activity_note(lead))
++            activity_logged = True
++        except ApiClientError:
++            # The card is on the board; only the note explaining it is missing.
++            # Worth reporting, not worth calling the lead a failure.
++            logger.exception("could not note the enquiry on deal %s", deal_id)
++
++    return json.dumps(
++        {
++            "contact_id": contact.get("id"),
++            "contact_name": contact.get("name"),
++            "deal_id": deal_id,
++            "title": deal.get("title") if deal else lead.title,
++            "amount": deal.get("amount") if deal else lead.amount,
++            "status": deal.get("status") if deal else None,
++            "activity_logged": activity_logged,
++        },
++        ensure_ascii=False,
++        default=str,
++    )
++
++
++TOOLS = [crm_lookup_customer, crm_create_lead]
+diff --git a/backend/tests/conftest.py b/backend/tests/conftest.py
+new file mode 100644
+index 0000000..e1f9b47
+--- /dev/null
++++ b/backend/tests/conftest.py
+@@ -0,0 +1,40 @@
++"""Fixtures shared by the back-office test modules.
++
++The one thing that had to be shared: nothing under `backend/` sets ERP_EMAIL or
++CRM_EMAIL, so `settings.*_email` is "" and both clients refuse at `_login`
++before a byte reaches httpx. A test that patches httpx without one of these
++fixtures is asserting against the missing-credentials path instead -- which is
++how three ERP and three CRM transport cases sat green while covering nothing,
++including the one standing guard over task 8's P1. Reviewed rounds 1 and 2 of
++task 9.1.
++
++Opt-in rather than autouse on purpose: a fixture that quietly handed every test
++a logged-in client would only move the problem, and a test that wants the
++no-credentials path (there is one) has to be able to ask for it.
++"""
++from unittest.mock import patch
++
++import pytest
++
++from app.config import settings
++from app.services import crm_client, erp_client
++
++
++def _with_credentials(name, module):
++    module.reset()
++    with patch.object(settings, f"{name}_email", f"demo@{name}.test"):
++        with patch.object(settings, f"{name}_password", "not-a-real-password"):
++            yield
++    module.reset()
++
++
++@pytest.fixture
++def erp_credentials():
++    """An ERP client that will actually attempt a login."""
++    yield from _with_credentials("erp", erp_client)
++
++
++@pytest.fixture
++def crm_credentials():
++    """A CRM client that will actually attempt a login."""
++    yield from _with_credentials("crm", crm_client)
+diff --git a/backend/tests/test_api_client.py b/backend/tests/test_api_client.py
+index 27a684c..c9943d5 100644
+--- a/backend/tests/test_api_client.py
++++ b/backend/tests/test_api_client.py
+@@ -400,9 +400,14 @@ def test_a_5xx_the_service_composed_itself_is_also_certain():
+     assert raised.value.may_have_landed is False
+ 
+ 
+-@pytest.mark.parametrize("status", [500, 502, 503, 504])
++@pytest.mark.parametrize("status", [502, 503, 504])
+ def test_a_gateway_answering_for_a_silent_service_is_not_certain(status):
+-    """nginx hands back an HTML page for a service that never said what it did."""
++    """nginx hands back an HTML page for a service that never said what it did.
++
++    500 left this list in review round 1 of task 9.1: it is the code a service
++    uses to say it failed, which it can only do once its own transaction is
++    rolled back.
++    """
+     client = _client()
+     gateway = Mock(spec=httpx.Response)
+     gateway.status_code = status
+@@ -418,6 +423,27 @@ def test_a_gateway_answering_for_a_silent_service_is_not_certain(status):
+     assert raised.value.may_have_landed is True
+ 
+ 
++def test_a_5xx_the_service_composed_without_json_is_certain_too():
++    """crm_os registers no exception handler, so the 500 it composes after
++    rolling back is Starlette's own text/plain "Internal Server Error". Judging
++    the tier by whether the body parsed as JSON filed exactly that under "the
++    gateway answered", and every rolled-back CRM write reached the model as "do
++    not try again" -- review round 1 of task 9.1, P1-1."""
++    client = _client()
++    plain = Mock(spec=httpx.Response)
++    plain.status_code = 500
++    plain.text = "Internal Server Error"
++    plain.json.side_effect = ValueError("not json")
++
++    with patch.object(
++        api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), plain]
++    ):
++        with pytest.raises(ApiClientError) as raised:
++            client.post("/api/contacts", json={})
++
++    assert raised.value.may_have_landed is False
++
++
+ @pytest.mark.parametrize(
+     "failure",
+     [httpx.ReadTimeout("timed out"), httpx.RemoteProtocolError("disconnected")],
+diff --git a/backend/tests/test_crm_tools.py b/backend/tests/test_crm_tools.py
+index e87423d..5ca9747 100644
+--- a/backend/tests/test_crm_tools.py
++++ b/backend/tests/test_crm_tools.py
+@@ -1,9 +1,11 @@
+ import json
++from contextlib import contextmanager
+ from unittest.mock import patch
+ 
+ import httpx
+ import pytest
+ 
++from app.config import settings
+ from app.services import api_client, crm_client
+ from app.services.api_client import ApiClientError
+ from app.tools import crm
+@@ -123,22 +125,362 @@ def test_an_unreachable_crm_becomes_an_answer_the_bot_can_relay():
+     ],
+     ids=["dead-host", "timeout", "rate-limited"],
+ )
+-def test_a_real_transport_failure_degrades_instead_of_escaping(failure):
++def test_a_real_transport_failure_degrades_instead_of_escaping(failure, crm_credentials):
+     """Regression: see the twin in test_erp_tools."""
+-    with patch.object(api_client.httpx, "post", side_effect=failure):
++    with patch.object(api_client.httpx, "post", side_effect=failure) as post:
+         assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+ 
++    # Without this the test passes whether or not the failure was ever raised.
++    assert post.called
++
+ 
+ def test_missing_credentials_degrade_like_any_other_outage():
+-    """A forgotten .env line must not crash a demo -- it reads as "cannot check"."""
++    """A forgotten .env line must not crash a demo -- it reads as "cannot check".
++
++    Patched on `settings`, not on the class: `_email` is set in `__init__`, so an
++    instance attribute shadows anything put on `CrmClient` and the patch this
++    test used to do was inert.
++    """
+     crm_client.reset()
+-    with patch.object(crm_client.CrmClient, "_email", "", create=True):
+-        with patch.object(crm_client.CrmClient, "_password", "", create=True):
+-            assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
++    with patch.object(settings, "crm_email", ""):
++        with patch.object(settings, "crm_password", ""):
++            with patch.object(api_client.httpx, "post") as post:
++                assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
++
++    # The point of the answer: it was refused here, without a doomed round trip.
++    assert post.call_args_list == []
++
++
++def test_both_tools_are_declared_with_a_schema_the_model_can_read():
++    assert [tool.name for tool in crm.TOOLS] == ["crm_lookup_customer", "crm_create_lead"]
++    for tool in crm.TOOLS:
++        assert tool.input_schema["properties"]
++        assert tool.description
++
++
++# -- crm_create_lead ---------------------------------------------------------
++
++ENQUIRY = "3 units Sony WF-C710N earbuds, COD to Cheras"
++VALUE = 986.70
++
++NEW_CONTACT = {"id": "c-9", "name": "Ahmad Faizal", "phone": "+60 12-333 4444"}
++NEW_DEAL = {"id": "d-9", "title": ENQUIRY, "amount": 986.70, "status": "lead"}
++
++
++class FakeCrm:
++    """crm_os at the HTTP boundary: answers like the routes do, keeps what was sent.
++
++    The patched methods are the authenticated `get`/`post`, so the returns here are
++    already past `_unwrap` -- the same shape the client code actually reads.
++    """
++
++    def __init__(self, *, existing=None, deals=None, get_fails=None, post_fails=None):
++        self.existing = list(existing or [])
++        self.deals = [NEW_DEAL] if deals is None else list(deals)
++        self.get_fails = get_fails or {}
++        self.post_fails = post_fails or {}
++        self.gets = []
++        self.posts = []
++
++    def get(self, path, params=None):
++        self.gets.append((path, params or {}))
++        self._maybe_fail(self.get_fails, path)
++        if path == "/api/contacts":
++            return {"data": self.existing}
++        if path == "/api/deals":
++            return self.deals
++        raise AssertionError(f"unexpected GET {path}")
++
++    def post(self, path, json=None):
++        self.posts.append((path, json or {}))
++        self._maybe_fail(self.post_fails, path)
++        if path == "/api/contacts":
++            return NEW_CONTACT
++        if path == "/api/deals":
++            return NEW_DEAL
++        if path.endswith("/activities"):
++            return {"id": "a-1"}
++        raise AssertionError(f"unexpected POST {path}")
++
++    @staticmethod
++    def _maybe_fail(failures, path):
++        for fragment, error in failures.items():
++            if fragment in path:
++                raise error
++
++    @property
++    def post_paths(self):
++        return [path for path, _ in self.posts]
++
++    def body(self, path):
++        """The single body posted to `path`."""
++        (body,) = [sent for posted, sent in self.posts if posted == path]
++        return body
++
++
++@contextmanager
++def fake_crm(**kwargs):
++    fake = FakeCrm(**kwargs)
++    with patch.object(crm_client.CrmClient, "get", side_effect=fake.get):
++        with patch.object(crm_client.CrmClient, "post", side_effect=fake.post):
++            yield fake
++
++
++def test_a_new_customer_leaves_one_card_on_the_board_not_two():
++    """`POST /api/contacts` already creates a deal; a second POST would double it.
++
++    The pipeline is the screen the demo points at. An extra RM 0 card next to the
++    real one is not a cosmetic problem there, it is the demo contradicting itself.
++    """
++    with fake_crm(existing=[]) as fake:
++        payload = json.loads(crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE))
++
++    assert fake.post_paths == ["/api/contacts", "/api/deals/d-9/activities"]
++    assert fake.body("/api/contacts") == {
++        "name": "Ahmad Faizal",
++        "phone": "+60 12-333 4444",
++        "initial_status": "lead",
++        "initial_title": ENQUIRY,
++        "initial_amount": VALUE,
++    }
++    assert payload["deal_id"] == "d-9"
++    assert payload["title"] == ENQUIRY
++    assert payload["amount"] == VALUE
++    assert payload["activity_logged"] is True
++
++
++def test_the_lead_is_never_flagged_as_gateway_traffic():
++    """`demo_scope` hides flagged contacts from the pipeline -- the one place it must show."""
++    with fake_crm(existing=[]) as fake:
++        crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
++
++    assert "is_gateway" not in fake.body("/api/contacts")
++
++
++def test_a_returning_customer_gets_another_card_not_another_copy_of_themselves():
++    """The same phone number runs through this demo again and again."""
++    with fake_crm(existing=[TAN]) as fake:
++        payload = json.loads(crm.crm_create_lead("Tan Wei Ming", "60173948123", ENQUIRY, VALUE))
++
++    assert "/api/contacts" not in fake.post_paths
++    assert fake.body("/api/deals") == {
++        "contact_id": "c-1",
++        "status": "lead",
++        "title": ENQUIRY,
++        "amount": VALUE,
++    }
++    assert payload["contact_id"] == "c-1"
++
++
++@pytest.mark.parametrize(
++    "typed",
++    ["60173948123", "+60 17-394 8123", "017-3948123", "(017) 394 8123"],
++)
++def test_a_returning_customer_is_recognised_however_the_number_is_written(typed):
++    """What the tightening below must not cost: one person, four notations."""
++    with fake_crm(existing=[TAN]) as fake:
++        crm.crm_create_lead("Tan Wei Ming", typed, ENQUIRY, VALUE)
++
++    assert "/api/contacts" not in fake.post_paths
++    assert fake.body("/api/deals")["contact_id"] == "c-1"
++
++
++def test_a_lead_is_not_filed_against_a_stranger_who_shares_eight_digits():
++    """Review round 2, P2-1, and the collision is a real row in this CRM.
++
++    David Park is stored as "+1-858-555-1515"; a Shah Alam landline ends in the
++    same eight digits. The suffix rule is right for a lookup, where a wrong hit
++    is visible in the answer the model reads -- here it would decide whose
++    record a write lands on.
++    """
++    david = {"id": "c-7", "name": "David Park", "phone": "+1-858-555-1515"}
++
++    with fake_crm(existing=[david]) as fake:
++        payload = json.loads(
++            crm.crm_create_lead("Ahmad Faizal", "03-8555 1515", ENQUIRY, VALUE)
++        )
++
++    assert "/api/deals" not in fake.post_paths
++    assert fake.body("/api/contacts")["name"] == "Ahmad Faizal"
++    assert payload["contact_id"] != david["id"]
++
++
++def test_the_note_is_filed_against_the_card_and_marked_whatsapp():
++    with fake_crm(existing=[]) as fake:
++        crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
++
++    body = fake.body("/api/deals/d-9/activities")
++    # The route reads the id from the path, but ActivityCreate still requires the
++    # field: leaving it out is a 422.
++    assert body["deal_id"] == "d-9"
++    assert body["type"] == "WhatsApp"
++    assert ENQUIRY in body["content"]
++    assert "986.70" in body["content"]
++
++
++def test_the_note_keeps_the_whole_enquiry_the_card_title_had_to_cut():
++    long_enquiry = "I want " + "very " * 100 + "many earbuds"
++
++    with fake_crm(existing=[]) as fake:
++        crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", long_enquiry, VALUE)
++
++    assert fake.body("/api/contacts")["initial_title"] == long_enquiry[:200]
++    assert long_enquiry in fake.body("/api/deals/d-9/activities")["content"]
++
++
++def test_a_name_too_long_for_the_column_is_trimmed_rather_than_dropped():
++    with fake_crm(existing=[]) as fake:
++        crm.crm_create_lead("Ahmad " * 40, "+60 12-333 4444", ENQUIRY, VALUE)
++
++    assert len(fake.body("/api/contacts")["name"]) == 100
++
++
++@pytest.mark.parametrize(
++    "phone",
++    ["+60 12-333 4444 ext 12345678901234567890", "0123", "call me maybe", ""],
++    ids=["longer-than-the-column", "too-few-digits", "not-a-number", "empty"],
++)
++def test_a_phone_nobody_could_ring_back_is_refused_rather_than_trimmed(phone):
++    """A trimmed phone number is a different, wrong number in the field a rep dials."""
++    with fake_crm(existing=[]) as fake:
++        assert crm.crm_create_lead("Ahmad Faizal", phone, ENQUIRY, VALUE) == crm.BAD_LEAD
++
++    assert fake.posts == []
++
++
++@pytest.mark.parametrize(
++    ("name", "requirement", "amount"),
++    [
++        ("", ENQUIRY, VALUE),
++        ("   ", ENQUIRY, VALUE),
++        ("Ahmad Faizal", "", VALUE),
++        ("Ahmad Faizal", ENQUIRY, -1),
++        ("Ahmad Faizal", ENQUIRY, "not a number"),
++        ("Ahmad Faizal", ENQUIRY, float("nan")),
++        ("Ahmad Faizal", ENQUIRY, float("inf")),
++        ("Ahmad Faizal", ENQUIRY, 10**13),
++    ],
++    ids=[
++        "no-name",
++        "blank-name",
++        "no-requirement",
++        "negative-amount",
++        "unparseable-amount",
++        "nan-amount",
++        "infinite-amount",
++        "wider-than-DECIMAL-15-2",
++    ],
++)
++def test_details_that_are_not_a_lead_are_refused_before_anything_is_written(
++    name, requirement, amount
++):
++    with fake_crm(existing=[]) as fake:
++        assert crm.crm_create_lead(name, "+60 12-333 4444", requirement, amount) == crm.BAD_LEAD
++
++    assert fake.posts == []
++
++
++def test_a_write_that_was_refused_says_nothing_was_recorded():
++    failed = ApiClientError("422", may_have_landed=False)
++
++    with fake_crm(existing=[], post_fails={"/api/contacts": failed}):
++        assert crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE) == crm.LEAD_FAILED
++
++
++def test_a_write_that_may_have_landed_is_not_reported_as_a_failure():
++    """Telling the model it failed is what produces two cards for one customer."""
++    unknown = ApiClientError("gateway timeout", may_have_landed=True)
++
++    with fake_crm(existing=[], post_fails={"/api/contacts": unknown}):
++        assert crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE) == crm.LEAD_UNKNOWN
++
++
++def test_a_lookup_that_dies_before_any_write_is_a_clean_failure():
++    with fake_crm(get_fails={"/api/contacts": ApiClientError("boom")}) as fake:
++        assert crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE) == crm.LEAD_FAILED
++
++    assert fake.posts == []
++
++
++def test_a_card_already_on_the_board_is_not_called_a_failure_because_the_note_missed():
++    with fake_crm(existing=[], post_fails={"/activities": ApiClientError("boom")}):
++        payload = json.loads(crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE))
+ 
++    assert payload["deal_id"] == "d-9"
++    assert payload["activity_logged"] is False
+ 
+-def test_the_tool_is_declared_with_a_schema_the_model_can_read():
+-    (tool,) = crm.TOOLS
+-    assert tool.name == "crm_lookup_customer"
+-    assert tool.input_schema["properties"]
+-    assert tool.description
++
++def test_losing_the_new_cards_id_still_reports_the_lead_that_exists():
++    """The contact and its card are written by then -- LEAD_FAILED would be a lie."""
++    with fake_crm(existing=[], get_fails={"/api/deals": ApiClientError("boom")}) as fake:
++        payload = json.loads(crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE))
++
++    assert fake.post_paths == ["/api/contacts"]
++    assert payload["contact_id"] == "c-9"
++    assert payload["deal_id"] is None
++    assert payload["activity_logged"] is False
++
++
++@pytest.mark.parametrize(
++    "failure",
++    [
++        httpx.ConnectError("connection refused"),
++        httpx.ReadTimeout("timed out"),
++        httpx.HTTPStatusError(
++            "429", request=httpx.Request("POST", "https://crm"), response=httpx.Response(429)
++        ),
++    ],
++    ids=["dead-host", "timeout", "rate-limited"],
++)
++def test_a_real_transport_failure_on_a_lead_degrades_instead_of_escaping(failure, crm_credentials):
++    """Regression twin of the lookup case: raw httpx must not reach the tool runner."""
++    with patch.object(api_client.httpx, "post", side_effect=failure) as post:
++        answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
++
++    assert answer == crm.LEAD_FAILED
++    assert post.called
++
++
++def test_a_crm_500_is_a_lead_that_was_not_recorded_not_one_in_doubt(crm_credentials):
++    """Review round 1, P1-1, verified against the live CRM.
++
++    crm_os registers no exception handler, so an error it handled comes back as
++    Starlette's `text/plain` "Internal Server Error" -- while `get_db` has
++    already rolled the session back. Classified as the gateway's answer it
++    became LEAD_UNKNOWN, which tells the model not to save the lead again. There
++    was no card, and now there would never be one.
++    """
++    login = httpx.Response(
++        200,
++        json={"success": True, "data": {"access_token": "a", "refresh_token": "r"}},
++        request=httpx.Request("POST", "https://crm/api/auth/login"),
++    )
++    rolled_back = httpx.Response(
++        500,
++        content=b"Internal Server Error",
++        headers={"content-type": "text/plain; charset=utf-8"},
++        request=httpx.Request("POST", "https://crm/api/contacts"),
++    )
++    empty_page = httpx.Response(
++        200,
++        json={"success": True, "data": {"data": [], "total": 0, "page": 1, "page_size": 100}},
++        request=httpx.Request("GET", "https://crm/api/contacts"),
++    )
++
++    with patch.object(api_client.httpx, "get", return_value=empty_page):
++        with patch.object(api_client.httpx, "post", side_effect=[login, rolled_back]):
++            answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
++
++    assert answer == crm.LEAD_FAILED
++
++
++def test_an_amount_that_rounds_past_the_column_never_reaches_the_crm():
++    """Review round 1, P2-1: DECIMAL(15, 2) rounds first, then range-checks."""
++    rounds_over = 9999999999999.998
++    assert rounds_over < crm_client.MAX_AMOUNT
++
++    with fake_crm(existing=[]) as fake:
++        answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, rounds_over)
++
++    assert answer == crm.BAD_LEAD
++    assert fake.posts == []
+diff --git a/backend/tests/test_erp_tools.py b/backend/tests/test_erp_tools.py
+index 7e13442..73c1918 100644
+--- a/backend/tests/test_erp_tools.py
++++ b/backend/tests/test_erp_tools.py
+@@ -105,17 +105,24 @@ def test_an_unreachable_erp_becomes_an_answer_the_bot_can_relay():
+     ],
+     ids=["dead-host", "timeout", "rate-limited"],
+ )
+-def test_a_real_transport_failure_degrades_instead_of_escaping(failure):
++def test_a_real_transport_failure_degrades_instead_of_escaping(failure, erp_credentials):
+     """Regression: these three used to escape the tool and blow up the reply.
+ 
+     The original tests raised ApiClientError -- the type the tool had chosen to
+     catch -- so they passed while every failure that actually happens went
+     uncaught. Patch httpx itself, not the exception we hoped for.
++
++    `erp_credentials` is what makes that true: without it the client refuses at
++    `_login` and none of these three ever reach httpx, which is how this test --
++    the one guarding task 8's P1 -- sat green covering nothing until review
++    round 2 of task 9.1 measured it.
+     """
+-    with patch.object(api_client.httpx, "post", side_effect=failure):
++    with patch.object(api_client.httpx, "post", side_effect=failure) as post:
+         assert erp.erp_search_sku("fan") == erp.UNAVAILABLE
+         assert erp.erp_get_inventory("fan") == erp.UNAVAILABLE
+ 
++    assert post.called
++
+ 
+ def test_a_typo_in_the_base_url_degrades_instead_of_escaping():
+     """The whole path, not just the client: a bad ERP_BASE_URL must reach the bot

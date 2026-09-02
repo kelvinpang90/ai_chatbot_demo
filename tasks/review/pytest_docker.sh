@@ -31,6 +31,17 @@ fi
 
 [ -d "$BACKEND" ] || { echo "[pytest_docker] no such backend dir: $BACKEND" >&2; exit 2; }
 
+# A repro directory that is not there used to fall through to "no targets", i.e.
+# the whole suite -- which prints a green number and reads exactly like the
+# reproduction passing. That is the same shape of silent false pass the window
+# mode had: the run that proved nothing looks like the run that proved
+# something. Say so instead.
+if [ -n "$REPRO" ] && [ ! -d "$REPRO" ]; then
+  echo "[pytest_docker] no such repro dir: $REPRO" >&2
+  echo "[pytest_docker] refusing to run the whole suite and call it a reproduction." >&2
+  exit 2
+fi
+
 args=(run --rm -v "$(winpath "$(cd "$BACKEND" && pwd)"):/app")
 if [ -n "$REPRO" ] && [ -d "$REPRO" ]; then
   args+=(-v "$(winpath "$(cd "$REPRO" && pwd)"):/app/repro")
