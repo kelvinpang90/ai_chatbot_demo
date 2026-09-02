@@ -1,0 +1,15 @@
+任务 9.1 / 第 1 轮 / commit 1ab90c75
+verdict: findings
+
+报了 3 条，进修复队列 2 条，降级 1 条。
+
+[MUST FIX] P1-1 P1  backend/app/tools/crm.py:205
+    crm_os answers an application-level 500 with text/plain, so every rolled-back CRM write is reported to the model as LEAD_UNKNOWN ("do not save it again") and the lead is silently lost.
+    证据: repro repro/test_p1_1.py::test_a_crm_500_is_a_lead_that_was_not_recorded_not_a_lead_in_doubt
+[MUST FIX] P2-1 P2  backend/app/services/crm_client.py:25
+    MAX_AMOUNT = 10**13 is documented as "the first value it cannot hold" but DECIMAL(15,2) rounds before it range-checks, so amounts from 9999999999999.995 up pass the guard and 500 the write.
+    证据: repro repro/test_p2_1.py::test_an_amount_that_rounds_past_the_column_never_reaches_the_crm
+[降级] P3-1 P3  backend/tests/test_crm_tools.py:366
+    test_a_real_transport_failure_on_a_lead_degrades_instead_of_escaping never reaches httpx -- all three cases short-circuit on "no credentials configured", so the test is green for a reason unrelated to what it claims to cover.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）

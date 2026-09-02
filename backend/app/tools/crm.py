@@ -105,8 +105,11 @@ def _usable(name: str, phone: str, requirement: str, amount: float) -> _Lead | N
     except (TypeError, ValueError):
         return None
     # NaN slips past both comparisons below and reaches MySQL as a DECIMAL it
-    # rejects, so it is ruled out first.
-    if not math.isfinite(amount) or not 0 <= amount < crm_client.MAX_AMOUNT:
+    # rejects, so it is ruled out first. The ceiling is tested against the
+    # rounded value because DECIMAL(15, 2) rounds before it range-checks:
+    # 9999999999999.998 is inside the limit right up until MySQL makes it 10**13
+    # and 500s the write -- which is the one thing this guard exists to prevent.
+    if not math.isfinite(amount) or not 0 <= round(amount, 2) < crm_client.MAX_AMOUNT:
         return None
     return _Lead(
         name=name[: crm_client.MAX_NAME_CHARS],

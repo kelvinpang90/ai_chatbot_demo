@@ -58,31 +58,31 @@ def _detail(response: Any) -> str:
         return ""
 
 
-def _composed_by_the_service(response: Any) -> bool:
-    """Did the application itself answer, or something standing in front of it?
-
-    This is the difference between a 500 and a 502, and for a write it decides
-    whether the row exists. erp_os and crm_os answer an error they handled with
-    their own JSON envelope, and handling it means the request-scoped session was
-    already rolled back when that response was written (erp_os: `get_db` rolls
-    back and re-raises, the catch-all handler turns it into a 500
-    INTERNAL_ERROR). An unknown customer_id is exactly this shape -- a foreign
-    key violation, not a validation error -- so treating it as "the order might
-    exist" would forbid the one retry that could still make the sale.
-
-    A 502 or 504 from the proxy is an HTML page or nothing at all, and says
-    nothing about what the application did with the request it is still holding.
-
-    Known edge: a service that failed *after* committing, in an after-commit
-    hook, also answers this way. erp_os only publishes such events on confirm,
-    never on create, and mistaking a confirmed order for an unconfirmed one
-    costs a phone call, while mistaking a booked order for a failed one costs a
-    duplicate order.
-    """
-    try:
-        return isinstance(response.json(), dict)
-    except Exception:
-        return False
+# The status codes that mean a proxy answered for a service that never said what
+# it did. Every other 5xx was composed by the application itself, and both back
+# offices roll their request-scoped session back before they can compose
+# anything: erp_os re-raises out of `get_db` into a catch-all handler that writes
+# its JSON envelope, and crm_os -- which registers no exception handler at all --
+# rolls back the same way and lets Starlette answer with a plain "Internal Server
+# Error". So an application 5xx means nothing was written, and only these three
+# leave the question open.
+#
+# The assumption underneath, worth naming because the whole classification rests
+# on it: nginx answers for an upstream it cannot reach or wait for with 502, 503
+# or 504, never with a bare 500. A 500 always came from the application.
+#
+# Reading the tier off the body instead is the bug round 1 of task 9.1 found:
+# crm_os's 500 is text/plain, so "it did not send JSON" classified it as the
+# gateway's, and every rolled-back CRM write reached the model as "it is not
+# known whether this was saved -- do not try again". Nothing had been saved, and
+# with the retry forbidden nothing would be.
+#
+# Known edge: a service that failed *after* committing, in an after-commit hook,
+# also answers with its own 5xx. erp_os only publishes such events on confirm,
+# never on create, and mistaking a confirmed order for an unconfirmed one costs a
+# phone call, while mistaking a booked order for a failed one costs a duplicate
+# order.
+GATEWAY_SILENCE = frozenset({502, 503, 504})
 
 
 class ApiClientError(RuntimeError):
@@ -259,15 +259,12 @@ class JsonApiClient:
                 raise ApiClientError(
                     f"{self.name} api: {method} {path} returned "
                     f"{response.status_code}: {_detail(response)}",
-                    # A 4xx is the service refusing the request, so nothing was
-                    # written -- and so is a 5xx the service composed itself,
-                    # which it only does after rolling its transaction back. What
-                    # is left is the gateway answering for a service that never
-                    # said what it did.
+                    # A 4xx is the service refusing the request, and an
+                    # application 5xx is it failing after its transaction was
+                    # rolled back: neither wrote anything. What is left is the
+                    # gateway answering for a service that never said what it did.
                     may_have_landed=(
-                        method != "GET"
-                        and response.status_code >= 500
-                        and not _composed_by_the_service(response)
+                        method != "GET" and response.status_code in GATEWAY_SILENCE
                     ),
                 )
             return self._unwrap(response.json())

@@ -321,6 +321,27 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   文件：`backend/app/services/crm_client.py`（扩展，加 `create_contact` / `create_deal` / `deals_for_contact` / `log_activity` 四个写方法 + 列宽常量）、`backend/app/tools/crm.py`（扩展，加 `crm_create_lead`）、`backend/tests/test_crm_tools.py`（扩展）
 
+  ---
+
+  🔍 **2026-09-02 第 1 轮冷审——报 3 条，2 条进队列全部接受并修掉，降级那条也修了**（全套 183 passed，两条 repro 由红转绿，审查方 worktree `dirty: none`）：
+
+  - **P1-1（queue，P1）：`crm_os` 的 500 被判成「可能已经写进去了」，而它恰恰意味着一定没写。接受，已修。**
+    `api_client._composed_by_the_service` 拿「响应体是不是一个 JSON dict」判断这个错误是应用层答的还是网关答的。这个判据对 `erp_os` 成立（`erp_os/backend/app/main.py:212` 有 catch-all handler，写自己的 JSON 信封），对 `crm_os` **不成立**——它一个异常处理器都没注册，Starlette 直接回 `text/plain` 的 `Internal Server Error`。于是 crm_os 每一次内部报错（此时 `get_db` 已经 rollback，什么都没写）都被算成 `may_have_landed=True`，工具回 `LEAD_UNKNOWN`：「不确定存没存上，**别再存一次**」。**线索静默丢失，而且模型被明确禁止重试。**
+    审查方拿线上服务实测坐实了这条：`POST /api/contacts` 收到 500 text/plain，工具回 LEAD_UNKNOWN，紧接着按同一个手机号查联系人返回 `[]`——没有卡，也永远不会有。
+    **修法是换判据，不是多打一个补丁**：从「响应体长什么样」换成「哪一层 composed 了这个响应」——`GATEWAY_SILENCE = {502, 503, 504}`，其余 5xx 一律算应用层自己答的（两边都是先 rollback 再 composed）。`_composed_by_the_service` 整个删掉。底下那条假设也写进注释了：**nginx 对连不上 / 等不到的 upstream 回 502/503/504，不会回裸 500**——整个分类都压在这句话上，所以要写出来让人能反驳。
+    连带改了一个既有测试：`test_a_gateway_answering_for_a_silent_service_is_not_certain` 的参数里摘掉 500（它现在归应用层），另补一条钉住「text/plain 的 500 = 确定没写」。
+
+  - **P2-1（queue，P2）：`MAX_AMOUNT = 10**13` 挡不住它自称要挡的东西。接受，已修。**
+    `DECIMAL(15,2)` 是**先四舍五入再做范围检查**，所以 `9999999999999.998` 能过这道闸，到 MySQL 变成 `10**13` 再 500——正是这个 guard 的注释里写着要避免的那个后果。改成对 `round(amount, 2)` 做范围检查。
+    审查方自己标了「现实里没有客户会报十三位数的马币估值，单看影响接近零」。它进队列不是因为影响大，**而是因为这个常量的行为和它自己的注释不一致**，而且这个洞正是审查方能对着线上服务把 P1-1 演出来、而不是在纸上论证的入口。
+
+  - **P3-1（read-only 自动降级，不进队列，但一起修了）：我写的三个 transport 测试根本没跑到 httpx。**
+    `backend/` 下没有 conftest，`settings.crm_email` 是空字符串，`_login` 在第一个字节发出去之前就抛「no credentials configured」，工具照样返回 `LEAD_FAILED`，断言照样绿。**dead-host / timeout / rate-limited 三个用例是同一条「缺凭据」断言的三份复制**，一个裸 `httpx.ReadTimeout` 从工具里逃出来它们也不会红。
+    顺带牵出任务 8 留下的两个同款，一并修了：`test_a_real_transport_failure_degrades_instead_of_escaping`（同一个洞）、`test_missing_credentials_degrade_like_any_other_outage`（patch 打在 `CrmClient._email` 这个**类**属性上，而它是 `__init__` 里设的**实例**属性，patch 完全空转——它一直是靠环境里真的没凭据才绿的）。修法是加一个 `credentials()` 上下文管理器去 patch `settings`，并补上 `assert post.called`——**这条断言正是原本能当场发现问题的那条**。
+    **这条降级 finding 才是 P1-1 能溜过去的原因**：`test_crm_tools.py` 里每一个写失败测试都是手工 `ApiClientError(may_have_landed=X)` 注进去的，全套 181 个测试里**没有任何一处问过「真实的 crm_os 响应会让客户端算出什么」**。所以它虽然不进队列，性质上比 P2-1 严重。
+
+  **流程侧再次确认**：Stop hook 在后台 job 会话里**还是没触发**（`state.env` 没出现），这一轮照 REVIEW.md 记的办法手工起的——写 `prev_status=running` 的 `state.env`，再 `REVIEW_BASE=<父提交> REVIEW_MODE=print bash tasks/review/run_review.sh <sha> 1 9.1`。两点补充：① 用 `print` 不用 `window`，后台 session 没人按那个信任对话框的回车；② **`REVIEW_BASE` 必须给**，否则 `origin/master..HEAD` 会把任务 9 那三个还没推的 commit 一起卷进审查范围。
+
 - [ ] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
   文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）
   目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走 `upload_media()` → 构造 document 消息 payload

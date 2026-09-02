@@ -5,6 +5,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from app.config import settings
 from app.services import api_client, crm_client
 from app.services.api_client import ApiClientError
 from app.tools import crm
@@ -35,6 +36,24 @@ SITI = {
 def _fresh_client():
     crm_client.reset()
     yield
+    crm_client.reset()
+
+
+@contextmanager
+def credentials():
+    """A client that will actually attempt a login.
+
+    Nothing under `backend/` sets CRM_EMAIL, so `settings.crm_email` is "" and
+    the client refuses at `_login` before a byte reaches httpx. A test that
+    patches httpx and does not do this is asserting against the
+    missing-credentials path instead -- review round 1 of task 9.1, P3-1: three
+    parametrised transport cases were green for that reason, and would have
+    stayed green with a raw httpx error escaping the tool.
+    """
+    crm_client.reset()
+    with patch.object(settings, "crm_email", "demo@acuven.test"):
+        with patch.object(settings, "crm_password", "not-a-real-password"):
+            yield
     crm_client.reset()
 
 
@@ -126,16 +145,29 @@ def test_an_unreachable_crm_becomes_an_answer_the_bot_can_relay():
 )
 def test_a_real_transport_failure_degrades_instead_of_escaping(failure):
     """Regression: see the twin in test_erp_tools."""
-    with patch.object(api_client.httpx, "post", side_effect=failure):
-        assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+    with credentials():
+        with patch.object(api_client.httpx, "post", side_effect=failure) as post:
+            assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+
+    # Without this the test passes whether or not the failure was ever raised.
+    assert post.called
 
 
 def test_missing_credentials_degrade_like_any_other_outage():
-    """A forgotten .env line must not crash a demo -- it reads as "cannot check"."""
+    """A forgotten .env line must not crash a demo -- it reads as "cannot check".
+
+    Patched on `settings`, not on the class: `_email` is set in `__init__`, so an
+    instance attribute shadows anything put on `CrmClient` and the patch this
+    test used to do was inert.
+    """
     crm_client.reset()
-    with patch.object(crm_client.CrmClient, "_email", "", create=True):
-        with patch.object(crm_client.CrmClient, "_password", "", create=True):
-            assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+    with patch.object(settings, "crm_email", ""):
+        with patch.object(settings, "crm_password", ""):
+            with patch.object(api_client.httpx, "post") as post:
+                assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+
+    # The point of the answer: it was refused here, without a doomed round trip.
+    assert post.call_args_list == []
 
 
 def test_both_tools_are_declared_with_a_schema_the_model_can_read():
@@ -388,5 +420,57 @@ def test_losing_the_new_cards_id_still_reports_the_lead_that_exists():
 )
 def test_a_real_transport_failure_on_a_lead_degrades_instead_of_escaping(failure):
     """Regression twin of the lookup case: raw httpx must not reach the tool runner."""
-    with patch.object(api_client.httpx, "post", side_effect=failure):
-        assert crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE) == crm.LEAD_FAILED
+    with credentials():
+        with patch.object(api_client.httpx, "post", side_effect=failure) as post:
+            answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
+
+    assert answer == crm.LEAD_FAILED
+    assert post.called
+
+
+def test_a_crm_500_is_a_lead_that_was_not_recorded_not_one_in_doubt():
+    """Review round 1, P1-1, verified against the live CRM.
+
+    crm_os registers no exception handler, so an error it handled comes back as
+    Starlette's `text/plain` "Internal Server Error" -- while `get_db` has
+    already rolled the session back. Classified as the gateway's answer it
+    became LEAD_UNKNOWN, which tells the model not to save the lead again. There
+    was no card, and now there would never be one.
+    """
+    login = httpx.Response(
+        200,
+        json={"success": True, "data": {"access_token": "a", "refresh_token": "r"}},
+        request=httpx.Request("POST", "https://crm/api/auth/login"),
+    )
+    rolled_back = httpx.Response(
+        500,
+        content=b"Internal Server Error",
+        headers={"content-type": "text/plain; charset=utf-8"},
+        request=httpx.Request("POST", "https://crm/api/contacts"),
+    )
+    empty_page = httpx.Response(
+        200,
+        json={"success": True, "data": {"data": [], "total": 0, "page": 1, "page_size": 100}},
+        request=httpx.Request("GET", "https://crm/api/contacts"),
+    )
+
+    with credentials():
+        with patch.object(api_client.httpx, "get", return_value=empty_page):
+            with patch.object(api_client.httpx, "post", side_effect=[login, rolled_back]):
+                answer = crm.crm_create_lead(
+                    "Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE
+                )
+
+    assert answer == crm.LEAD_FAILED
+
+
+def test_an_amount_that_rounds_past_the_column_never_reaches_the_crm():
+    """Review round 1, P2-1: DECIMAL(15, 2) rounds first, then range-checks."""
+    rounds_over = 9999999999999.998
+    assert rounds_over < crm_client.MAX_AMOUNT
+
+    with fake_crm(existing=[]) as fake:
+        answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, rounds_over)
+
+    assert answer == crm.BAD_LEAD
+    assert fake.posts == []

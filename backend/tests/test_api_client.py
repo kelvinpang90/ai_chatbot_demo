@@ -400,9 +400,14 @@ def test_a_5xx_the_service_composed_itself_is_also_certain():
     assert raised.value.may_have_landed is False
 
 
-@pytest.mark.parametrize("status", [500, 502, 503, 504])
+@pytest.mark.parametrize("status", [502, 503, 504])
 def test_a_gateway_answering_for_a_silent_service_is_not_certain(status):
-    """nginx hands back an HTML page for a service that never said what it did."""
+    """nginx hands back an HTML page for a service that never said what it did.
+
+    500 left this list in review round 1 of task 9.1: it is the code a service
+    uses to say it failed, which it can only do once its own transaction is
+    rolled back.
+    """
     client = _client()
     gateway = Mock(spec=httpx.Response)
     gateway.status_code = status
@@ -416,6 +421,27 @@ def test_a_gateway_answering_for_a_silent_service_is_not_certain(status):
             client.post("/api/sales-orders", json={})
 
     assert raised.value.may_have_landed is True
+
+
+def test_a_5xx_the_service_composed_without_json_is_certain_too():
+    """crm_os registers no exception handler, so the 500 it composes after
+    rolling back is Starlette's own text/plain "Internal Server Error". Judging
+    the tier by whether the body parsed as JSON filed exactly that under "the
+    gateway answered", and every rolled-back CRM write reached the model as "do
+    not try again" -- review round 1 of task 9.1, P1-1."""
+    client = _client()
+    plain = Mock(spec=httpx.Response)
+    plain.status_code = 500
+    plain.text = "Internal Server Error"
+    plain.json.side_effect = ValueError("not json")
+
+    with patch.object(
+        api_client.httpx, "post", side_effect=[_tokens("acc-1", "ref-1"), plain]
+    ):
+        with pytest.raises(ApiClientError) as raised:
+            client.post("/api/contacts", json={})
+
+    assert raised.value.may_have_landed is False
 
 
 @pytest.mark.parametrize(
