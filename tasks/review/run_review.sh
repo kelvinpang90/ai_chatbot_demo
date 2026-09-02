@@ -42,10 +42,21 @@ fail() {  # fail <reason>
 # The spec the developer worked from is the todo.md as it stood before the work,
 # not the one they rewrote afterwards to explain themselves. Same base rule as
 # tasks/REVIEW.md: first commit of the range, its parent.
-FIRST=$(git rev-list "origin/master..$SHA" 2>/dev/null | tail -1)
-[ -n "$FIRST" ] || FIRST=$SHA
-BASE=$(git rev-parse "$FIRST^" 2>/dev/null) || BASE=""
-[ -n "$BASE" ] || fail "cannot resolve a base commit for $SHA"
+#
+# REVIEW_BASE overrides that when the automatic answer is the wrong one: work
+# that is not a numbered task has no todo.md entry to date it, and unpushed
+# rounds pile up in `origin/master..HEAD` so the range grows a task at a time.
+# Reviewing something already reviewed is not free -- it spends the reviewer's
+# attention on ground that has been covered.
+if [ -n "${REVIEW_BASE:-}" ]; then
+  BASE=$(git rev-parse "$REVIEW_BASE" 2>/dev/null) || BASE=""
+  [ -n "$BASE" ] || fail "REVIEW_BASE=$REVIEW_BASE is not a commit"
+else
+  FIRST=$(git rev-list "origin/master..$SHA" 2>/dev/null | tail -1)
+  [ -n "$FIRST" ] || FIRST=$SHA
+  BASE=$(git rev-parse "$FIRST^" 2>/dev/null) || BASE=""
+  [ -n "$BASE" ] || fail "cannot resolve a base commit for $SHA"
+fi
 
 if docker version >/dev/null 2>&1; then
   DOCKER_NOTE="Docker 守护进程在线，测试命令可以直接跑。"
