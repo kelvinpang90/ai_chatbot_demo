@@ -38,7 +38,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - 七件武器全要：图片识别 / 语音消息 / 发文件 / 交互按钮 / Flows / 主动推送 / 转人工
 - ERP 一侧**走 `erp_os` 自己的 REST 路由，不裸连 MySQL**——写入要经过业务逻辑，否则后台刷出来是脏单，演示当场翻车
 
-## 开工前的三个阻塞项（需要用户处理）
+## 阻塞项（需要用户处理）
 
 - [x] ~~**A. `erp_os` / `crm_os` 的 demo API 账号**~~——**2026-08-30 实测已解决，两边都不用新建账号**：
   - `erp_os`：账号见环境变量 `ERP_EMAIL` / `ERP_PASSWORD`，对 `erp.kelvinpeng.com/api/auth/login` 实测 200
@@ -48,6 +48,14 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - ⚠️ **两边都没有 API key 机制**，只有邮箱+密码换 JWT。access token 15 分钟过期、refresh 一次性、登录限流 10 次/分（连错 5 次锁 5 分钟）。所以客户端**必须缓存 token + 到期前刷新**，绝不能每次调用都登录——一场演示连调五六个工具就会撞限流
 - [ ] **B. Meta 后台三个入口确认能点**——媒体权限、模板提审、Flows。用户已确认后台可用，但任务 18 的模板提审要在批次 03 第一天就提交（审核要几小时到 1-2 天）。
 - [ ] **C. 语音转录选型拍板**——外部 API（准、快、多一个供应商）vs 自托管 faster-whisper（无外部依赖、CPU 上每条慢 3-5 秒、吃 VPS 内存）。阻塞任务 15。建议先接外部 API 把戏跑通，转录做成抽象层，之后换实现只是换一个类。
+- [ ] **D. 演示环境的脏数据——会直接出现在演示要指的那块屏上**（2026-09-02 在 Chrome 上实地看到的）：
+  - **Lead 那一列现在有一张标题是 `16315551181`、金额 RM 0 的卡**，负责人 Marcus Johnson。这正是 `crm_os/backend/app/utils/demo_scope.py` 注释里写「a dashboard full of leads named after phone numbers and worth RM 0 undercuts the product being demonstrated」的那种卡——但它**没有被过滤掉**，说明这条联系人的 `is_gateway` 是 false（`demo_scope` 只挡 true 的）。任务 9.1 建出来的线索卡就会挨着它出现
+  - **联系人列表最上面 5 条是 `KK Hardware` / `demo company 1-4`**，全是 RM 0、0 个商机的空壳（列表按创建时间倒序，所以它们排最前）。客户点开 Contacts 第一眼看到的就是这些
+  - 全库 26 条联系人。**要不要删由你定**——删是写操作，而且是你的数据，我没动
+- [ ] **E. 本地 `backend/.env` 的 `CRM_PASSWORD` 已失效**（2026-09-02）：对 `crm.kelvinpeng.com/api/auth/login` 返回 **401**。`CRM_EMAIL` 是对的（`admin@crm.com`，和线上登录页显示的 demo 管理员一致），**密码不对**——`.env` 里是 14 位，而线上登录页预填的密码是 8 位。
+  ⚠️ 同一份凭据在今天早些时候审查方跑 live 脚本时还是好的，所以是中途失效或那份 `.env` 从来就和线上不同步。
+  按 CLAUDE.md 的高风险操作规则（认证失败一次即停、不连续换凭据重试，登录连错 5 次锁 5 分钟），**没有再试第二次**。这一条不解决，任务 9.1 及之后所有写 CRM 的真机验收都做不了。VPS 上那份 `/opt/ai_chatbot/backend/.env` 是否同样失效，也需要一并确认
+
 
 ---
 
