@@ -172,6 +172,19 @@ bash tasks/review/pytest_docker.sh backend tasks/review/task-N/round-M/repro   #
 
 审查方跑在一个**审完就删**的 worktree 里，落进仓库的只有它的结论。这让整套流程最贵的那一段变成了最看不见的一段——你能读它的判断，读不到它怎么得出的，而一个无法复查的审查等于要你凭信任接受。
 
+### 实时看：`REVIEW_MODE=window`（默认）
+
+`run_review.sh` 会自动弹一个 Windows Terminal 窗口，cwd 停在被审 worktree，任务直接带进去。你在旁边看它读什么、跑什么命令、怎么推理——**而且可以打断它**。
+
+打断这件事比看更值钱。任务 9 第 1 轮那条 repro 断言 `crm_os` 的 UUID 会是 int，恒为假、任何正确修复都转不绿；当场一句「你这条钉错靶子了」，比事后花一整轮写驳回理由便宜得多。
+
+⚠️ **要按一次回车。** Claude Code 只在非交互模式下跳过工作区信任对话框，而信任是**按目录**记在 `~/.claude.json` 里的——每轮的 worktree 都是新的 `review-<sha8>` 路径，所以每轮都会问一次「是否信任这个文件夹」。窗口里已经写了提示。按完就全自动了。
+（想彻底免掉这一下，要么把 worktree 钉在一个固定路径复用，要么让脚本去写 `~/.claude.json`。后者不是一个脚本该干的事；前者要顺带改 `replay.py` 的定位方式，因为它现在靠路径里的 sha 找记录。2026-09-02 用户拍板：先接受按一次回车。）
+
+无人值守的场景用 `REVIEW_MODE=print`，那是自动化最早的那条路径，一字未改。
+
+### 事后回放：`replay.py`
+
 **完整逐步过程在 `~/.claude/projects/` 下**，目录名以被审 commit 结尾，worktree 删了它还在。用 `replay.py` 读：
 
 ```bash
@@ -192,7 +205,7 @@ python tasks/review/replay.py 9 1 --full   # 不截断
 |---|---|
 | `.claude/settings.json` | 注册 Stop hook |
 | `hook_stop.cmd` / `hook_stop.sh` | 守门 + 起进程 + exit 2。`.cmd` 是 Windows 上的必需品：hook 跑在 cmd.exe 里，那里的裸 `bash` 是 WSL 启动器，看到的是另一个文件系统 |
-| `run_review.sh` | 建 worktree → 跑 `claude -p` → 查 worktree 是否被动过 → 验证 findings → 删 worktree |
+| `run_review.sh` | 建 worktree → 跑审查（`REVIEW_MODE=window` 开窗口给你看，默认；`print` 无头）→ 查 worktree 是否被动过 → 验证 findings → 删 worktree |
 | `reviewer_prompt.md` | 审查方的冷启动提示词，`{{...}}` 占位符在运行时替换 |
 | `wait.sh` | 开发方唯一的阻塞点，等审查方交卷（默认 20 分钟超时） |
 | `replay.py` | 把某一轮审查的完整过程打印成时间线：`python tasks/review/replay.py 9 1`（加 `--full` 不截断） |
