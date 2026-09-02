@@ -80,20 +80,77 @@ io.open(dst, "w", encoding="utf-8", newline="\n").write(text)
 PY
 [ -s "$OUT/prompt.md" ] || fail "prompt rendering produced nothing"
 
-# AI_REVIEW_CHILD keeps the reviewer's own Stop hook from starting a review of
-# the review. --add-dir lets it write findings outside the worktree it is judging.
-( cd "$WT" && AI_REVIEW_CHILD=1 claude -p \
-    --permission-mode bypassPermissions \
-    --add-dir "$OUT" \
-    --output-format json < "$OUT/prompt.md" ) > "$OUT/session.json" 2> "$OUT/session.err"
-CLAUDE_RC=$?
+# How the reviewer runs. `window` opens a real terminal you can watch and talk
+# to; `print` is the headless one-shot, which is what an unattended run wants.
+# AI_REVIEW_CHILD keeps the reviewer's own Stop hook from reviewing the review,
+# and --add-dir lets it write findings outside the worktree it is judging.
+#
+# ⚠️ `window` is not unattended yet: it needs one keypress. Claude Code only
+# skips the workspace trust dialog in non-interactive mode, and
+# hasTrustDialogAccepted is recorded per directory in ~/.claude.json -- so every
+# round, whose worktree is a fresh `review-<sha8>` path, opens on "do you trust
+# the files in this folder?" and waits. Press Enter and the rest runs on its own.
+# Closing that gap means either pinning the worktree to one reusable path or
+# having this script write into ~/.claude.json, and the second one is not a
+# script's business. Undecided; `print` is unaffected either way.
+MODE=${REVIEW_MODE:-window}
+WINDOW_TIMEOUT=${REVIEW_WINDOW_TIMEOUT:-2400}
+
+if [ "$MODE" = "print" ]; then
+  ( cd "$WT" && AI_REVIEW_CHILD=1 claude -p \
+      --permission-mode bypassPermissions \
+      --add-dir "$OUT" \
+      --output-format json < "$OUT/prompt.md" ) > "$OUT/session.json" 2> "$OUT/session.err"
+  CLAUDE_RC=$?
+else
+  # A .cmd file rather than a wt.exe command line: quoting a nested command
+  # through Git Bash, wt and cmd is three levels of escaping and one silent
+  # failure mode. This is also something you can re-run by hand.
+  winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+  LAUNCH="$OUT/launch.cmd"
+  {
+    echo "@echo off"
+    echo "title review: task $TASK round $ROUND"
+    echo "set AI_REVIEW_CHILD=1"
+    echo "cd /d \"$(winpath "$WT")\""
+    echo "echo ==== cold review: task $TASK, round $ROUND, commit ${SHA:0:8} ===="
+    echo "echo Brief: $(winpath "$OUT")\\prompt.md"
+    echo "echo."
+    echo "claude --permission-mode bypassPermissions --add-dir \"$(winpath "$OUT")\" \"Read the file $(winpath "$OUT")\\prompt.md and do exactly what it says.\""
+    echo "echo."
+    echo "echo ==== window done. Findings: $(winpath "$OUT")\\findings.json ===="
+    echo "pause"
+  } > "$LAUNCH"
+
+  MSYS_NO_PATHCONV=1 wt.exe "$(winpath "$LAUNCH")" >/dev/null 2>&1 &
+
+  # The window does not exit when the review does -- you may still be reading it
+  # or asking follow-ups -- so the finish line is the verdict file appearing,
+  # held steady for one interval so a half-written file is not read as done.
+  CLAUDE_RC=0
+  waited=0; stable=0
+  while [ "$waited" -lt "$WINDOW_TIMEOUT" ]; do
+    if [ -s "$OUT/findings.json" ]; then
+      stable=$((stable + 1))
+      [ "$stable" -ge 2 ] && break
+    else
+      stable=0
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+fi
 
 DIRTY=$(git -C "$WT" status --porcelain 2>/dev/null)
 if [ -n "$DIRTY" ]; then
   printf '%s\n' "$DIRTY" > "$OUT/breach.txt"
   git -C "$WT" diff > "$OUT/breach.diff" 2>/dev/null
 fi
-git worktree remove --force "$WT" >/dev/null 2>&1
+
+# Only the headless run removes the worktree. In window mode you are probably
+# still standing in it; the next round's `git worktree remove --force` at the
+# top of this script clears it anyway.
+[ "$MODE" = "print" ] && git worktree remove --force "$WT" >/dev/null 2>&1
 
 [ -s "$OUT/findings.json" ] || fail "reviewer exited rc=$CLAUDE_RC without writing findings.json (see session.err)"
 
