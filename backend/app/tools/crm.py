@@ -9,7 +9,7 @@ from anthropic import beta_tool
 
 from app.services import crm_client
 from app.services.api_client import ApiClientError
-from app.services.phone import looks_like_a_phone
+from app.services.phone import is_the_same_number, looks_like_a_phone
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +58,10 @@ def crm_lookup_customer(name_or_phone: str) -> str:
 # A write needs its own vocabulary, as the ERP side found: "could not be checked"
 # is the wrong thing to say about a record that may or may not now exist.
 LEAD_FAILED = (
-    "The lead could not be saved in the CRM. Nothing was recorded -- carry on with "
-    "the customer and say a colleague will follow up shortly."
+    "The lead was NOT saved and nothing was recorded, so there is no card for a "
+    "colleague to find and nothing to promise the customer. Try once more. If it "
+    "fails again, take the customer's details down in the conversation so someone "
+    "can enter them by hand."
 )
 # The write went out and no answer came back. Saving it again would put two cards
 # for one customer on the board the salesperson works from.
@@ -145,10 +147,19 @@ def _card(client: crm_client.CrmClient, lead: _Lead) -> tuple[dict, dict | None]
     of themselves. This demo is run against the same phone number again and again,
     and a pipeline showing five identical contacts argues against the product it
     is there to sell.
+
+    The candidates arrive on the loose suffix rule the lookup tools share, and
+    are then held to `is_the_same_number`. What is being decided here is where a
+    write goes, and the two ways of being wrong do not cost the same: a
+    duplicate contact is a visible mess somebody can merge, while a card filed
+    onto a stranger who happens to share eight digits is a silent one.
     """
-    existing = client.lookup_contacts(lead.phone, limit=1)
-    if existing:
-        contact = existing[0]
+    existing = client.lookup_contacts(lead.phone, limit=crm_client.DEFAULT_RESULT_LIMIT)
+    contact = next(
+        (row for row in existing if is_the_same_number(row.get("phone", ""), lead.phone)),
+        None,
+    )
+    if contact:
         deal = client.create_deal(
             contact_id=contact.get("id"), title=lead.title, amount=lead.amount
         )

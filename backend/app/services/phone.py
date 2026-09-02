@@ -41,3 +41,34 @@ def matches(stored: str, term: str) -> bool:
     """
     wanted = digits(term)[-PHONE_SUFFIX_DIGITS:]
     return bool(wanted) and digits(stored).endswith(wanted)
+
+
+# A country code is one to three digits (ITU-T E.164), so one number written
+# nationally and internationally differs by at most three leading digits, plus
+# the trunk "0" the national form puts in their place.
+MAX_COUNTRY_CODE_DIGITS = 3
+
+
+def is_the_same_number(stored: str, term: str) -> bool:
+    """Are these certainly one number -- strictly enough to write to the record?
+
+    `matches` compares the last eight digits, which is right for a lookup: a
+    salesperson's "017-3948123" and WhatsApp's "60173948123" are one person, and
+    a wrong hit there is visible in the answer the model reads. It is not right
+    for choosing whose record to write to. Eight digits collide across country
+    codes -- a Shah Alam landline "03-8555 1515" and a San Diego
+    "+1-858-555-1515" share their tail, and this CRM's demo book holds that
+    exact pair -- so the loose rule would file one customer's enquiry onto a
+    stranger, silently, on the board a salesperson works from.
+
+    This requires the whole number to agree, allowing only the difference that
+    is genuinely notation. It still cannot tell a nine-digit national number
+    from a foreign one whose country code completes it: a tighter net, not a
+    proof of identity, which is why the caller treats "not the same" as "make a
+    new record" rather than as a failure.
+    """
+    a, b = digits(stored).lstrip("0"), digits(term).lstrip("0")
+    if not a or not b:
+        return False
+    longer, shorter = (a, b) if len(a) >= len(b) else (b, a)
+    return longer.endswith(shorter) and len(longer) - len(shorter) <= MAX_COUNTRY_CODE_DIGITS

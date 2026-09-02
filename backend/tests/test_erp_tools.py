@@ -105,16 +105,23 @@ def test_an_unreachable_erp_becomes_an_answer_the_bot_can_relay():
     ],
     ids=["dead-host", "timeout", "rate-limited"],
 )
-def test_a_real_transport_failure_degrades_instead_of_escaping(failure):
+def test_a_real_transport_failure_degrades_instead_of_escaping(failure, erp_credentials):
     """Regression: these three used to escape the tool and blow up the reply.
 
     The original tests raised ApiClientError -- the type the tool had chosen to
     catch -- so they passed while every failure that actually happens went
     uncaught. Patch httpx itself, not the exception we hoped for.
+
+    `erp_credentials` is what makes that true: without it the client refuses at
+    `_login` and none of these three ever reach httpx, which is how this test --
+    the one guarding task 8's P1 -- sat green covering nothing until review
+    round 2 of task 9.1 measured it.
     """
-    with patch.object(api_client.httpx, "post", side_effect=failure):
+    with patch.object(api_client.httpx, "post", side_effect=failure) as post:
         assert erp.erp_search_sku("fan") == erp.UNAVAILABLE
         assert erp.erp_get_inventory("fan") == erp.UNAVAILABLE
+
+    assert post.called
 
 
 def test_a_typo_in_the_base_url_degrades_instead_of_escaping():

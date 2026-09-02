@@ -342,6 +342,24 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **流程侧再次确认**：Stop hook 在后台 job 会话里**还是没触发**（`state.env` 没出现），这一轮照 REVIEW.md 记的办法手工起的——写 `prev_status=running` 的 `state.env`，再 `REVIEW_BASE=<父提交> REVIEW_MODE=print bash tasks/review/run_review.sh <sha> 1 9.1`。两点补充：① 用 `print` 不用 `window`，后台 session 没人按那个信任对话框的回车；② **`REVIEW_BASE` 必须给**，否则 `origin/master..HEAD` 会把任务 9 那三个还没推的 commit 一起卷进审查范围。
 
+  ---
+
+  🔍 **2026-09-02 第 2 轮冷审——报 3 条，3 条全成立，1 条进队列。没有一条是第 1 轮修复引入的回归**（全套 188 passed，两轮 repro 全绿，审查方 worktree `dirty: none`）：
+
+  - **P2-1（queue，P2）：我自己加的那条「老客户不复制联系人」，把一个只读启发式提拔成了「写到谁头上」的判据。接受，已修。**
+    `phone.matches` 只比后 8 位——**对读是对的**（同一个人四种写法都查得到，而且查错了模型在答案里看得见），对写不是。**8 位在跨国号码之间会撞**：马来西亚 Shah Alam 座机 `03-8555 1515` 和圣地亚哥的 `+1-858-555-1515` 后 8 位相同，**而线上 demo 库里就躺着后者**（David Park / MedTech Innovations；审查方只读实测确认他是全库唯一撞得上的那条）。撞上的后果是 Ahmad 的询价、986.70 那张卡、以及他本人的原话全部挂到 David Park 名下，销售看到一条来自「从来不是他客户的人」的 WhatsApp 询价——**静默发生**。
+    **这条的性质和任务 9 第 1 轮那条 P1 是同一个**：把一条「读错了没关系」的规则拿去决定写入的目的地。
+    修法：新增 `phone.is_the_same_number()`，要求整串数字一致，只放过真正属于记法差异的那一项（国家码 ≤ 3 位 + 国内前导 0）。**不动 `matches`**——读工具的宽松匹配正是它存在的理由。`_card` 用宽松规则取候选、再用严格规则筛，筛不出就新建联系人。**两种错法代价不对等**：重复联系人是看得见、能合并的乱，写到陌生人头上是看不见的。
+    另补一个 4 种写法的参数化测试，钉住「收紧不能把它本来要解决的那个场景弄丢」。
+
+  - **P2-2（read-only 降级，一并修了）：`LEAD_FAILED` 自己两句话打架。**
+    它同时说「什么都没记下」和「告诉客人同事会跟进」——没有卡，同事无从跟进；而且它**从没说过可以重试**，实际指令「carry on with the customer」读起来就是「翻篇」。于是第 1 轮那条 P1 修完之后，客户端算对了 `may_have_landed=False`，**模型收到的行为指引却和修之前差不多**——线索照样丢。ERP 那边的 `ORDER_FAILED` 本来没这毛病（「Nothing was booked——告诉客人没下单成功」），是我抄结构时抄丢了。改成明说「没存上、没有东西可跟进、**再试一次**；再失败就把客人资料记在对话里让人工录」。
+
+  - **P3-1（read-only 降级，一并修了）：第 1 轮那条同义反复测试我只修了 CRM 那份，隔壁 ERP 那份原封不动**——而那一份正是当初为任务 8 那条 P1 站岗的测试。审查方实测三个用例的 `httpx.post` 调用次数都是 0。这次按它给的更好的修法做：**建一个共享的 `backend/tests/conftest.py`**，提供 `erp_credentials` / `crm_credentials` 两个 fixture，两个文件一起用上，都补 `assert post.called`。**显式 opt-in，不做 autouse**——静默给每个测试塞一个登录好的客户端只是把问题换个地方，而且确实有一个测试要的就是「没凭据」那条路径。
+
+  **两轮的形状：P1 → 没有 P1，而且第 2 轮这三条没有一条是第 1 轮修复引入的回归**（对比任务 9：那次第 2 轮两条 queue 全是回归）。第 2 轮报的东西反而更靠外围——一条指向我主动加的功能、一条指向文案、一条指向任务 8 留下的测试债。
+  **按轮次上限到此停手。必须说清楚的两件事**：① 第 2 轮的修复**没有经过第 3 轮复验**；② 真机验收还没做。要继续跑第 3 轮，删掉 `tasks/review/state.env` 即可重开。
+
 - [ ] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
   文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）
   目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走 `upload_media()` → 构造 document 消息 payload

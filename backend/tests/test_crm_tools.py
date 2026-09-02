@@ -39,24 +39,6 @@ def _fresh_client():
     crm_client.reset()
 
 
-@contextmanager
-def credentials():
-    """A client that will actually attempt a login.
-
-    Nothing under `backend/` sets CRM_EMAIL, so `settings.crm_email` is "" and
-    the client refuses at `_login` before a byte reaches httpx. A test that
-    patches httpx and does not do this is asserting against the
-    missing-credentials path instead -- review round 1 of task 9.1, P3-1: three
-    parametrised transport cases were green for that reason, and would have
-    stayed green with a raw httpx error escaping the tool.
-    """
-    crm_client.reset()
-    with patch.object(settings, "crm_email", "demo@acuven.test"):
-        with patch.object(settings, "crm_password", "not-a-real-password"):
-            yield
-    crm_client.reset()
-
-
 def test_a_name_is_handed_to_the_servers_own_search():
     with patch.object(crm_client.CrmClient, "get", return_value={"data": [TAN]}) as get:
         payload = json.loads(crm.crm_lookup_customer("Tan Wei Ming"))
@@ -143,11 +125,10 @@ def test_an_unreachable_crm_becomes_an_answer_the_bot_can_relay():
     ],
     ids=["dead-host", "timeout", "rate-limited"],
 )
-def test_a_real_transport_failure_degrades_instead_of_escaping(failure):
+def test_a_real_transport_failure_degrades_instead_of_escaping(failure, crm_credentials):
     """Regression: see the twin in test_erp_tools."""
-    with credentials():
-        with patch.object(api_client.httpx, "post", side_effect=failure) as post:
-            assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+    with patch.object(api_client.httpx, "post", side_effect=failure) as post:
+        assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
 
     # Without this the test passes whether or not the failure was ever raised.
     assert post.called
@@ -291,6 +272,39 @@ def test_a_returning_customer_gets_another_card_not_another_copy_of_themselves()
     assert payload["contact_id"] == "c-1"
 
 
+@pytest.mark.parametrize(
+    "typed",
+    ["60173948123", "+60 17-394 8123", "017-3948123", "(017) 394 8123"],
+)
+def test_a_returning_customer_is_recognised_however_the_number_is_written(typed):
+    """What the tightening below must not cost: one person, four notations."""
+    with fake_crm(existing=[TAN]) as fake:
+        crm.crm_create_lead("Tan Wei Ming", typed, ENQUIRY, VALUE)
+
+    assert "/api/contacts" not in fake.post_paths
+    assert fake.body("/api/deals")["contact_id"] == "c-1"
+
+
+def test_a_lead_is_not_filed_against_a_stranger_who_shares_eight_digits():
+    """Review round 2, P2-1, and the collision is a real row in this CRM.
+
+    David Park is stored as "+1-858-555-1515"; a Shah Alam landline ends in the
+    same eight digits. The suffix rule is right for a lookup, where a wrong hit
+    is visible in the answer the model reads -- here it would decide whose
+    record a write lands on.
+    """
+    david = {"id": "c-7", "name": "David Park", "phone": "+1-858-555-1515"}
+
+    with fake_crm(existing=[david]) as fake:
+        payload = json.loads(
+            crm.crm_create_lead("Ahmad Faizal", "03-8555 1515", ENQUIRY, VALUE)
+        )
+
+    assert "/api/deals" not in fake.post_paths
+    assert fake.body("/api/contacts")["name"] == "Ahmad Faizal"
+    assert payload["contact_id"] != david["id"]
+
+
 def test_the_note_is_filed_against_the_card_and_marked_whatsapp():
     with fake_crm(existing=[]) as fake:
         crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
@@ -418,17 +432,16 @@ def test_losing_the_new_cards_id_still_reports_the_lead_that_exists():
     ],
     ids=["dead-host", "timeout", "rate-limited"],
 )
-def test_a_real_transport_failure_on_a_lead_degrades_instead_of_escaping(failure):
+def test_a_real_transport_failure_on_a_lead_degrades_instead_of_escaping(failure, crm_credentials):
     """Regression twin of the lookup case: raw httpx must not reach the tool runner."""
-    with credentials():
-        with patch.object(api_client.httpx, "post", side_effect=failure) as post:
-            answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
+    with patch.object(api_client.httpx, "post", side_effect=failure) as post:
+        answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
 
     assert answer == crm.LEAD_FAILED
     assert post.called
 
 
-def test_a_crm_500_is_a_lead_that_was_not_recorded_not_one_in_doubt():
+def test_a_crm_500_is_a_lead_that_was_not_recorded_not_one_in_doubt(crm_credentials):
     """Review round 1, P1-1, verified against the live CRM.
 
     crm_os registers no exception handler, so an error it handled comes back as
@@ -454,12 +467,9 @@ def test_a_crm_500_is_a_lead_that_was_not_recorded_not_one_in_doubt():
         request=httpx.Request("GET", "https://crm/api/contacts"),
     )
 
-    with credentials():
-        with patch.object(api_client.httpx, "get", return_value=empty_page):
-            with patch.object(api_client.httpx, "post", side_effect=[login, rolled_back]):
-                answer = crm.crm_create_lead(
-                    "Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE
-                )
+    with patch.object(api_client.httpx, "get", return_value=empty_page):
+        with patch.object(api_client.httpx, "post", side_effect=[login, rolled_back]):
+            answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
 
     assert answer == crm.LEAD_FAILED
 

@@ -1,0 +1,16 @@
+任务 9.1 / 第 2 轮 / commit eb791f7e
+verdict: findings
+
+报了 3 条，进修复队列 1 条，降级 2 条。
+
+[MUST FIX] P2-1 P2  backend/app/tools/crm.py:148
+    _card picks the contact to write to by last-8-digits phone match, so a number that collides across country codes files the lead, the card and the WhatsApp note onto a stranger's record.
+    证据: repro repro/test_p2_1.py::test_a_lead_is_not_filed_against_a_stranger_who_shares_eight_digits
+[降级] P2-2 P3  backend/app/tools/crm.py:61
+    LEAD_FAILED says nothing was recorded and in the same breath tells the assistant to promise the customer that a colleague will follow up -- there is no record for any colleague to find, and the message never says a retry is safe, which was the whole payoff of round 1's fix.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）
+[降级] P3-1 P3  backend/tests/test_erp_tools.py:108
+    Round 1's P3-1 (transport tests that never reach httpx because no credentials are set) was fixed only in test_crm_tools.py; the identical test next door -- the one written to close task 8's flagship P1 -- still calls httpx zero times.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）
