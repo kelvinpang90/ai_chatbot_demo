@@ -178,7 +178,23 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   目标：`erp_os` 和 `crm_os` 的认证方式**完全一样**（邮箱+密码 → JWT，15 分钟过期，refresh 一次性），所以先写一个共用基类管登录/缓存/刷新，两个 client 各自只填 base url 和账号。三个只读工具：`erp_search_sku(keyword)`、`erp_get_inventory(sku)`、`crm_lookup_customer(name_or_phone)`
   验收：pytest（mock HTTP）覆盖「token 未过期时不重新登录」「过期时自动 refresh」「refresh 失败回退重新登录」；再对着真实 `erp.kelvinpeng.com` / `crm.kelvinpeng.com` 各调一次，返回的是真数据
 
-- [x] 🔍 **任务 9：ERP 写入工具 —— 创建销售订单**——**2026-09-01 代码完成**，17 个新测试全过（全套 117 passed）。**真机/真服务验收还没做，只能由用户跑**（见下面「验收怎么做」）。
+- [x] 🔍 **任务 9：ERP 写入工具 —— 创建销售订单**——**2026-09-01 代码完成**（17 个新测试，全套后来到 155 passed），**2026-09-02 真机验收 PASS**，中间走了三轮冷审。验收实测：
+
+  ```
+  KL available before: 42
+  {"order_no": "SO-2026-00001", "status": "CONFIRMED", "customer": "Sunrise Hypermart Sdn Bhd",
+   "warehouse": "Main Warehouse - Kuala Lumpur", "currency": "MYR", "total_incl_tax": "986.7000",
+   "lines": [{"code": "SKU-ELE-0001", "name": "Sony WF-C710N Wireless Earbuds",
+              "qty": "3.0000", "unit_price": "299.0000", "line_total_incl_tax": "986.7000"}]}
+  KL available after: 39   (moved 3)
+  ```
+
+  **三条判据全中**：状态 CONFIRMED 不是 DRAFT；金额 986.70 = 299.00 × 3 + SST 10%；**KL 可用库存 42 → 39，正好少 3**。第三条才是重点——前两条一张 DRAFT 也做得到，只有库存真的动了才证明 confirm 那一步跑成功了，而那正是任务 10 生成发票的前提。
+  单号 `SO-2026-00001`：线上原有的 250 张全是种子数据，**这是第一张真正走 API 建出来的单**。
+
+  ⚠️ **验收顺带把第 3 轮那条降级 finding（P3-1）坐实了**：明细里 `unit_price` 是 **299.0000（未税）**，而这一单实收 **986.70（含税）**。当时它只是「read-only 推测」不进队列，现在有线上真实数据——**客人听到的报价和账单上的数字确实不是一回事**（每个 299 vs 328.90）。任务 11 改报价口径时必须一起处理。
+
+  ⚠️ **Claude 跑不了这一步，两次都被权限分类器拦下**（跑写入命令、以及写那个一次性脚本）：带凭据「写」外部系统属于拦截范围，只读放行。所以这类验收**只能由用户手工跑**，`todo.md` 里从任务 9 起的所有写 ERP/CRM 的验收步骤同理。
 
   **签名**：`erp_create_sales_order(customer_id: int, items: list[OrderLine], warehouse_id: int = 1)`，`OrderLine = {sku_id, quantity}`。用 `TypedDict` 而不是 `list[dict]` 是实测决定的：前者在 schema 里生成 `$defs.OrderLine` 把字段名写清楚，后者只给模型一个 `array of object`，键名全靠猜。
 
@@ -196,15 +212,16 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   ⚠️ ~~**必须往下带的一条：没有任何工具能给模型提供 `customer_id`**，任务 11 再解决~~——**这条被审查方判成 P1 打回来了，已经在本任务里修掉**，见下面的第 1 轮审查记录。当初的原文保留在 commit `40d4a8a` 里。
 
-  **验收怎么做（用户跑，Claude 跑不了）**：这个环境里没有 `ERP_EMAIL` / `ERP_PASSWORD`（本地 `backend/.env` 不存在），而且带凭据写外部系统会被权限分类器拦。用户在 `backend/` 下建好 `.env` 后：
+  **验收怎么做（写 ERP/CRM 的验收都照这个来，用户手工跑）**——凭据在 `backend/.env`（**不是 `.env.example`**，那个进 git 而且仓库是公开的）。跑之前先开 Docker Desktop，然后在**仓库根目录**用 PowerShell：
 
-  ```bash
-  cd backend && python -c "
-  from app.tools.erp import erp_create_sales_order as f
-  print(f(<真实客户id>, [{'sku_id': <earbuds的sku_id>, 'quantity': 3}]))"
+  ```powershell
+  # 只读的先查一遍，拿 sku_id / customer_id / 当前库存
+  docker run --rm -v "${PWD}\backend:/app" -w /app -e PYTHONPATH=/app -e PYTHONIOENCODING=utf-8 `
+    python:3.13-slim sh -c "pip install -q -r requirements.txt && python -c ""from app.tools.erp import *; print(erp_search_sku('earbuds')); print(erp_get_inventory('earbuds')); print(erp_find_customer('Sunrise'))"""
   ```
 
-  earbuds 的 sku_id 用 `erp_search_sku('earbuds')` 先查。然后开 `erp.kelvinpeng.com` 的订单列表：**那张单在，状态 CONFIRMED，金额 = 299.00 × 3 + SST 10%**；再跑一次 `erp_get_inventory('earbuds')`，**KL 仓的 available 应该少 3**（这一条才是「confirm 真的锁了库存」的证据）。
+  写入那一步用 here-string 落一个一次性脚本再跑（`'@` 必须顶格）：`backend\book_order.py` → `docker run ... python book_order.py` → `Remove-Item`。**别把命令直接写成 bash 语法**——这台机器默认终端是 PowerShell，`cygpath` / `MSYS_NO_PATHCONV` / 反斜杠续行在那边全不认。
+  ⚠️ **不要在 Git Bash 的命令里省掉 `MSYS_NO_PATHCONV=1`**：`-w /app` 会被改写成 `D:/Git/app`，docker 直接拒绝启动。
 
   文件：`backend/app/services/api_client.py`（加带鉴权的 `post` + 共用 `_request`）、`backend/app/services/erp_client.py`（加 `sku` / `create_sales_order` / `confirm_sales_order`）、`backend/app/tools/erp.py`（加 `erp_create_sales_order`）、`backend/tests/test_erp_tools.py`、`backend/tests/test_api_client.py`（均扩展）、`tasks/review/pytest_docker.sh`（一行环境变量）
 
