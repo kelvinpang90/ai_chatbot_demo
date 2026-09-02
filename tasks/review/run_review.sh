@@ -64,7 +64,15 @@ else
   DOCKER_NOTE="⚠️ Docker 守护进程当前不可达。你**必须**先自己确认能不能跑测试；如果确实跑不了，不要靠读代码硬凑 findings，直接交 verdict=\"blocked\" 说明原因。"
 fi
 
-git worktree remove --force "$WT" >/dev/null 2>&1
+# Every round parks its worktree at a path named after the commit it reviews, so
+# removing "the same path" only ever clears a re-run of this exact round. Rounds
+# of other commits pile up untouched, one full checkout each. Clear them all --
+# a round that has filed its verdict has no further use for its worktree, and if
+# its window is somehow still open, it has already said everything it had to say.
+for stale in "$PROJECT_DIR"/.claude/worktrees/review-*; do
+  [ -d "$stale" ] && git worktree remove --force "$stale" >/dev/null 2>&1
+done
+git worktree prune >/dev/null 2>&1
 git worktree add --detach "$WT" "$SHA" >/dev/null 2>&1 || fail "git worktree add failed for $SHA"
 
 # The whitelist travels with the round: the reviewer reads the current one,
@@ -105,7 +113,22 @@ PY
 # having this script write into ~/.claude.json, and the second one is not a
 # script's business. Undecided; `print` is unaffected either way.
 MODE=${REVIEW_MODE:-window}
-WINDOW_TIMEOUT=${REVIEW_WINDOW_TIMEOUT:-2400}
+
+# Shorter than wait.sh's own 1200s default on purpose. wait.sh is the developer's
+# only blocking call, so a window allowed to outlive it would mean every review
+# past that point ends with the developer giving up rather than with a verdict --
+# and the round that produced no verdict looks the same as one that found nothing.
+WINDOW_TIMEOUT=${REVIEW_WINDOW_TIMEOUT:-1080}
+
+# How long a window gets to prove it opened at all. The launcher touches this
+# file as its first act, so a missing one means wt.exe never started cmd.
+WINDOW_START_TIMEOUT=${REVIEW_WINDOW_START_TIMEOUT:-60}
+
+# A verdict left over from a previous attempt at this same round would be read as
+# this round finishing instantly -- the developer would be handed someone else's
+# conclusions about a different commit, and no review would have happened at all.
+rm -f "$OUT/findings.json" "$OUT/findings.normalized.json" "$OUT/report.txt" \
+      "$OUT/window.started" "$OUT/window.err" "$OUT/breach.txt" "$OUT/breach.diff"
 
 if [ "$MODE" = "print" ]; then
   ( cd "$WT" && AI_REVIEW_CHILD=1 claude -p \
@@ -123,6 +146,8 @@ else
     echo "@echo off"
     echo "title review: task $TASK round $ROUND"
     echo "set AI_REVIEW_CHILD=1"
+    # First act, so its absence is proof the window never got as far as cmd.
+    echo "echo started > \"$(winpath "$OUT")\\window.started\""
     echo "cd /d \"$(winpath "$WT")\""
     echo "echo ==== cold review: task $TASK, round $ROUND, commit ${SHA:0:8} ===="
     echo "echo Brief: $(winpath "$OUT")\\prompt.md"
@@ -137,7 +162,21 @@ else
     echo "pause"
   } > "$LAUNCH"
 
-  MSYS_NO_PATHCONV=1 wt.exe "$(winpath "$LAUNCH")" >/dev/null 2>&1 &
+  MSYS_NO_PATHCONV=1 wt.exe "$(winpath "$LAUNCH")" > "$OUT/window.err" 2>&1 &
+  WT_PID=$!
+
+  # Waiting for a verdict from a window that never opened burns the whole timeout
+  # and then reports it as if the reviewer had been thinking the entire time.
+  # Fail on the one thing that distinguishes them: did anything start?
+  waited=0
+  while [ ! -s "$OUT/window.started" ] && [ "$waited" -lt "$WINDOW_START_TIMEOUT" ]; do
+    sleep 2
+    waited=$((waited + 2))
+  done
+  if [ ! -s "$OUT/window.started" ]; then
+    wait "$WT_PID" 2>/dev/null; LAUNCH_RC=$?
+    fail "review window never opened (wt.exe exited $LAUNCH_RC); see $OUT/window.err and try $LAUNCH by hand"
+  fi
 
   # The window does not exit when the review does -- you may still be reading it
   # or asking follow-ups -- so the finish line is the verdict file appearing,
@@ -154,6 +193,7 @@ else
     sleep 5
     waited=$((waited + 5))
   done
+  [ -s "$OUT/findings.json" ] || fail "window opened but filed no verdict within ${WINDOW_TIMEOUT}s -- the window is still on screen, look at it"
 fi
 
 DIRTY=$(git -C "$WT" status --porcelain 2>/dev/null)
@@ -161,6 +201,24 @@ if [ -n "$DIRTY" ]; then
   printf '%s\n' "$DIRTY" > "$OUT/breach.txt"
   git -C "$WT" diff > "$OUT/breach.diff" 2>/dev/null
 fi
+
+# What that check is worth depends on the mode, and the difference matters enough
+# to record rather than leave the reader to infer. Headless, the reviewer process
+# is already dead, so a clean worktree covers the whole session. In a window the
+# session is still alive and the worktree stays, so it only covers the moment the
+# verdict was filed -- which is still the moment that matters, since every claim
+# in findings.json was produced before it.
+{
+  echo "mode: $MODE"
+  echo "checked_at: $(date -Iseconds 2>/dev/null || date)"
+  if [ "$MODE" = "print" ]; then
+    echo "coverage: whole session (the reviewer process had already exited)"
+  else
+    echo "coverage: up to the filing of findings.json (the window is still open;"
+    echo "          anything done in it after that is outside this check)"
+  fi
+  echo "dirty: ${DIRTY:-none}"
+} > "$OUT/integrity.txt"
 
 # Only the headless run removes the worktree. In window mode you are probably
 # still standing in it; the next round's `git worktree remove --force` at the

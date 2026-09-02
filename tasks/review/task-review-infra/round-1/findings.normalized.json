@@ -1,0 +1,143 @@
+{
+  "task": "review-infra",
+  "round": "1",
+  "commit": "9320c5f78ee83d1d8ba3d297961c177e442a1a60",
+  "base": "62a9c9ae6a3defddb1c609e63e846bde9ffafc03",
+  "verdict": "findings",
+  "suite_result": "backend 全套：没跑。Docker 守护进程不可达（`docker version` → `failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`），`pytest_docker.sh` 是唯一入口，跑不了。但**本轮被审的代码是 tasks/review/ 下的编排脚本和 replay.py，backend 一行没动**（`git diff --stat 62a9c9a..9320c5f` 只有 tasks/），所以后端套件的红绿对这轮没有判定力。我在宿主机上装了 pytest 9.1.1（Python 3.14.6）并真的跑了自己写的 4 个 repro：`python -m pytest tasks/review/task-review-infra/round-1/repro -q` → **4 failed in 22.59s**，输出逐条贴在下面。⚠️ 这些 repro **不能**用 `pytest_docker.sh` 跑，原因见 self_check.e2e。",
+  "findings": [
+    {
+      "id": "P1-1",
+      "severity": "P1",
+      "category": "correctness",
+      "file": "tasks/review/run_review.sh",
+      "line": 147,
+      "summary": "window 模式把「findings.json 存在」当成「审查结束了」，而没有任何一处先把上一次留下的 findings.json 清掉——于是输出目录里已经有文件的那一轮，6 秒内就被判为 done，审查方一行代码都没读。",
+      "failure": "输入/状态：`tasks/review/task-$TASK/round-$ROUND/findings.json` 已经存在（上一次同轮次跑剩的，或者仓库里已提交的）。→ 结果：轮询循环第一次判断就命中，5-6 秒后 break，`validate_findings.py` 把**旧文件**归一化成这一轮的结论，`state.env` 写 `prev_status=done`，开发方的 `wait.sh` 原样打印上一轮的 verdict。这条路径不是理论上的：REVIEW.md 自己写了「用户拍板后删掉 tasks/review/state.env 可以重开」，而 hook_stop.sh:49 在 state.env 缺失时把轮次重置为 1，`tasks/review/task-9/round-1/findings.json` 就在 git 里躺着；REVIEW.md:101 还写了手工 `bash tasks/review/run_review.sh <sha> <round> <task>` 的用法，同样落在这个文件上。最坏的形态是 round-1 那份 `verdict` 恰好不是 findings——开发方收到一份「上一轮说没问题」，而这一轮的审查从未发生。print 模式下这个隐患早就在（第 170 行的 `[ -s ... ]` 同样会被旧文件满足），但它只在审查方崩溃时才掩盖失败；新的轮询循环把它从「掩盖崩溃」变成「根本不等审查」。",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p1_1_a_leftover_findings_file_ends_the_round_before_it_starts.py::test_a_round_whose_output_dir_is_not_empty_is_never_actually_reviewed",
+        "observed_failure": "E       AssertionError: run_review.sh reported round 1 as done after 5.9s and handed the developer a verdict copied out of a findings.json that was already on disk before this round started (commit deadbeef, verdict 'clean'). No review of 5cc65028 ever happened.\nE       assert 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' != 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'\n\ntasks\\review\\task-review-infra\\round-1\\repro\\test_p1_1_a_leftover_findings_file_ends_the_round_before_it_starts.py:48: AssertionError\n\n（对照组：同一个 harness 去掉那份旧 findings.json，脚本老老实实等满 REVIEW_WINDOW_TIMEOUT 才报 error。差别完全来自那个文件。手工复现同样成立：临时仓库里预置一份 commit=deadbeef 的 findings.json，`bash tasks/review/run_review.sh <sha> 1 T` 6 秒返回，report.txt 写着「任务 T / 第 1 轮 / commit deadbeef」「verdict: clean」。）"
+      },
+      "queue": true,
+      "effective_severity": "P1",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-1",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "tasks/review/run_review.sh",
+      "line": 140,
+      "summary": "启动窗口的那一行把 wt.exe 的退出码和 stderr 全丢了，`CLAUDE_RC` 又被写死成 0，所以「窗口根本没开」和「审查方还在想」在脚本眼里完全一样；等满超时后给出的唯一诊断指向 session.err，而 window 模式从不写这个文件。",
+      "failure": "输入/状态：机器上没有 Windows Terminal，或 wt.exe 启动失败（`MSYS_NO_PATHCONV=1 wt.exe ... >/dev/null 2>&1 &` 把 rc 和报错一起扔掉）。→ 结果：脚本安静地空转整个 `REVIEW_WINDOW_TIMEOUT`（默认 2400 秒），然后写下 `reviewer exited rc=0 without writing findings.json (see session.err)`——rc 恒为 0（第 145 行硬编码），session.err 只有 print 分支才产生。排障的人被指向一个不存在的文件，而真正的原因（launcher 立刻挂了）在第一秒就已知、只是被丢了。",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_1_a_window_that_never_opens_looks_exactly_like_a_slow_review.py::test_a_failed_launch_burns_the_timeout_then_blames_a_file_that_was_never_written",
+        "observed_failure": "E       AssertionError: after waiting 16s for a window that never opened, the round's only diagnostic is 'reviewer exited rc=0 without writing findings.json (see session.err)' -- and window mode never writes session.err, so the one file it names does not exist. The launcher's exit status (1 here) was discarded, so nothing distinguishes 'wt.exe failed instantly' from 'the reviewer is still working'.\nE       assert not ('session.err' in 'reviewer exited rc=0 without writing findings.json (see session.err)' and not False)\nE        +  where False = exists()\n\ntasks\\review\\task-review-infra\\round-1\\repro\\test_p2_1_a_window_that_never_opens_looks_exactly_like_a_slow_review.py:28: AssertionError"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-2",
+      "severity": "P2",
+      "category": "config",
+      "file": "tasks/review/run_review.sh",
+      "line": 108,
+      "summary": "window 模式的默认超时 2400 秒，是开发方那个唯一阻塞调用 `wait.sh` 默认超时 1200 秒的两倍——超过 20 分钟的审查，一定是开发方先放弃。",
+      "failure": "输入/状态：一轮 window 模式审查耗时超过 1200 秒（对一个要读 diff、跑套件、写 repro 的冷审来说完全正常；REVIEW.md 自己记的是任务 9 三轮约 40 分钟机器时间）。→ 结果：`wait.sh` 在 1200 秒时退出 3 并打印「等了 1200s 审查方还没交卷。它可能已经死了……别当成『审查通过』，这是超时」，而此时 run_review.sh 还在正常运行，之后会继续改写 `state.env` 和输出目录。开发方拿到的是一次假超时，而背景里那一轮仍然活着——两个进程对「这轮结束了没有」给出相反的答案。REVIEW.md 的文件表里 `wait.sh` 那行还写着「默认 20 分钟超时」，没有跟着改。",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_1_a_window_that_never_opens_looks_exactly_like_a_slow_review.py::test_the_window_timeout_default_outlives_the_developers_blocking_wait",
+        "observed_failure": "E       AssertionError: run_review.sh waits up to 2400s for the window but wait.sh -- the developer's one blocking call, and the only thing watching -- gives up at 1200s. Every window-mode run that exceeds 1200s ends with the developer told 'this is a timeout, do not read it as a pass' while the round is still live and will later overwrite state.env behind them.\nE       assert 2400 <= 1200\n\ntasks\\review\\task-review-infra\\round-1\\repro\\test_p2_1_a_window_that_never_opens_looks_exactly_like_a_slow_review.py:49: AssertionError"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-3",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "tasks/review/replay.py",
+      "line": 52,
+      "summary": "`transcript_for` 返回 `sorted(matches)[-1]`——按随机 UUID 文件名排序取最后一个，不是取最近的那次会话。同一个目录里只要有第二份 transcript，回放就会安静地放错一场。",
+      "failure": "输入/状态：`~/.claude/projects/*review-<sha8>/` 下有不止一个 `.jsonl`（这一轮**特意**让审查方变成可打断的交互式会话，生成的 launch.cmd 又被注释宣传成「可以手工重跑」，每跑一次 `claude` 就多一份 transcript）。→ 结果：`replay.py` 打印出的是 UUID 恰好排在最后的那一场，可能是被打断作废的第一次尝试，而且**不报错**——它照样打印一条像模像样的时间线。这个工具存在的全部理由是 REVIEW.md 新写的那句「回放能独立地印证 git status 的结论，两个不同来源的证据比一个强」；一个会静默展示错误来源的审计工具，比一个直接拒绝回答的更糟。按 mtime 排序就对了。",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_2_replay_picks_a_transcript_by_filename_not_by_recency.py::test_transcript_for_returns_the_session_that_actually_ran_this_review",
+        "observed_failure": "E       AssertionError: replay.py chose the abandoned session ffffffff-0000-0000-0000-000000000000.jsonl (mtime older by ~11 days) over the one that filed the findings, 00000000-1111-2222-3333-444444444444.jsonl. It sorted two random UUIDs and took the last one, so which review you get to audit is decided by filename luck.\nE       assert WindowsPath('.../home/.claude/projects/E--projects-demo--claude-worktrees-review-abcdef12/ffffffff-0000-0000-0000-000000000000.jsonl') == WindowsPath('.../home/.claude/projects/E--projects-demo--claude-worktrees-review-abcdef12/00000000-1111-2222-3333-444444444444.jsonl')\n\ntasks\\review\\task-review-infra\\round-1\\repro\\test_p2_2_replay_picks_a_transcript_by_filename_not_by_recency.py:66: AssertionError"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-4",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "tasks/review/run_review.sh",
+      "line": 159,
+      "summary": "window 模式下 `git status --porcelain` 不再覆盖整场会话——它在审查方自己写出 findings.json 之后约 5 秒执行，而那个会话还活着，worktree 也不删。「不准改代码从纪律变成可检测的事实」这句话在默认模式下不再成立。",
+      "failure": "输入/状态：审查方在 window 里写完 findings.json 之后继续干活（这正是这一轮宣传的用法——窗口不会随审查结束而退出，你还可以追问；.cmd 末尾是 `pause`）。→ 结果：脚本在 findings.json 稳定 5 秒后就跑 `git status`、写 state=done、跳过 `git worktree remove`（第 168 行只对 print 生效），此后审查方对被审代码的任何修改都不会产生 breach.txt，而 `validate_findings.py:107` 只认 breach.txt 的存在与否。更根本的是**检查时机由被检查方决定**：findings.json 是审查方写的，它一写，检查就发生。print 模式下这个检查是在 claude 进程退出之后做的，覆盖整场会话；window 模式不是。**证据形式说明**：这条我没有写 repro，因为「正确修法」不唯一（等会话结束 / 检查两次 / 干脆声明 window 模式不提供这个保证并把它从默认拿掉），钉死其中一种就是 REVIEW.md 记的那种「钉错靶子」的 repro。事实基础已经在 P1-1 和 P2-1 的实测里：脚本 5.9 秒就退出、从不等待任何进程、window 模式跑完 worktree 仍在（harness 里 `.claude/worktrees/review-8828c265` 留在原地）。",
+      "evidence": {
+        "kind": "read-only",
+        "note": "论证 + 来自 P1-1/P2-1 实测的两个事实（脚本不等待任何进程；window 模式结束后 worktree 仍存在）。刻意不写 repro，理由见 failure 末尾。"
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "只读代码推测，不进修复队列（可以作为线索）"
+      ]
+    },
+    {
+      "id": "P3-1",
+      "severity": "P3",
+      "category": "correctness",
+      "file": "tasks/review/run_review.sh",
+      "line": 165,
+      "summary": "注释说「下一轮开头的 git worktree remove --force 反正会清掉它」，但 `$WT` 是 `review-${SHA:0:8}`，下一轮审的是另一个 commit、算出的是另一个路径——上一轮的 worktree 永远不会被清。",
+      "failure": "输入/状态：window 模式跑第 1 轮（sha A），开发方修完再 commit 触发第 2 轮（sha B）。→ 结果：第 2 轮 `git worktree remove --force $PROJECT_DIR/.claude/worktrees/review-<B>` 对着一个还不存在的路径，`review-<A>` 原封不动留着。每一轮攒一份完整 checkout，外加一条 `git worktree list` 里的常驻记录。同一个 sha 被重跑时注释才成立，而那正是最少见的情况。实测：harness 里 window 模式跑完 `.claude/worktrees/review-8828c265` 仍在（同一脚本 print 模式跑完就没了）。改注释还是改代码都行，但两者现在互相矛盾。",
+      "evidence": {
+        "kind": "read-only",
+        "note": "`$WT` 的构造式（第 19 行）+ 一次实测观察（window 模式跑完 worktree 仍在）。没写 repro：修法可能是改代码也可能是改注释，断言钉哪一边都可能钉错。"
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "只读代码推测，不进修复队列（可以作为线索）"
+      ]
+    },
+    {
+      "id": "P3-2",
+      "severity": "P3",
+      "category": "config",
+      "file": ".gitignore",
+      "line": 15,
+      "summary": "新生成的 `launch.cmd` 落在会被提交的输出目录里，却没进 .gitignore——它和已经被忽略的 session.json 是同一类东西（每台机器自己的运行时产物，内含本机绝对路径），而这三个仓库是 PUBLIC 的。",
+      "failure": "输入/状态：任意一轮 window 模式审查跑完。→ 结果：`tasks/review/task-N/round-M/launch.cmd` 作为未跟踪文件出现在 `git status` 里，内容是 `cd /d \"E:\\projects\\ai_chatbot_demo\\.claude\\worktrees\\review-xxxxxxxx\"` 之类的本机路径；开发方照惯例 `git add -A` 就会把它提交进公开仓库，并且每轮脏一次工作区。.gitignore 第 14-16 行已经为 session.json / session.err 写明「运行时状态（每台机器自己的，别进 git）」，launch.cmd 漏了。这不是 AR-2 的重述：白名单说的是「仓库公开」这个事实本身不用再报，有价值的是**新引入的东西是否因此泄露**，而 launch.cmd 是这次新引入的。泄露内容只是本机目录结构，所以是 P3 不是 P2。",
+      "evidence": {
+        "kind": "command",
+        "command": "git check-ignore -v tasks/review/task-review-infra/round-1/launch.cmd ; echo exit=$?  # 对照 session.json",
+        "output": "--- check-ignore launch.cmd (exit 1 = NOT ignored) ---\nexit=1\n--- for comparison, session.json ---\n.gitignore:15:tasks/review/task-*/round-*/session.json\ttasks/review/task-review-infra/round-1/session.json\nexit=0"
+      },
+      "queue": true,
+      "effective_severity": "P3",
+      "validator_notes": []
+    }
+  ],
+  "self_check": {
+    "spec_coverage": "这一轮没有编号任务，`git show 62a9c9a:tasks/todo.md` 里查不到 review-infra 的条目，所以「验收标准」只能取 commit message 和 REVIEW.md 新写的那几节自述。逐条对：①「弹一个窗口给你看」——无法验证，验证它需要真的跑一轮完整审查（递归且昂贵），我只验了它的失败路径（P2-1、P2-2）；②「replay.py 把某一轮打印成时间线」——**真的跑了**，`python tasks/review/replay.py 9 1/2/3` 三轮都成功定位到 transcript 并打印时间线，功能成立，缺陷只在多份 transcript 时的选择规则（P2-3）；③「worktree 删了记录还在」——成立，task-9 三轮的 worktree 早没了，`~/.claude/projects/` 下的目录还在，replay 读得到；④ `REVIEW_BASE` 覆盖——成立，本轮自己就是靠它跑的（`REVIEW_BASE=62a9c9a` 在我的环境变量里）。**整个 tasks/review/ 没有任何一行自动化测试**，所以「实现有 bug 时测试照样通过」这个问题在这里退化成：没有测试可通过。P1-1 那个 bug 在仓库里躺着（task-9/round-1..3 三份已提交的 findings.json 全都是引信），三轮审查一次都没碰到它，因为从来没人重跑过同一个轮次号。",
+    "e2e": "最要紧的一条，而且是这套流程自己的盲区：**本轮改的是审查基础设施，而这套基础设施规定的证据形式（一个能在 `pytest_docker.sh` 里跑的 pytest）无法表达它自己的任何一个 bug。** `pytest_docker.sh` 只把 `backend/` 挂进 python:3.13-slim，容器里既没有 git 也没有 `tasks/review/` 这棵树。所以我的 4 个 repro **必须在宿主机上用普通 pytest 跑**：`python -m pytest tasks/review/task-review-infra/round-1/repro -q`（需要 bash + git；我实测 4 failed in 22.59s）。`validate_findings.py` 只查 repro 文件在不在、observed_failure 空不空，所以它们照样会被判成 queue=true——**但开发方若照 wait.sh 打印的那条命令去跑，会得到一个和 bug 无关的红**。conftest.py 的 docstring 和 fixture 里都写了这一点。这本身就是一条结论：改审查流程的 commit，目前无法被这套审查流程按它自己的标准审。至于端到端跑一次真正的 window 模式审查，我没做——那要在被审 worktree 里再起一个 claude，成本和递归风险都不划算，所以窗口「能开、能看、能打断」这个正面主张本轮**未经验证**，我只证明了它的失败路径处理是坏的。",
+    "security": "没有新增凭据、没有新增网络出口。唯一沾边的是 P3-2：新生成的 launch.cmd 没进 .gitignore，会把本机绝对路径带进公开仓库——泄露面很小，所以判 P3。AR-1（旧密码留在 git 历史）和 AR-2（三个仓库 PUBLIC）本轮没有新事实使其失效，不重报。顺带记一笔（不算 finding）：`REVIEW_MODE` / `REVIEW_BASE` / `AI_REVIEW_CHILD` 会原样进入审查方的环境变量，我这一轮就是从 `$env:REVIEW_MODE=print` 发现自己其实跑在 print 模式而非文档宣称的默认 window 模式的——这一点没有害处，但它意味着审查方能看见编排层的配置。",
+    "spec_deviation": "两处，都在自述与代码之间，不是与规格之间：①REVIEW.md 的文件表把 run_review.sh 写成「……→ 验证 findings → 删 worktree」，而 window 模式（新的默认）不删 worktree（P3-1）；②同一张表里 `wait.sh` 仍写着「默认 20 分钟超时」，没有说清 window 模式默认会跑 40 分钟（P2-2）。另有一处**有正当理由**的偏离：`REVIEW_BASE` 覆盖 base 的推导，注释把理由写清楚了（非编号任务没有 todo 条目可定位；未 push 的轮次会让 `origin/master..HEAD` 越滚越大），我认为成立。"
+  },
+  "phase2": {
+    "note": "这一轮的自辩不在 todo.md 里——`git show 9320c5f:tasks/todo.md` 的新增内容全是任务 9 第 3 轮的记录，review-infra 本身一个字都没写进去。真正的自辩是六条 commit message，逐条对下面这些。",
+    "rebuttals": "① 「The next round removes it, as it always did.」（21dbe5d）**不成立，而且两半都错。** `$WT=review-${SHA:0:8}`，下一轮审的是另一个 commit、算出的是另一条路径，脚本开头那句 `git worktree remove --force \"$WT\"` 永远够不着上一轮留下的那个。「as it always did」也不对：print 模式是在**本轮末尾**删自己的 worktree，开头那句从来不是清理上一轮的机制，它是防同一个 sha 重跑时撞车的。见 P3-1。\n\n② 「Window mode waits for findings.json to appear and hold steady rather than for the process to exit, because the window outlives the review」——**前半段的理由成立，后半段没有把自己的推论跟完。** 不等进程退出是对的（窗口确实活得比审查久）。但由此产生两个后果，commit message 一个都没提：(a) 它测的不是「出现」，是「存在」——findings.json 是一条固定路径，可能在这一轮开始前就有文件躺在那儿，于是这一轮 6 秒结束、审查从未发生（P1-1，实测）；(b) 一旦进程退出不再是终点线，`git status --porcelain` 就不再覆盖整场会话，而**检查时机由被检查方决定**——审查方写 findings.json，检查就发生（P2-4）。一句设计决定，两个新洞，跟任务 9 第 2 轮那条教训（「修复本身要当成新代码来审」）是同一种形状。\n\n③ 「Measured, not guessed -- a probe window left claude.exe sitting there for three minutes.」**测到的只是信任对话框那一件事，不能外推。** 探针窗口证明不了任何关于失败路径的事：`wt.exe ... >/dev/null 2>&1 &` 把退出码和 stderr 一起丢了，`CLAUDE_RC` 又写死 0，所以「窗口卡在信任对话框」和「wt.exe 压根没起来」在脚本眼里是同一个观测值。用一次成功的手工观察去支撑一条关于自动化行为的论断，正是这套流程反复在记的那个毛病。见 P2-1。\n\n④ 「REVIEW_MODE=print ... stays the default for anything unattended.」**与代码矛盾。** 代码是 `MODE=${REVIEW_MODE:-window}`，唯一的自动触发者 `hook_stop.sh:78` 用 `nohup bash tasks/review/run_review.sh ...` 起进程、**从不设 REVIEW_MODE**。所以 Stop hook 触发的那条路——全流程里唯一真正无人值守的路——现在默认开窗口，并且按 commit message 自己承认的，会停在一个需要人按回车的对话框上。REVIEW.md 写「无人值守的场景用 REVIEW_MODE=print」，但没有任何一处代码在无人值守时设它。（我没把这条单列成 finding：代码与 REVIEW.md 是一致的，不一致的是 commit message，而窗口默认这件事是 2026-09-02 用户拍过板的。）\n\n⑤ 「Looking it up that way depends only on files that are in git.」（5c5b3e9）**输入这一层成立，修复方向也确实更好**，但它把一种脆弱换成了另一种：定位现在依赖 worktree 的**路径形状**（`run_review.sh:19` 的 `review-<sha8>` ↔ `replay.py:41-45` 的 glob），这是一条没有测试、只在 REVIEW.md 的一句附注里承认过的隐式耦合（「前者要顺带改 replay.py 的定位方式」）。知道有耦合、写在文档里、代码里不设防，正是任务 8 那条「为决定准备好辩护、却没验证前提」的近亲。再加上取的是 `sorted(...)[-1]`（P2-3），这个耦合正确时它也可能放错一场。\n\n⑥ 「The isolation holds ... which run_review.sh's dirty check also concluded, from an independent direction.」（4f00e79）**证据本身是真的，但适用范围被悄悄放大了。** 那是任务 9 第 1 轮的观察，跑在 print 模式下、进程退出之后做的检查。这段话被写进 REVIEW.md，紧挨着「REVIEW_MODE=window（默认）」那一节——读者会理所当然地把它读成这套流程的通性，而在新的默认模式下它不成立（P2-4）。\n\n⑦ REVIEW_BASE（9320c5f）**我接受，理由成立**：非编号任务没有 todo 条目可定位，未 push 的轮次会让 `origin/master..HEAD` 每轮多吞一个任务。本轮我自己就是靠它跑的。唯一的小尾巴：走 `fail()` 时 `emit_error.py` 拿不到 BASE，错误版 findings.json 里 `\"base\": \"\"`（实测），不影响判定，记一笔。",
+    "blind_spot": "**最大的一条：我把开发方主动写下的那句「Not yet unattended, and the comment in the file says so」当成已经处理完的事，跳过去了。** 它跟着的那个推论我第一阶段完全没走：唯一的自动触发者 hook_stop.sh 不设 REVIEW_MODE，所以**自动审查现在默认停在一个需要人按回车的对话框上**——这是这次改动对流程行为最大的一个改变，就写在被审代码的注释里，而我是在第二阶段读 commit message 时才看见的。第一阶段我一头扎进 window 模式的**失败路径**（启动失败、超时、旧文件），把它的**正常路径**当成了已知量。REVIEW.md 记的第一条教训是「主动承认降低不了严重性，只证明你看见了」；这一轮我犯的是它的镜像版本——**看见对方承认了，就默认那一块不用查了**。承认写在哪儿都不改变它是不是缺陷，也不改变它需不需要被独立核对一遍。\n\n第二条：这个 commit 的自辩里还有一句「round 3 的两条 P2 我按指示留红没修」。我没有去验证它——Docker 不可达，任务 9 那些 repro 我一条都跑不了，所以「它们现在还是红的」这句话在本轮是**未经核实**的转述。我也没有退而求其次去做能做的部分（比如确认那两个 repro 文件还在、断言还是原来那条）。跑不了套件不等于验不了任何东西，这一步我省了。\n\n第三条，方法论上的：我一开始差点按「读代码找问题」的路子写 read-only findings，是先动手搭了一个临时仓库跑真脚本，才在 40 秒内撞出 P1-1——而这个 bug 已经在仓库里躺了三轮审查没人碰到，因为从来没人重跑过同一个轮次号。**审查基础设施的 bug，读它是读不出来的，必须跑它。**"
+  },
+  "queued_count": 5
+}

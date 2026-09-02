@@ -14,3 +14,6 @@ tasks/review/state.env
 tasks/review/logs/
 tasks/review/task-*/round-*/session.json
 tasks/review/task-*/round-*/session.err
+# 窗口模式的产物：全是本机绝对路径，而这个仓库是公开的
+tasks/review/task-*/round-*/launch.cmd
+tasks/review/task-*/round-*/window.*

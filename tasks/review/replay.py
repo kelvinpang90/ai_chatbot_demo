@@ -41,15 +41,16 @@ def transcript_for(commit: str) -> Path:
     run_review.sh parks the worktree at `.claude/worktrees/review-<sha8>`, and
     Claude Code names its project directory after that path.
     """
-    matches = sorted(
-        (Path.home() / ".claude" / "projects").glob(f"*review-{commit[:8]}/*.jsonl")
-    )
+    matches = list((Path.home() / ".claude" / "projects").glob(f"*review-{commit[:8]}/*.jsonl"))
     if not matches:
         raise SystemExit(
             f"no transcript for the review of {commit[:8]}.\n"
             "Claude Code prunes these over time; findings.json and repro/ stay in git."
         )
-    return matches[-1]
+    # Most recent, not last alphabetically. A re-run of the same round writes a
+    # second transcript beside the first, and session ids are random UUIDs -- so
+    # sorting by name picks whichever review you get to audit by luck.
+    return max(matches, key=lambda p: p.stat().st_mtime)
 
 
 def blocks(entry: dict) -> list:

@@ -1,0 +1,28 @@
+任务 review-infra / 第 1 轮 / commit 9320c5f7
+verdict: findings
+
+报了 7 条，进修复队列 5 条，降级 2 条。
+
+[MUST FIX] P1-1 P1  tasks/review/run_review.sh:147
+    window 模式把「findings.json 存在」当成「审查结束了」，而没有任何一处先把上一次留下的 findings.json 清掉——于是输出目录里已经有文件的那一轮，6 秒内就被判为 done，审查方一行代码都没读。
+    证据: repro repro/test_p1_1_a_leftover_findings_file_ends_the_round_before_it_starts.py::test_a_round_whose_output_dir_is_not_empty_is_never_actually_reviewed
+[MUST FIX] P2-1 P2  tasks/review/run_review.sh:140
+    启动窗口的那一行把 wt.exe 的退出码和 stderr 全丢了，`CLAUDE_RC` 又被写死成 0，所以「窗口根本没开」和「审查方还在想」在脚本眼里完全一样；等满超时后给出的唯一诊断指向 session.err，而 window 模式从不写这个文件。
+    证据: repro repro/test_p2_1_a_window_that_never_opens_looks_exactly_like_a_slow_review.py::test_a_failed_launch_burns_the_timeout_then_blames_a_file_that_was_never_written
+[MUST FIX] P2-2 P2  tasks/review/run_review.sh:108
+    window 模式的默认超时 2400 秒，是开发方那个唯一阻塞调用 `wait.sh` 默认超时 1200 秒的两倍——超过 20 分钟的审查，一定是开发方先放弃。
+    证据: repro repro/test_p2_1_a_window_that_never_opens_looks_exactly_like_a_slow_review.py::test_the_window_timeout_default_outlives_the_developers_blocking_wait
+[MUST FIX] P2-3 P2  tasks/review/replay.py:52
+    `transcript_for` 返回 `sorted(matches)[-1]`——按随机 UUID 文件名排序取最后一个，不是取最近的那次会话。同一个目录里只要有第二份 transcript，回放就会安静地放错一场。
+    证据: repro repro/test_p2_2_replay_picks_a_transcript_by_filename_not_by_recency.py::test_transcript_for_returns_the_session_that_actually_ran_this_review
+[降级] P2-4 P3  tasks/review/run_review.sh:159
+    window 模式下 `git status --porcelain` 不再覆盖整场会话——它在审查方自己写出 findings.json 之后约 5 秒执行，而那个会话还活着，worktree 也不删。「不准改代码从纪律变成可检测的事实」这句话在默认模式下不再成立。
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）
+[降级] P3-1 P3  tasks/review/run_review.sh:165
+    注释说「下一轮开头的 git worktree remove --force 反正会清掉它」，但 `$WT` 是 `review-${SHA:0:8}`，下一轮审的是另一个 commit、算出的是另一个路径——上一轮的 worktree 永远不会被清。
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）
+[MUST FIX] P3-2 P3  .gitignore:15
+    新生成的 `launch.cmd` 落在会被提交的输出目录里，却没进 .gitignore——它和已经被忽略的 session.json 是同一类东西（每台机器自己的运行时产物，内含本机绝对路径），而这三个仓库是 PUBLIC 的。
+    证据: command git check-ignore -v tasks/review/task-review-infra/round-1/launch.cmd ; echo exit=$?  # 对照 session.json
