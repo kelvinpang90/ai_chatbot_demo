@@ -382,6 +382,26 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   **三轮的形状：P1 → 无 P1 → P1（回归）。** 第 3 轮这条 P1 不是新写的功能出问题，**是第 1 轮那个修复本身**，而且它把一个原本正确的行为改坏了。三轮加起来报 8 条、成立 8 条、误报 0 条。
   **仍然没有经过复验的是第 3 轮的修复本身**，以及真机验收。
 
+  ---
+
+  🧪 **2026-09-02 补：端到端测试覆盖**（用户要求）——新增 `backend/tests/test_end_to_end.py`，全套 199 passed。
+
+  这之前所有测试都是单层的：工具层一套、客户端层一套、webhook 一套，**每一层都证明自己那道缝没漏，没有一个测试证明它们是接上的**。新测试从 Meta 的 webhook 打进来、从 `whatsapp.send_raw` 出去，中间全是真代码——HMAC 签名校验、session store、bot / identity 注册表、SDK 的 tool runner、`crm_create_lead`、以及跟 crm_os 说话的那个客户端。**只有进程外的三方在各自的 HTTP 边界上被替身**：Meta 打进来、Anthropic 的 Messages API、crm_os。
+
+  两个用例：
+  - **正路**：客户发一句 rojak 开场白 → 模型要求调 `crm_create_lead` → 工具打 crm_os → 卡建出来 → 结果喂回模型 → 回复发回客户手机。断言五件事：CRM 只收到**一次** `POST /api/contacts` 加一条活动（不是两张卡）、活动是 `type=WhatsApp` 且带完整询价、**模型确实看到了工具返回的 JSON**、回复发到了客户写来的那个号码、导演台收到了 `tool_start` / `tool_end`。
+  - **Cloudflare 520**：同一条链路，crm_os 前面的 Cloudflare 答 520。断言**喂回模型的是 `LEAD_UNKNOWN` 而不是 `LEAD_FAILED`**——这是第 3 轮那条 P1 的端到端版本，也是客户体感上「会不会收到两张卡」的分界。
+
+  ⚠️ **链路里唯一的桩是 `get_tools`**：`tools/registry.py` 至今没给任何 bot 挂工具（那是任务 11 的决定），所以测试直接把真实的 `crm.TOOLS` 递进去。**下游全是生产代码**，上游只差 registry 那一行。任务 11 挂上之后，这个桩就该拿掉。
+
+  **两个测试都做了变异验证**（REVIEW.md 第 5 条教训：一写完就绿的断言先怀疑它在测自己）：
+  - 把 Cloudflare 修复撤掉（让 HTML 也算「应用自己答的」）→ **第二个测试当场变红**。也就是说这个端到端测试本来就能抓住第 3 轮那条 P1
+  - 把「两张卡」的 bug 放回去（新建联系人后再显式建一次 deal）→ **第一个测试当场变红**
+  变异跑完代码已还原，`git status backend/app/` 干净。
+
+  ⚠️ **真机验收又卡住了，原因和以前不同**：本地 `backend/.env` 里的 CRM 凭据对 `crm.kelvinpeng.com/api/auth/login` 返回 **401 Unauthorized**（不是被权限分类器拦，是密码不对或已过期）。线上登录页显示的 demo 账号是 `admin@crm.com`。按 CLAUDE.md 的高风险操作规则，认证失败一次即停止、不连续换凭据重试（登录连错 5 次锁 5 分钟），所以**没有继续试**。
+  顺带得到一个真实故障下的观察：**工具优雅降级了**，返回 `LEAD_FAILED` 而不是抛异常穿透——第 1 / 3 轮那两条 P1 要保住的行为，在一次真实故障里跑通了。
+
 - [ ] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
   文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）
   目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走 `upload_media()` → 构造 document 消息 payload
