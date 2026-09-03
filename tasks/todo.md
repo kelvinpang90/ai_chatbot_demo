@@ -578,6 +578,19 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **没做的**：地址**不会出现在发票 PDF 上**。erp_os 的发票模型和 schema 里**没有任何地址字段**（`schemas/invoice.py` / `services/einvoice.py` 全文无 address），要让它上发票得动 erp_os，那是另一件事。
 
+- [x] **任务 11.1b：散客第二次进来，bot 主动认出他、提上次问了什么**——**2026-09-03 完成**（8 个新测试，全套 254 passed）。**同样不在原计划里**，是用户看完地址修复后追问的：「按照这个流程，如何建立顾客信息，让顾客下次询问会有记录」。问清楚范围后确认只做演示环境这一半，不碰「WhatsApp 号自动对上真实身份」那个更大的架构缺口（工具层至今拿不到「这通对话是谁」，任务 10/11 审查都点过名，没做）。
+  文件：`backend/app/tools/crm.py`、`backend/app/bots/data/retail.json`、`backend/tests/test_crm_tools.py`
+
+  **发现一件事，不是我引入的**：`crm_lookup_customer` 的 docstring 从任务 8 起就写着「find out ... what business they have done before」，但实现只返回 `total_deal_amount` / `deal_count` 两个汇总数字，从来没有「上次问了什么」这个内容。文档承诺的和代码给的不是一回事——这次顺手把它兑现了。
+
+  - `crm_client.deals_for_contact` 早就存在（`crm_create_lead` 内部用它避免建重复联系人），这次只是**复用**，没有新增客户端方法
+  - `crm_lookup_customer` 现在给每个匹配到的联系人**多带一个 `recent_enquiries`**（标题 / 状态 / 金额 / 时间，最多 3 条）。取数失败**不拖累整个查询**——联系人本身是真的，历史只是锦上添花，为了这个把整条查询判成「查不到」反而更假
+  - persona 加一条：**`erp_find_customer` 查不到的人，第一句实质问题之前**就该主动查一遍 CRM——不是只在准备建卡时才查（原来的用法）。查到就用名字问候、提上次问的东西；查不到才是真的新客户
+
+  ✅ **线上独立验证**：拿刚才任务 11.1 验收时真实建出来的那个散客号（`+60 19-870 4432`，Lee Kok Hao）直接打 `crm_lookup_customer`，返回里 `recent_enquiries` 真的带着那张电饭煲的线索卡（`"1x Panasonic Rice Cooker 1.8L SR-DF181"` / `lead` / `164.89` / `2026-09-03T14:26:06`）——不是构造数据，是几分钟前那次真机验收自己留下的记录。
+
+  **没做、故意不做的**：没有把「WhatsApp 手机号自动对应 ERP/CRM 客户」这件事做掉。演示里客户身份还是靠菜单手动选，这条只解决「同一个手动选中的散客身份，第二次来 bot 记不记得」。要做到真号自动识别，得把「这通对话是谁」接进工具层（`get_tools(bot_id)` 现在连 conversation 都不知道），跨 session 层和 `llm.py`，是单独一条架构任务，todo.md 里任务 10 P3-2 那条已经点过名。
+
 - [ ] **任务 11.2：轻量档也套上工具循环**（`hotel` + `saas`）
   文件：`backend/app/tools/local.py`（新增）、`backend/app/bots/data/hotel.json`、`backend/app/bots/data/saas.json`、测试
   目标：客户在菜单里平等看到五个行业，点进 `retail` 是活的、点进 `hotel` 还在背 JSON，落差太明显，会显得「只有一个是真的」。给轻量档套同样的工具外壳——`hotel_search_rooms` / `hotel_get_booking` / `hotel_modify_booking`，`saas_search_known_issues` / `saas_get_tickets` / `saas_create_ticket`

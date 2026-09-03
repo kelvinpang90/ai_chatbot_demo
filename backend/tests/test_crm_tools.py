@@ -31,6 +31,25 @@ SITI = {
     "deal_count": 0,
 }
 
+# What deals_for_contact returns for Tan: a plain list, newest first, the shape
+# `/api/deals?contact_id=` answers with once the envelope is stripped.
+TAN_DEALS = [
+    {
+        "id": "d-1",
+        "title": "10x Wireless Bluetooth Earbuds",
+        "status": "won",
+        "amount": 1299.0,
+        "created_at": "2026-08-20T10:00:00",
+    },
+    {
+        "id": "d-2",
+        "title": "Rice cooker enquiry",
+        "status": "lead",
+        "amount": 164.89,
+        "created_at": "2026-07-01T09:00:00",
+    },
+]
+
 
 @pytest.fixture(autouse=True)
 def _fresh_client():
@@ -40,11 +59,15 @@ def _fresh_client():
 
 
 def test_a_name_is_handed_to_the_servers_own_search():
-    with patch.object(crm_client.CrmClient, "get", return_value={"data": [TAN]}) as get:
+    with patch.object(
+        crm_client.CrmClient, "get", side_effect=[{"data": [TAN]}, TAN_DEALS]
+    ) as get:
         payload = json.loads(crm.crm_lookup_customer("Tan Wei Ming"))
 
-    assert get.call_args.args[0] == "/api/contacts"
-    assert get.call_args.kwargs["params"]["search"] == "Tan Wei Ming"
+    assert get.call_args_list[0].args[0] == "/api/contacts"
+    assert get.call_args_list[0].kwargs["params"]["search"] == "Tan Wei Ming"
+    assert get.call_args_list[1].args[0] == "/api/deals"
+    assert get.call_args_list[1].kwargs["params"] == {"contact_id": "c-1"}
     assert payload == [
         {
             "contact_id": "c-1",
@@ -54,18 +77,58 @@ def test_a_name_is_handed_to_the_servers_own_search():
             "email": "tan@example.my",
             "total_deal_amount": 12000.0,
             "deal_count": 3,
+            "recent_enquiries": [
+                {
+                    "title": "10x Wireless Bluetooth Earbuds",
+                    "status": "won",
+                    "amount": 1299.0,
+                    "enquired_on": "2026-08-20T10:00:00",
+                },
+                {
+                    "title": "Rice cooker enquiry",
+                    "status": "lead",
+                    "amount": 164.89,
+                    "enquired_on": "2026-07-01T09:00:00",
+                },
+            ],
         }
     ]
 
 
+def test_a_first_time_contact_has_no_history_to_report():
+    with patch.object(crm_client.CrmClient, "get", side_effect=[{"data": [SITI]}, []]):
+        payload = json.loads(crm.crm_lookup_customer("Siti Aminah"))
+
+    assert payload[0]["recent_enquiries"] == []
+
+
+def test_the_contact_is_still_reported_when_fetching_their_history_fails():
+    """The contact is real either way; the enquiry list is a bonus on top of it.
+
+    Failing the whole lookup here would turn "the deals endpoint hiccuped" into
+    "no matching customer", which is a worse and less honest answer.
+    """
+    with patch.object(
+        crm_client.CrmClient, "get", side_effect=[{"data": [TAN]}, ApiClientError("boom")]
+    ):
+        payload = json.loads(crm.crm_lookup_customer("Tan Wei Ming"))
+
+    assert payload[0]["contact_id"] == "c-1"
+    assert payload[0]["recent_enquiries"] == []
+
+
 def test_a_phone_number_is_matched_here_because_the_server_cannot():
     """crm_os `search` covers name and company only -- a phone finds nothing there."""
-    with patch.object(crm_client.CrmClient, "get", return_value={"data": [SITI, TAN]}) as get:
+    with patch.object(
+        crm_client.CrmClient, "get", side_effect=[{"data": [SITI, TAN]}, TAN_DEALS]
+    ) as get:
         payload = json.loads(crm.crm_lookup_customer("60173948123"))
 
     # No `search` term went to the server; the filtering happened on our side.
-    assert get.call_args.kwargs["params"]["search"] is None
+    assert get.call_args_list[0].kwargs["params"]["search"] is None
     assert [contact["contact_id"] for contact in payload] == ["c-1"]
+    # Only the match got its history fetched -- not the row that was filtered out.
+    assert get.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -74,7 +137,7 @@ def test_a_phone_number_is_matched_here_because_the_server_cannot():
 )
 def test_the_same_person_is_found_however_the_number_is_written(typed):
     """WhatsApp hands us 60173948123; the CRM holds whatever a salesperson typed."""
-    with patch.object(crm_client.CrmClient, "get", return_value={"data": [TAN]}):
+    with patch.object(crm_client.CrmClient, "get", side_effect=[{"data": [TAN]}, TAN_DEALS]):
         payload = json.loads(crm.crm_lookup_customer(typed))
 
     assert payload[0]["contact_id"] == "c-1"

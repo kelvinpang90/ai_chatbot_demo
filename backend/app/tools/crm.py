@@ -16,20 +16,58 @@ logger = logging.getLogger(__name__)
 UNAVAILABLE = "The CRM system could not be reached, so this could not be checked."
 NOT_FOUND = "No matching customer found in the CRM."
 
+# Enough for the model to say "last time you asked about X" without the console
+# screen filling up with someone's whole enquiry history.
+MAX_RECENT_ENQUIRIES = 3
+
+
+def _recent_enquiries(client: crm_client.CrmClient, contact_id: str | None) -> list[dict]:
+    """What this contact has already asked about, newest first.
+
+    The docstring on crm_lookup_customer has always promised "what business they
+    have done before"; until now the tool only counted and totalled it. A
+    returning walk-in customer is otherwise indistinguishable from a first-time
+    one, which is the whole gap this closes.
+
+    Failing here does not fail the lookup: the contact itself is still real and
+    worth reporting, and the enquiry list is a nice-to-have on top of it.
+    """
+    if not contact_id:
+        return []
+    try:
+        deals = client.deals_for_contact(contact_id)
+    except ApiClientError:
+        logger.exception("could not fetch prior enquiries for contact %s", contact_id)
+        return []
+    return [
+        {
+            "title": deal.get("title"),
+            "status": deal.get("status"),
+            "amount": deal.get("amount"),
+            "enquired_on": deal.get("created_at"),
+        }
+        for deal in deals[:MAX_RECENT_ENQUIRIES]
+    ]
+
 
 @beta_tool
 def crm_lookup_customer(name_or_phone: str) -> str:
     """Look up an existing customer in the CRM by name, company, or phone number.
 
-    Use this to find out whether the person you are talking to is already a customer
-    and what business they have done before. A phone number may be written in any
-    format. If nothing comes back, treat them as a new customer -- do not guess.
+    Use this to find out whether the person you are talking to is already a
+    customer and what business they have done before -- including, if they have
+    been in touch before, what they asked about. Call it for anyone
+    erp_find_customer does not recognise, before treating them as a stranger: a
+    returning enquiry is worth greeting by name and referencing, not restarting
+    from nothing. A phone number may be written in any format. If nothing comes
+    back, they really are new -- do not guess a history for them.
 
     Args:
         name_or_phone: A customer or company name, or a phone number in any format.
     """
+    client = crm_client.client()
     try:
-        contacts = crm_client.client().lookup_contacts(name_or_phone)
+        contacts = client.lookup_contacts(name_or_phone)
     except ApiClientError:
         logger.exception("crm_lookup_customer failed for %r", name_or_phone)
         return UNAVAILABLE
@@ -47,6 +85,7 @@ def crm_lookup_customer(name_or_phone: str) -> str:
                 "email": contact.get("email"),
                 "total_deal_amount": contact.get("total_deal_amount"),
                 "deal_count": contact.get("deal_count"),
+                "recent_enquiries": _recent_enquiries(client, contact.get("id")),
             }
             for contact in contacts
         ],
