@@ -35,16 +35,16 @@
   ],
   "quick_questions": [
     {"zh": "我的订单到哪里了？", "en": "Where is my order?", "ms": "Di mana pesanan saya?"},
-    {"zh": "这个 earbuds 还有 stock 吗？", "en": "Boss, this earbuds got stock or not?", "ms": "Bos, earbuds ni ada stok tak?"},
-    {"zh": "有什么退换货政策？", "en": "What's your return policy?", "ms": "Apakah dasar pemulangan anda?"}
+    {"zh": "earbuds 还有 stock 吗？", "en": "Earbuds got stock?", "ms": "Earbuds ada stok?"},
+    {"zh": "退换货政策？", "en": "Return policy?", "ms": "Dasar pemulangan?"}
   ],
   "identities": [
     {
       "id": "trade_sunrise",
       "label": {
-        "zh": "陈伟玲 - Sunrise Hypermart 采购（ERP 里的老客户）",
-        "en": "Tan Wei Ling - buyer at Sunrise Hypermart (an existing ERP account)",
-        "ms": "Tan Wei Ling - pembeli di Sunrise Hypermart (akaun ERP sedia ada)"
+        "zh": "Sunrise Hypermart 采购 - 陈伟玲，ERP 里的老客户",
+        "en": "Sunrise Hypermart buyer - Tan Wei Ling, an existing ERP account",
+        "ms": "Pembeli Sunrise Hypermart - Tan Wei Ling, akaun ERP sedia ada"
       },
       "profile": {
         "customer_name": "Tan Wei Ling",
@@ -56,9 +56,9 @@
     {
       "id": "walk_in",
       "label": {
-        "zh": "李国豪 - 新客户，ERP 里查不到（会走建线索那条路）",
-        "en": "Lee Kok Hao - new customer, not in the ERP (goes down the CRM lead path)",
-        "ms": "Lee Kok Hao - pelanggan baharu, tiada dalam ERP (ikut laluan lead CRM)"
+        "zh": "无 ERP 账户的散客 - 李国豪，会走建 CRM 线索那条路",
+        "en": "Walk-in, no ERP account - Lee Kok Hao, becomes a CRM lead",
+        "ms": "Pelanggan baharu, tiada akaun ERP - Lee Kok Hao, jadi lead CRM"
       },
       "profile": {
         "customer_name": "Lee Kok Hao",
@@ -70,9 +70,9 @@
     {
       "id": "trade_penang",
       "label": {
-        "zh": "陈美芬 - Penang Superstore 采购（走槟城仓）",
-        "en": "Chen Mei Fen - buyer at Penang Superstore (served from the Penang branch)",
-        "ms": "Chen Mei Fen - pembeli di Penang Superstore (dilayan dari cawangan Pulau Pinang)"
+        "zh": "Penang Superstore 采购 - 陈美芬，走槟城仓",
+        "en": "Penang Superstore buyer - Chen Mei Fen, ships from Penang",
+        "ms": "Pembeli Penang Superstore - Chen Mei Fen, dari cawangan Pulau Pinang"
       },
       "profile": {
         "customer_name": "Chen Mei Fen",
