@@ -295,6 +295,73 @@ def test_the_order_ships_from_the_main_branch_when_no_warehouse_is_named(_creden
     assert post.call_args_list[1].kwargs["json"]["warehouse_id"] == erp_client.DEFAULT_WAREHOUSE_ID
 
 
+ADDRESS = "6 Jalan Tasik Selatan 30e, Desa Tasik, Kuala Lumpur 57000"
+
+
+def test_the_address_the_customer_gave_is_written_onto_the_order(_credentials):
+    """The gap the first live order exposed: she typed an address and it vanished.
+
+    It reached the model, which used it to pick a branch, and then went nowhere
+    -- so the delivery note said only which warehouse, never where to.
+    """
+    booked = {**DRAFT_ORDER, "shipping_address": ADDRESS}
+    posts = [_response(_LOGIN), _response(booked, 201), _response({**CONFIRMED_ORDER, "shipping_address": ADDRESS})]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            payload = json.loads(
+                erp.erp_create_sales_order(
+                    3, [{"sku_id": 12, "quantity": 1}], shipping_address=f"  {ADDRESS}  "
+                )
+            )
+
+    assert post.call_args_list[1].kwargs["json"]["shipping_address"] == ADDRESS
+    # Read back from what erp_os stored, so the model can repeat it to the
+    # customer without either of them taking it on trust.
+    assert payload["shipping_address"] == ADDRESS
+
+
+def test_an_order_with_no_address_mentioned_does_not_send_an_empty_one(_credentials):
+    """Absent and blank are different claims: one is silence, one is "none"."""
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
+
+    assert "shipping_address" not in post.call_args_list[1].kwargs["json"]
+
+
+def test_an_address_too_long_for_the_column_is_asked_for_again_not_cut(_credentials):
+    """erp_os caps it at 500. Cutting one produces a different, real-looking place.
+
+    Nothing is written: the customer is still in the conversation and can retype
+    it, which is exactly what the invoice PDF cannot do when a name overflows.
+    """
+    with patch.object(api_client.httpx, "post") as post:
+        answer = erp.erp_create_sales_order(
+            3, [{"sku_id": 12, "quantity": 1}], shipping_address="x" * 501
+        )
+
+    assert answer == erp.ADDRESS_TOO_LONG
+    assert "shorten it yourself" in answer
+    assert post.call_count == 0  # refused before the login, let alone the write
+
+
+def test_an_address_that_exactly_fills_the_column_is_accepted(_credentials):
+    """The guard is off-by-one bait; 500 is allowed, 501 is not."""
+    address = "x" * erp_client.MAX_SHIPPING_ADDRESS_CHARS
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+            erp.erp_create_sales_order(
+                3, [{"sku_id": 12, "quantity": 1}], shipping_address=address
+            )
+
+    assert post.call_args_list[1].kwargs["json"]["shipping_address"] == address
+
+
 @pytest.mark.parametrize(
     "items",
     [

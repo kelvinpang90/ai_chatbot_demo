@@ -328,6 +328,30 @@ def test_the_note_keeps_the_whole_enquiry_the_card_title_had_to_cut():
     assert long_enquiry in fake.body("/api/deals/d-9/activities")["content"]
 
 
+def test_an_address_a_walk_in_gave_survives_on_the_note():
+    """Somebody the ERP does not know has no order to carry an address, so the
+    note is the only place it can land. Without this, asking them for one is
+    just the vanished-address bug wearing the other system's clothes."""
+    address = "6 Jalan Tasik Selatan 30e, Desa Tasik, Kuala Lumpur 57000"
+
+    with fake_crm(existing=[]) as fake:
+        crm.crm_create_lead(
+            "Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE, delivery_address=address
+        )
+
+    content = fake.body("/api/deals/d-9/activities")["content"]
+    assert address in content
+    # Still the enquiry the salesperson opened the card for, not replaced by it.
+    assert ENQUIRY in content
+
+
+def test_a_lead_with_no_address_says_nothing_about_one():
+    with fake_crm(existing=[]) as fake:
+        crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
+
+    assert "Delivery address" not in fake.body("/api/deals/d-9/activities")["content"]
+
+
 def test_a_name_too_long_for_the_column_is_trimmed_rather_than_dropped():
     with fake_crm(existing=[]) as fake:
         crm.crm_create_lead("Ahmad " * 40, "+60 12-333 4444", ENQUIRY, VALUE)

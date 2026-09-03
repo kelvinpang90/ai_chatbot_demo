@@ -27,6 +27,11 @@ DEFAULT_WAREHOUSE_ID = 1
 # is being shown.
 WHATSAPP_SHIPPING_METHOD = "WhatsApp order"
 
+# erp_os caps the sales order's shipping address at 500 characters
+# (`schemas/sales_order.py:68`). Longer is a 422 that loses the whole order, so
+# the length is checked before the write rather than discovered after it.
+MAX_SHIPPING_ADDRESS_CHARS = 500
+
 
 def _is_the_same_document(found: str, wanted: str) -> bool:
     """Two document numbers written the same way, allowing for how they were typed.
@@ -133,11 +138,17 @@ class ErpClient(JsonApiClient):
         customer_id: int,
         lines: list[tuple[int, float]],
         warehouse_id: int = DEFAULT_WAREHOUSE_ID,
+        shipping_address: str = "",
     ) -> dict:
         """Book a DRAFT sales order for (sku_id, qty) pairs.
 
         erp_os wants a unit of measure, a tax rate and a price on every line; the
         caller supplies neither. That is deliberate -- see `_line`.
+
+        The address is sent only when there is one. Sending an explicit null
+        would overwrite nothing today, but it also says something the caller does
+        not know: that this customer has no delivery address, rather than that
+        this conversation did not mention one.
         """
         payload = {
             "customer_id": customer_id,
@@ -145,6 +156,8 @@ class ErpClient(JsonApiClient):
             "business_date": datetime.now(MALAYSIA_TIME).date().isoformat(),
             "lines": [self._line(sku_id, qty) for sku_id, qty in lines],
         }
+        if shipping_address:
+            payload["shipping_address"] = shipping_address
         return self.post("/api/sales-orders", json=payload)
 
     def _line(self, sku_id: int, qty: float) -> dict:

@@ -44,6 +44,15 @@ NO_CUSTOMER = (
     "ERP customer -- do not invent a customer_id, ask the customer for the name "
     "or company the account is under."
 )
+# An address is acted on: somebody drives to it. Cutting one to fit would produce
+# a real-looking address that is not where the customer lives, and unlike the
+# invoice PDF -- which is drawn long after anyone can be asked -- the person who
+# wrote this one is still in the conversation. So ask them.
+ADDRESS_TOO_LONG = (
+    "That delivery address is too long to record, so nothing was ordered. Ask "
+    "the customer for a shorter version -- street, city, postcode -- and place "
+    "the order again. Do not shorten it yourself."
+)
 
 
 def _not_confirmed(document_no: str) -> str:
@@ -268,6 +277,7 @@ def erp_create_sales_order(
     customer_id: int,
     items: list[OrderLine],
     warehouse_id: int = erp_client.DEFAULT_WAREHOUSE_ID,
+    shipping_address: str = "",
 ) -> str:
     """Create a real sales order in the ERP and confirm it, reserving the stock.
 
@@ -288,6 +298,11 @@ def erp_create_sales_order(
             and a quantity.
         warehouse_id: The branch to ship from, as returned by erp_get_inventory.
             Defaults to the main warehouse.
+        shipping_address: Where the goods are to be delivered, in the customer's
+            own words, if they gave one in this conversation. Pass it whenever
+            they did -- otherwise the order carries no address and nobody knows
+            where it goes. Never invent one and never reuse an address from
+            another conversation; leave it empty if they did not say.
     """
     try:
         lines = [(int(item["sku_id"]), float(item["quantity"])) for item in items]
@@ -300,10 +315,18 @@ def erp_create_sales_order(
     if not lines or any(qty <= 0 for _, qty in lines):
         return BAD_ITEMS
 
+    address = str(shipping_address or "").strip()
+    if len(address) > erp_client.MAX_SHIPPING_ADDRESS_CHARS:
+        logger.warning("erp_create_sales_order got a %d character address", len(address))
+        return ADDRESS_TOO_LONG
+
     client = erp_client.client()
     try:
         order = client.create_sales_order(
-            customer_id=customer_id, lines=lines, warehouse_id=warehouse_id
+            customer_id=customer_id,
+            lines=lines,
+            warehouse_id=warehouse_id,
+            shipping_address=address,
         )
     except ApiClientError as exc:
         logger.exception("erp_create_sales_order failed for customer %s", customer_id)
@@ -325,6 +348,9 @@ def erp_create_sales_order(
             "status": order.get("status"),
             "customer": order.get("customer_name"),
             "warehouse": order.get("warehouse_name"),
+            # What erp_os stored, not what we sent it. Reading back our own
+            # argument would report an address recorded whether or not it was.
+            "shipping_address": order.get("shipping_address"),
             "currency": order.get("currency"),
             "total_incl_tax": order.get("total_incl_tax"),
             "lines": [

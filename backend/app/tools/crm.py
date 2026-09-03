@@ -84,9 +84,12 @@ class _Lead(NamedTuple):
     title: str
     requirement: str
     amount: float
+    delivery_address: str = ""
 
 
-def _usable(name: str, phone: str, requirement: str, amount: float) -> _Lead | None:
+def _usable(
+    name: str, phone: str, requirement: str, amount: float, delivery_address: str = ""
+) -> _Lead | None:
     """The lead as the CRM will accept it, or None if it is not worth writing.
 
     Name and enquiry are trimmed to fit their columns: a shortened name is still
@@ -119,6 +122,7 @@ def _usable(name: str, phone: str, requirement: str, amount: float) -> _Lead | N
         title=requirement[: crm_client.MAX_TITLE_CHARS],
         requirement=requirement,
         amount=amount,
+        delivery_address=str(delivery_address or "").strip(),
     )
 
 
@@ -175,16 +179,22 @@ def _activity_note(lead: _Lead) -> str:
     """What the salesperson reads inside the card.
 
     Deliberately the full enquiry rather than the trimmed title: the column is
-    TEXT, and this is the one place the customer own words survive whole.
+    TEXT, and this is the one place the customer own words survive whole. The
+    delivery address goes here for the same reason -- a customer who is not in
+    the ERP has no order to hang one on, and an address they typed out and then
+    saw vanish is the thing this note exists to prevent.
     """
+    address = f"\nDelivery address: {lead.delivery_address}" if lead.delivery_address else ""
     return (
         f"{lead.requirement} -- estimated MYR {lead.amount:,.2f}, "
-        "captured by the WhatsApp assistant."
+        f"captured by the WhatsApp assistant.{address}"
     )
 
 
 @beta_tool
-def crm_create_lead(name: str, phone: str, requirement: str, amount: float) -> str:
+def crm_create_lead(
+    name: str, phone: str, requirement: str, amount: float, delivery_address: str = ""
+) -> str:
     """Record a sales lead in the CRM so a salesperson can follow it up.
 
     Call this once the customer has shown real interest -- named what they want,
@@ -203,8 +213,11 @@ def crm_create_lead(name: str, phone: str, requirement: str, amount: float) -> s
             the title on the pipeline card.
         amount: The estimated value in MYR. Use the quoted total when there is
             one, otherwise a reasonable estimate, or 0 with nothing to go on.
+        delivery_address: Where they want the goods delivered, in their own
+            words, if they gave an address. It goes in the note the salesperson
+            reads. Leave it empty if they did not say -- never invent one.
     """
-    lead = _usable(name, phone, requirement, amount)
+    lead = _usable(name, phone, requirement, amount, delivery_address)
     if lead is None:
         logger.warning("crm_create_lead got unusable details for %r", name)
         return BAD_LEAD
