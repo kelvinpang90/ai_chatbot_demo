@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from app.config import settings
-from app.services import crm_client, erp_client
+from app.services import crm_client, erp_client, outbox
 
 
 def _with_credentials(name, module):
@@ -38,3 +38,18 @@ def erp_credentials():
 def crm_credentials():
     """A CRM client that will actually attempt a login."""
     yield from _with_credentials("crm", crm_client)
+
+
+@pytest.fixture(autouse=True)
+def _no_outbox_left_open():
+    """Every test starts with no channel for files, whatever the last one did.
+
+    The outbox is a ContextVar, and production gets its isolation from the fact
+    that each inbound message is handled in its own context. A test suite runs in
+    one, so without this an outbox opened by any earlier test stays open, and the
+    test that checks a channel with nowhere to put a PDF passes or fails
+    depending on the file it happens to run after.
+    """
+    outbox.close()
+    yield
+    outbox.close()

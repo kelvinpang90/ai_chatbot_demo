@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 
 from app.bots.registry import BotConfig, get_bot, get_identity, list_bots
 from app.config import settings
-from app.services import llm, whatsapp
+from app.services import llm, outbox, whatsapp
 from app.session_store import session_store
 
 router = APIRouter(prefix="/webhook/whatsapp")
@@ -76,6 +76,12 @@ def dispatch_message(message: dict) -> list[dict]:
     if not message_id or not phone:
         return []
 
+    # A tool that produces a file cannot send it: this function is the one place
+    # that decides what goes out, and the gateway path below returns payloads
+    # rather than sending them. So a tool leaves the file here and it travels
+    # with the reply. Opened per message, so nothing can leak into the next one.
+    outbox.begin()
+
     if session_store.is_duplicate_message(message_id):
         logger.info("Skipping duplicate WhatsApp message %s", message_id)
         return []
@@ -125,7 +131,8 @@ def _handle_text_message(phone: str, text: str) -> list[dict]:
     reply = llm.get_reply(bot, identity, session.history)
     session.add_message("assistant", reply)
     logger.info("Sending LLM reply to %s for bot=%s", phone, bot.id)
-    return [whatsapp.build_text_message(phone, reply)]
+    # Anything a tool produced goes out after the words explaining it.
+    return [whatsapp.build_text_message(phone, reply), *outbox.drain(phone)]
 
 
 def _handle_interactive_reply(phone: str, interactive: dict) -> list[dict]:

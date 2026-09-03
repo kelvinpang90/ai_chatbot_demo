@@ -445,10 +445,39 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ⚠️ **真机验收又卡住了，原因和以前不同**：本地 `backend/.env` 里的 CRM 凭据对 `crm.kelvinpeng.com/api/auth/login` 返回 **401 Unauthorized**（不是被权限分类器拦，是密码不对或已过期）。线上登录页显示的 demo 账号是 `admin@crm.com`。按 CLAUDE.md 的高风险操作规则，认证失败一次即停止、不连续换凭据重试（登录连错 5 次锁 5 分钟），所以**没有继续试**。
   顺带得到一个真实故障下的观察：**工具优雅降级了**，返回 `LEAD_FAILED` 而不是抛异常穿透——第 1 / 3 轮那两条 P1 要保住的行为，在一次真实故障里跑通了。
 
-- [ ] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
-  文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）
-  目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走 `upload_media()` → 构造 document 消息 payload
-  验收：手机上收到 PDF 发票并能打开，内容对得上刚才那张单
+- [x] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**——**2026-09-03 代码完成**（25 个新测试，全套 224 passed）。**真机验收未做**，见下面「还没验的」。
+  文件：`backend/app/services/invoice_pdf.py`（新增）、`backend/app/services/outbox.py`（新增）、`backend/app/services/erp_client.py`、`backend/app/services/whatsapp.py`、`backend/app/services/whatsapp_media.py`、`backend/app/tools/erp.py`、`backend/app/routers/whatsapp_webhook.py`、`backend/requirements-dev.txt`、`backend/tests/`（新增 `test_invoice_pdf.py`，扩 `test_erp_tools.py` / `test_whatsapp_webhook.py` / `conftest.py`）
+
+  `erp_generate_einvoice(order_no, customer_id)` 一路做完：按客户找单 → 发货 → 开票 → 提交 MyInvois → 渲染 PDF → 上传 Meta → 排进出站队列，跟回复一起发出去。
+
+  **五处偏离规格，每一处都有非做不可的理由：**
+
+  1. **PDF 是我们自己画的，不是 erp_os 给的。** `Invoice.pdf_file_id` 在 erp_os 里是个**悬空字段**——全仓库没有一行代码往里写过东西，也没有任何 PDF 渲染。所以手写了一个最小 PDF 1.4 生成器（`invoice_pdf.py`，~200 行）：一页 A4、四个 base-14 标准字体（Helvetica 排字，Courier 排钱——等宽字符正好 0.6 em，右对齐就是一句乘法，否则要背 Helvetica 那张 300 项宽度表）。**零新增运行时依赖**：reportlab 和 fpdf2 都会把 Pillow + fonttools 拖进一个目前只有 5 个依赖的镜像，就为了排一张永远不变的版。
+  2. **多做了一步「发货」。** erp_os 不给没发货的单开发票（`services/einvoice.py:245` 要 `PARTIAL_SHIPPED` / `FULLY_SHIPPED`），而 WhatsApp 下的单没有仓管在旁边现敲一张送货单。所以工具会先建 DeliveryOrder 把整单发掉。**注意这会真的动库存**——不只是任务 9 那样的 reserved，on_hand 也会跟着降。
+  3. **多做了一步「提交 MyInvois」。** DRAFT 发票没有 UIN，PDF 上那行「LHDN status / UIN」就是空的。submit 之后是 VALIDATED + UIN + QR（mock adapter 同步返回）。**这一步失败不致命**：照样把 DRAFT 的 PDF 发出去，UIN 那行写 `pending validation`——一张真发票配一个待验证的号，好过没有发票。
+  4. **参数不是规格里的 `order_id`，是 `order_no` + `customer_id`。** 两个原因：① 任务 9 的返回里**根本没有 id**，只有 `order_no`，模型拿不到 id；② 更要紧的是，**任何模型能编的整数都会命中某个真实订单**——这正是任务 9 第 1 轮那条 P1（`customer_id` 无处可得）和任务 9.1 第 1 轮那条 P1 的同一个形状。现在两个标识符必须同时对上：查询本身带 `customer_id` 过滤，返回的 `document_no` 还要**精确等于**传进来的号（`?search=` 是 LIKE，`SO-2026-0042` 会把 `SO-2026-00420` 一起捞出来）。编错了的结果是查无此单，不是发错别人的货。
+  5. **新增 `outbox`（ContextVar）。** 工具不能自己发消息——`dispatch_message` 的 docstring 明确写着「so this never calls whatsapp.send_* directly」，网关那条路径是**返回** payload 给网关发，不是自己发。所以工具把上传好的文件留在 outbox 里，`dispatch_message` 在文字回复后面把它捡出来。网页那条线没有 outbox（`chat.py` 不开），工具会如实返回 `pdf_sent: false` + 一句话叫模型别承诺 PDF，而不是让 bot 说「已发送」然后什么都没到。
+
+  **失败词汇比任务 9 / 9.1 少一套，这是想清楚的，不是偷懒。** 那两个工具分「确定失败」和「不确定」，是因为重试会写出第二张单 / 第二张卡。**这个工具每一步都先读状态再决定做不做**：已发货就不再发、已 VALIDATED 就不再提交、generate-from-so 在 erp_os 那头本来就是幂等的。所以整个工具**重试是安全的**，「确定 / 不确定」这个区分对给模型的建议没有任何影响，多一条消息只是噪音。唯一保留的分叉在发货那一步：**发货请求发出去没回音时不放弃，继续去开票**——开票成不成正好把「到底发出去没有」问出来，而放弃会把这个问题永远悬着。
+
+  **四个变异全部验证过**（REVIEW.md 第 5 条：一写完就绿的断言先怀疑它在测自己）：
+  - 把 `outbox.begin()` 从 dispatcher 拿掉 → webhook 那条附件测试变红
+  - 把「精确匹配 document_no」换成「取搜索结果第一条」 → `SO-2026-00420` 那条测试变红
+  - 把「已发货就跳过」拿掉 → 「不会发第二次货」变红
+  - 把 xref 偏移量 +1 → 「每个交叉引用都指向它声称的对象」变红
+  变异跑完代码已还原，四处 grep 确认回到原样。
+
+  **两条踩坑记录：**
+
+  - ⚠️ **`pypdf` 读得回来，不等于这个 PDF 是对的。** 故意把 xref 偏移量写坏，`PdfReader(..., strict=True)` **照样把页面吐出来**——它打一行警告，然后扫全文重建交叉引用表。也就是说「用 pypdf 读回来、文字都在」这种测试**测不出偏移量算错**，而偏移量算错正是手写 PDF 唯一会出的那类错。所以另写了一个直接按字节校验 xref 表的测试（`test_every_cross_reference_offset_points_at_the_object_it_claims`），上面第四个变异就是验它的。`pypdf` 只进 `requirements-dev.txt`。
+  - ⚠️ **ContextVar 在测试里是共享的，在生产里不是。** 生产每条入站消息各跑在自己的 context 里（后台任务走 `run_in_threadpool`、事件循环任务走 asyncio.Task，两者都会 copy 一份），所以 `begin()` 传不到下一条消息。但 pytest 全跑在一个 context 里，于是「任何一个早跑的测试开了 outbox」会让「没有文件通道的那条测试」时绿时红——**取决于它排在谁后面**。加了 `conftest.py` 里的 autouse fixture 每个测试前后关掉。这一条在第一次跑套件时就以一个假绿现形了。
+
+  **没挂到任何 bot 上**——`tools/registry.py` 一个字节没动，和任务 8 / 9 / 9.1 一致，挂载是任务 11 的事。
+
+  **还没验的（必须由用户拿手机做）：**
+  - PDF 在手机 WhatsApp 里**打不打得开**、缩略图长什么样。这是任务 10 验收标准的正文，测试证明不了
+  - 整条链路打真实 erp_os：发货 → 开票 → MyInvois → 收到 PDF。**Claude 跑不了**，带凭据「写」外部系统会被权限分类器拦（任务 9 / 9.1 两次同样的事）
+  - **发货这一步会真的减库存**，第一次跑之前值得先看一眼演示要指的那块屏
 
 - [ ] **任务 11：retail bot 改造成工具驱动**
   文件：`backend/app/bots/data/retail.json`、`backend/app/bots/registry.py`

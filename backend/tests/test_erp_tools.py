@@ -5,8 +5,9 @@ from unittest.mock import Mock, patch
 import httpx
 import pytest
 
-from app.services import api_client, erp_client
+from app.services import api_client, erp_client, outbox, whatsapp_media
 from app.services.api_client import ApiClientError
+from app.services.whatsapp_media import MediaError
 from app.tools import erp
 
 SKU_ROW = {
@@ -146,6 +147,7 @@ def test_every_tool_is_declared_with_a_schema_the_model_can_read():
         "erp_get_inventory",
         "erp_find_customer",
         "erp_create_sales_order",
+        "erp_generate_einvoice",
     }
     for tool in erp.TOOLS:
         assert tool.input_schema["properties"]  # arguments made it into the schema
@@ -552,3 +554,347 @@ def test_an_unreachable_erp_does_not_look_like_an_unknown_customer(_credentials)
     answer: the first one invites creating a duplicate account."""
     with patch.object(api_client.httpx, "post", side_effect=httpx.ConnectError("refused")):
         assert erp.erp_find_customer("Sunrise") == erp.UNAVAILABLE
+
+
+# -- issuing the e-Invoice ----------------------------------------------------
+#
+# Same approach as the order tests: httpx is driven, not ErpClient, so a wrong
+# route or a payload erp_os would reject fails here rather than on the phone.
+# The chain is four writes long -- ship, generate, submit, upload -- and each one
+# of them can fail on its own with the ones before it already done.
+
+SO_LIST_ROW = {"id": 77, "document_no": "SO-2026-0042", "status": "CONFIRMED"}
+SO_DETAIL = {
+    **CONFIRMED_ORDER,
+    "lines": [
+        {
+            "id": 501,
+            "sku_code": "SKU-00012",
+            "sku_name": "TWS Earbuds Pro",
+            "qty_ordered": "3.0000",
+            "qty_shipped": "0.0000",
+        }
+    ],
+}
+SHIPPED_SO = {
+    **SO_DETAIL,
+    "status": "FULLY_SHIPPED",
+    "lines": [{**SO_DETAIL["lines"][0], "qty_shipped": "3.0000"}],
+}
+
+DRAFT_INVOICE = {
+    "id": 9,
+    "document_no": "INV-2026-0007",
+    "status": "DRAFT",
+    "sales_order_no": "SO-2026-0042",
+    "customer_name": "Tan Ah Kau",
+    "currency": "MYR",
+    "business_date": "2026-09-03",
+    "subtotal_excl_tax": "897.0000",
+    "tax_amount": "89.7000",
+    "total_incl_tax": "986.7000",
+    "uin": None,
+    "lines": [
+        {
+            "description": "TWS Earbuds Pro",
+            "qty": "3.0000",
+            "unit_price_excl_tax": "299.0000",
+            "line_total_incl_tax": "986.7000",
+        }
+    ],
+}
+VALIDATED_INVOICE = {**DRAFT_INVOICE, "status": "VALIDATED", "uin": "MY-UIN-8891234"}
+
+MEDIA_ID = "meta-media-777"
+A_PHONE = "60123456789"
+
+
+@pytest.fixture
+def _outbox():
+    """A WhatsApp conversation, which is the only channel with room for a file."""
+    outbox.begin()
+    yield
+
+
+@pytest.fixture
+def _uploaded():
+    """Meta accepting the PDF. What was handed over is asserted where it matters."""
+    with patch.object(whatsapp_media, "upload_media", return_value=MEDIA_ID) as upload:
+        yield upload
+
+
+def _invoice_gets(order: dict = SO_DETAIL) -> list:
+    """The two reads: find the customer's order by number, then load it in full."""
+    return [_response({"items": [SO_LIST_ROW]}), _response(order)]
+
+
+def test_the_order_is_shipped_invoiced_submitted_and_the_pdf_goes_to_the_customer(
+    _credentials, _outbox, _uploaded
+):
+    posts = [
+        _response(_LOGIN),
+        _response({"id": 300, "document_no": "DO-2026-0031"}, 201),
+        _response(DRAFT_INVOICE, 201),
+        _response(VALIDATED_INVOICE),
+    ]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()) as get:
+            payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    # 1. The order was found under this customer, not by number alone.
+    lookup = get.call_args_list[0]
+    assert lookup.args[0].endswith("/api/sales-orders")
+    assert lookup.kwargs["params"] == {
+        "search": "SO-2026-0042",
+        "customer_id": 3,
+        "page_size": erp_client.DEFAULT_RESULT_LIMIT,
+    }
+    assert get.call_args_list[1].args[0].endswith("/api/sales-orders/77")
+
+    # 2. Three writes, in the order erp_os's state machine demands.
+    ship, generate, submit = post.call_args_list[1:]
+    assert ship.args[0].endswith("/api/delivery-orders")
+    assert ship.kwargs["json"]["sales_order_id"] == 77
+    assert ship.kwargs["json"]["lines"] == [{"sales_order_line_id": 501, "qty_shipped": "3.0000"}]
+    assert generate.args[0].endswith("/api/invoices/generate-from-so/77")
+    assert submit.args[0].endswith("/api/invoices/9/submit")
+
+    # 3. What Meta was handed is the invoice, and it is a PDF.
+    content, mime, filename = _uploaded.call_args.args
+    assert content.startswith(b"%PDF-")
+    assert (mime, filename) == ("application/pdf", "INV-2026-0007.pdf")
+
+    # 4. It is queued as a document addressed to the customer, named so they can
+    #    quote the number back.
+    (message,) = outbox.drain(A_PHONE)
+    assert message["to"] == A_PHONE
+    assert message["type"] == "document"
+    assert message["document"]["id"] == MEDIA_ID
+    assert message["document"]["filename"] == "INV-2026-0007.pdf"
+    assert "INV-2026-0007" in message["document"]["caption"]
+
+    # 5. What the model is told, including the number that has to match the ERP.
+    assert payload == {
+        "invoice_no": "INV-2026-0007",
+        "order_no": "SO-2026-0042",
+        "status": "VALIDATED",
+        "lhdn_uin": "MY-UIN-8891234",
+        "currency": "MYR",
+        "total_incl_tax": "986.7000",
+        "pdf_sent": True,
+    }
+
+
+def test_an_order_that_already_shipped_is_not_shipped_a_second_time(
+    _credentials, _outbox, _uploaded
+):
+    """The tool is documented as safe to call again; this is the step that makes
+    it true, because a second delivery order would move stock that already left."""
+    posts = [_response(_LOGIN), _response(DRAFT_INVOICE, 201), _response(VALIDATED_INVOICE)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets(SHIPPED_SO)):
+            payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    assert not any("/api/delivery-orders" in call.args[0] for call in post.call_args_list)
+    assert payload["pdf_sent"] is True
+
+
+def test_an_invoice_that_is_no_longer_a_draft_is_not_submitted_again(
+    _credentials, _outbox, _uploaded
+):
+    """erp_os returns the existing invoice for a second generate call, and
+    submitting one that is already VALIDATED is a 400 that would fail the tool."""
+    posts = [_response(_LOGIN), _response(VALIDATED_INVOICE, 201)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets(SHIPPED_SO)):
+            payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    assert not any("/submit" in call.args[0] for call in post.call_args_list)
+    assert payload["status"] == "VALIDATED"
+
+
+def test_an_order_number_that_belongs_to_nobody_here_writes_nothing(_credentials, _outbox):
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN)]) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response({"items": []})):
+            answer = erp.erp_generate_einvoice("SO-9999-9999", 3)
+
+    assert answer == erp.NO_SUCH_ORDER
+    assert post.call_count == 1  # the login, and nothing else
+    assert outbox.drain(A_PHONE) == []
+
+
+def test_a_number_the_search_only_partly_matched_is_not_taken_as_the_order(_credentials, _outbox):
+    """`?search=` is a LIKE over document_no and remarks, so it answers with
+    orders that merely contain the text. Shipping one of those would move a
+    different order's stock and send this customer somebody else's invoice."""
+    neighbour = {"id": 78, "document_no": "SO-2026-00420", "status": "CONFIRMED"}
+
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN)]) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response({"items": [neighbour]})):
+            assert erp.erp_generate_einvoice("SO-2026-0042", 3) == erp.NO_SUCH_ORDER
+
+    assert post.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [("DRAFT", "has not been confirmed"), ("CANCELLED", "was cancelled")],
+)
+def test_an_order_nobody_can_bill_for_is_refused_before_anything_ships(
+    _credentials, _outbox, status, expected
+):
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN)]) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets({**SO_DETAIL, "status": status})
+        ):
+            answer = erp.erp_generate_einvoice("SO-2026-0042", 3)
+
+    assert expected in answer
+    assert "SO-2026-0042" in answer
+    assert post.call_count == 1
+
+
+def test_a_shipment_the_erp_refused_stops_before_an_invoice_is_asked_for(_credentials, _outbox):
+    """Not enough stock in the branch: erp_os answered for itself, so nothing
+    moved and there is nothing to bill."""
+    refused = _response({}, 400, text='{"detail":"Insufficient stock in KL Main."}')
+
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), refused]) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()):
+            assert erp.erp_generate_einvoice("SO-2026-0042", 3) == erp.INVOICE_FAILED
+
+    assert post.call_count == 2  # login, the refused shipment, and no generate
+
+
+def test_a_shipment_that_went_out_unanswered_lets_the_invoice_settle_it(
+    _credentials, _outbox, _uploaded
+):
+    """A delivery that timed out may well have landed. Giving up would leave that
+    unresolved; asking for the invoice answers it either way, and cannot ship
+    anything a second time."""
+    posts = [
+        _response(_LOGIN),
+        httpx.ReadTimeout("no answer"),
+        _response(DRAFT_INVOICE, 201),
+        _response(VALIDATED_INVOICE),
+    ]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()):
+            payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    assert any("/api/invoices/generate-from-so/77" in call.args[0] for call in post.call_args_list)
+    assert payload["pdf_sent"] is True
+
+
+def test_a_shipment_that_never_left_this_process_is_not_treated_as_maybe_shipped(
+    _credentials, _outbox
+):
+    posts = [_response(_LOGIN), httpx.ConnectError("refused")]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()):
+            assert erp.erp_generate_einvoice("SO-2026-0042", 3) == erp.INVOICE_FAILED
+
+    assert post.call_count == 2
+
+
+def test_a_refused_invoice_says_the_order_itself_is_untouched(_credentials, _outbox):
+    """The customer's order is the thing they care about, and it is still placed."""
+    refused = _response({}, 400, text='{"detail":"SO_NOT_INVOICEABLE"}')
+    posts = [_response(_LOGIN), _response({"id": 300}, 201), refused]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()):
+            answer = erp.erp_generate_einvoice("SO-2026-0042", 3)
+
+    assert answer == erp.INVOICE_FAILED
+    assert "still placed" in answer
+    # A retry cannot duplicate anything here, so the advice is to take it.
+    assert "safe" in answer
+
+
+def test_an_invoice_myinvois_would_not_validate_is_still_sent_to_the_customer(
+    _credentials, _outbox, _uploaded
+):
+    """A real invoice with a pending UIN beats no invoice at all."""
+    posts = [
+        _response(_LOGIN),
+        _response({"id": 300}, 201),
+        _response(DRAFT_INVOICE, 201),
+        httpx.ConnectError("myinvois down"),
+    ]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()):
+            payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    assert payload["status"] == "DRAFT"
+    assert payload["lhdn_uin"] is None
+    assert payload["pdf_sent"] is True
+    assert len(outbox.drain(A_PHONE)) == 1
+
+
+def test_a_pdf_that_could_not_be_delivered_is_not_reported_as_a_failed_invoice(
+    _credentials, _outbox
+):
+    """The invoice exists in the ERP by this point. Calling it a failure would be
+    untrue and would send the model back to issue a second one."""
+    posts = [
+        _response(_LOGIN),
+        _response({"id": 300}, 201),
+        _response(DRAFT_INVOICE, 201),
+        _response(VALIDATED_INVOICE),
+    ]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()):
+            with patch.object(
+                whatsapp_media, "upload_media", side_effect=MediaError("meta refused")
+            ):
+                payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    assert payload["invoice_no"] == "INV-2026-0007"
+    assert payload["pdf_sent"] is False
+    assert payload["note"] == erp.PDF_NOT_SENT
+    assert outbox.drain(A_PHONE) == []
+
+
+def test_a_channel_that_cannot_carry_a_file_says_so_without_uploading_one(
+    _credentials, _uploaded
+):
+    """The web demo has no way to send a document. The bot must not promise one."""
+    posts = [
+        _response(_LOGIN),
+        _response({"id": 300}, 201),
+        _response(DRAFT_INVOICE, 201),
+        _response(VALIDATED_INVOICE),
+    ]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()):
+            payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    assert payload["pdf_sent"] is False
+    assert payload["note"] == erp.PDF_NOT_SENT
+    assert _uploaded.call_count == 0  # nothing sent to Meta to be thrown away
+
+
+def test_a_dead_erp_does_not_leave_the_invoice_tool_raising(_credentials, _outbox):
+    with patch.object(api_client.httpx, "post", side_effect=httpx.ConnectError("refused")):
+        with patch.object(api_client.httpx, "get", side_effect=httpx.ConnectError("refused")):
+            assert erp.erp_generate_einvoice("SO-2026-0042", 3) == erp.UNAVAILABLE
+
+
+def test_the_invoice_tool_is_declared_with_a_schema_the_model_can_read():
+    (tool,) = [t for t in erp.TOOLS if t.name == "erp_generate_einvoice"]
+    schema = tool.input_schema
+
+    assert set(schema["required"]) == {"order_no", "customer_id"}
+    # The customer id is what scopes the lookup, so the model has to be told
+    # where it comes from rather than left to produce one.
+    assert "erp_find_customer" in schema["properties"]["customer_id"]["description"]
+    assert "erp_create_sales_order" in schema["properties"]["order_no"]["description"]

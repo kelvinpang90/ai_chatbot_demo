@@ -6,8 +6,9 @@ from typing import TypedDict
 
 from anthropic import beta_tool
 
-from app.services import erp_client
+from app.services import erp_client, invoice_pdf, outbox, whatsapp_media
 from app.services.api_client import ApiClientError
+from app.services.whatsapp_media import MediaError
 
 logger = logging.getLogger(__name__)
 
@@ -283,4 +284,170 @@ def erp_create_sales_order(
     )
 
 
-TOOLS = [erp_search_sku, erp_get_inventory, erp_find_customer, erp_create_sales_order]
+# The statuses an order can be invoiced from. Anything else is either not yet
+# agreed (DRAFT) or no longer an order at all (CANCELLED).
+INVOICEABLE = ("CONFIRMED", "PARTIAL_SHIPPED", "FULLY_SHIPPED")
+SHIPPED = "FULLY_SHIPPED"
+INVOICE_DRAFT = "DRAFT"
+
+PDF_MIME = "application/pdf"
+
+NO_SUCH_ORDER = (
+    "No order with that number belongs to this customer, so no invoice was "
+    "issued. Use the order number erp_create_sales_order returned and the "
+    "customer_id from erp_find_customer -- do not guess either."
+)
+# Every step below is guarded by the state it reads first, so calling this tool
+# again cannot ship twice, invoice twice or submit twice. That is why there is one
+# failure message here and not the certain/uncertain pair the order and lead tools
+# carry: the distinction those two draw exists to stop a retry duplicating a
+# write, and here a retry cannot.
+INVOICE_FAILED = (
+    "The invoice could not be issued. The customer's order itself is unaffected "
+    "-- it is still placed. Trying once more is safe. If it fails again, tell "
+    "the customer their invoice will follow shortly and a colleague will send it."
+)
+# The invoice exists in the ERP by this point. Saying it failed would be untrue
+# and would send the model back to issue another one.
+PDF_NOT_SENT = (
+    "The invoice was issued but the PDF could not be delivered in this chat. Give "
+    "the customer the invoice number and total in your reply, and say the "
+    "document will follow."
+)
+
+
+def _not_invoiceable(order_no: str, status: str) -> str:
+    """An order that is not in a state anybody can bill for."""
+    if status == "CANCELLED":
+        return (
+            f"Order {order_no} was cancelled, so there is nothing to invoice. Tell "
+            "the customer the order is not active and offer to place a new one."
+        )
+    return (
+        f"Order {order_no} has not been confirmed yet ({status}), so it cannot be "
+        "invoiced. Confirm the order with the customer first."
+    )
+
+
+def _worth_invoicing(client: erp_client.ErpClient, so: dict) -> bool:
+    """Put the order's stock out of the door, unless it already went.
+
+    erp_os refuses to invoice an order that has not shipped, and on a WhatsApp
+    order there is nobody in the warehouse to key a delivery note in mid
+    conversation. Returns False when the shipment could not be made -- most often
+    the branch running out between the order and the invoice.
+    """
+    if so.get("status") == SHIPPED:
+        return True
+    try:
+        client.ship_sales_order(so)
+    except ApiClientError as exc:
+        logger.exception("could not ship order %s", so.get("document_no"))
+        # A shipment that went out unanswered may well have landed, and the
+        # invoice call is what settles it: it succeeds if the stock moved and
+        # refuses if it did not. Giving up here would leave that unresolved.
+        return bool(exc.may_have_landed)
+    return True
+
+
+def _validated(client: erp_client.ErpClient, invoice: dict) -> dict:
+    """The invoice with an LHDN UIN on it, if MyInvois will give us one.
+
+    A DRAFT is still a real invoice and still worth sending; failing the whole
+    tool because the tax portal was slow would take a document away from the
+    customer over a line of small print.
+    """
+    if invoice.get("status") != INVOICE_DRAFT:
+        return invoice
+    try:
+        return client.submit_invoice(invoice["id"])
+    except (ApiClientError, KeyError):
+        logger.exception("could not submit invoice %s to MyInvois", invoice.get("document_no"))
+        return invoice
+
+
+def _deliver(invoice: dict, order_no: str) -> bool:
+    """Render the invoice, hand it to Meta, and queue it behind the reply."""
+    if not outbox.available():
+        # The web demo has no channel to put a document on. Better to say so than
+        # to let the bot promise a PDF that was never going anywhere.
+        return False
+    filename = invoice_pdf.filename_for(invoice)
+    try:
+        media_id = whatsapp_media.upload_media(invoice_pdf.render(invoice), PDF_MIME, filename)
+    except MediaError:
+        logger.exception("could not upload the invoice PDF for order %s", order_no)
+        return False
+    return outbox.add(
+        outbox.Attachment(
+            media_id=media_id,
+            filename=filename,
+            caption=f"e-Invoice {invoice.get('document_no', '')} for order {order_no}",
+        )
+    )
+
+
+@beta_tool
+def erp_generate_einvoice(order_no: str, customer_id: int) -> str:
+    """Issue the LHDN e-Invoice for an order and send the PDF to the customer.
+
+    Call this after erp_create_sales_order, once the customer has their order
+    number. It ships the order in the ERP, issues the e-Invoice against it,
+    submits it to MyInvois for validation, and sends the PDF into this chat. The
+    customer receives the document as a file they can open and keep.
+
+    Safe to call again if it fails: nothing is shipped, invoiced or submitted
+    twice.
+
+    Args:
+        order_no: The order number to bill, exactly as erp_create_sales_order
+            returned it, e.g. "SO-2026-0042".
+        customer_id: The ERP customer the order belongs to, from
+            erp_find_customer. The order is looked up under this customer, so a
+            wrong id finds nothing rather than invoicing somebody else's order.
+    """
+    client = erp_client.client()
+    try:
+        so = client.sales_order_for_customer(order_no, customer_id)
+    except ApiClientError:
+        logger.exception("could not look up order %r for customer %s", order_no, customer_id)
+        return UNAVAILABLE
+
+    if so is None:
+        return NO_SUCH_ORDER
+    if so.get("status") not in INVOICEABLE:
+        return _not_invoiceable(order_no, str(so.get("status")))
+
+    if not _worth_invoicing(client, so):
+        return INVOICE_FAILED
+
+    try:
+        invoice = client.invoice_for_sales_order(so["id"])
+    except (ApiClientError, KeyError):
+        logger.exception("could not issue the invoice for order %s", order_no)
+        return INVOICE_FAILED
+
+    invoice = _validated(client, invoice)
+    delivered = _deliver(invoice, order_no)
+
+    return _as_json(
+        {
+            "invoice_no": invoice.get("document_no"),
+            "order_no": order_no,
+            "status": invoice.get("status"),
+            "lhdn_uin": invoice.get("uin"),
+            "currency": invoice.get("currency"),
+            "total_incl_tax": invoice.get("total_incl_tax"),
+            "pdf_sent": delivered,
+            **({} if delivered else {"note": PDF_NOT_SENT}),
+        }
+    )
+
+
+TOOLS = [
+    erp_search_sku,
+    erp_get_inventory,
+    erp_find_customer,
+    erp_create_sales_order,
+    erp_generate_einvoice,
+]

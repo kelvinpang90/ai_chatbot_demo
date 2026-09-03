@@ -72,6 +72,24 @@ def build_interactive_list(
     }
 
 
+def build_document_message(to: str, media_id: str, filename: str, caption: str = "") -> dict:
+    """Send a file already uploaded to Meta, by reference.
+
+    `filename` is what the customer sees in the chat and what their phone saves,
+    so it carries the document number rather than a temporary name. The caption
+    is optional at Meta's end and omitted rather than sent empty.
+    """
+    document: dict = {"id": media_id, "filename": filename}
+    if caption:
+        document["caption"] = caption
+    return {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "document",
+        "document": document,
+    }
+
+
 def build_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> dict:
     """buttons: [{"id": str, "title": str}, ...]. Meta allows at most 3 reply buttons per message."""
     return {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 
 from app.config import settings
 from app.services import phone
@@ -20,6 +21,26 @@ DEFAULT_RESULT_LIMIT = 5
 # another warehouse -- erp_get_inventory hands the model real warehouse ids, so
 # it can pick the branch that actually has the stock.
 DEFAULT_WAREHOUSE_ID = 1
+
+# Written onto the delivery order so that a row created from a chat is
+# distinguishable from one a warehouse clerk keyed in, on the screen the customer
+# is being shown.
+WHATSAPP_SHIPPING_METHOD = "WhatsApp order"
+
+
+def _outstanding(line: dict) -> Decimal:
+    """How much of an order line has not shipped yet.
+
+    Quantities arrive as DECIMAL strings ("3.0000"), and erp_os rejects a
+    shipment larger than what is left, so the arithmetic is done exactly rather
+    than through float.
+    """
+    try:
+        ordered = Decimal(str(line.get("qty_ordered", 0)))
+        shipped = Decimal(str(line.get("qty_shipped", 0)))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal(0)
+    return ordered - shipped
 
 
 class ErpClient(JsonApiClient):
@@ -142,6 +163,76 @@ class ErpClient(JsonApiClient):
         invoiced.
         """
         return self.post(f"/api/sales-orders/{so_id}/confirm")
+
+    def sales_order_for_customer(self, document_no: str, customer_id: int) -> dict | None:
+        """The customer's own order with that number, in full, or None.
+
+        Scoped to the customer on purpose. The order number reaches this client
+        from the model, which read it out of an earlier tool result but could
+        equally have made it up, and the id it resolves to decides whose stock
+        moves and whose invoice is sent to this phone. Filtering the query by the
+        customer erp_find_customer identified means a number the model invented
+        finds nothing instead of finding somebody else's order.
+
+        `?search=` is a LIKE on document_no and remarks, so the exact number is
+        matched here rather than trusted from the query.
+        """
+        payload = self.get(
+            "/api/sales-orders",
+            params={
+                "search": document_no,
+                "customer_id": customer_id,
+                "page_size": DEFAULT_RESULT_LIMIT,
+            },
+        )
+        row = next(
+            (item for item in payload.get("items", []) if item.get("document_no") == document_no),
+            None,
+        )
+        return None if row is None else self.sales_order(row["id"])
+
+    def sales_order(self, so_id: int) -> dict:
+        """One order with its lines, which is what shipping and invoicing need."""
+        return self.get(f"/api/sales-orders/{so_id}")
+
+    def ship_sales_order(self, so: dict) -> dict:
+        """Ship everything still outstanding on the order, in one delivery.
+
+        erp_os will not invoice an order that has not shipped
+        (`services/einvoice.py:245` wants PARTIAL_SHIPPED or FULLY_SHIPPED), and
+        for a WhatsApp order paid on delivery the shipment is the step nobody is
+        going to perform by hand in the middle of a conversation.
+        """
+        lines = [
+            {"sales_order_line_id": line["id"], "qty_shipped": str(remaining)}
+            for line, remaining in ((line, _outstanding(line)) for line in so.get("lines", []))
+            if remaining > 0
+        ]
+        return self.post(
+            "/api/delivery-orders",
+            json={
+                "sales_order_id": so["id"],
+                "delivery_date": datetime.now(MALAYSIA_TIME).date().isoformat(),
+                "shipping_method": WHATSAPP_SHIPPING_METHOD,
+                "lines": lines,
+            },
+        )
+
+    def invoice_for_sales_order(self, so_id: int) -> dict:
+        """The e-Invoice for a shipped order, created if it does not exist yet.
+
+        Idempotent at the far end: erp_os returns the existing invoice rather
+        than a second one, so calling this twice cannot bill the customer twice.
+        """
+        return self.post(f"/api/invoices/generate-from-so/{so_id}", json={})
+
+    def submit_invoice(self, invoice_id: int) -> dict:
+        """DRAFT -> VALIDATED, which is what puts an LHDN UIN on the document.
+
+        Without it the customer receives a printout; with it they receive the
+        thing Malaysian businesses have to file from August 2024 onwards.
+        """
+        return self.post(f"/api/invoices/{invoice_id}/submit")
 
 
 _client: ErpClient | None = None
