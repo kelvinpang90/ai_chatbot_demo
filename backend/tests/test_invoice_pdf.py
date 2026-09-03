@@ -13,6 +13,7 @@ import io
 import re
 from decimal import Decimal
 
+import pytest
 from pypdf import PdfReader
 
 from app.services import invoice_pdf
@@ -159,3 +160,31 @@ def test_the_amount_column_adds_up_to_the_subtotal_printed_under_it():
     rows = [line for line in text.splitlines() if re.match(r"^\D.*? [\d.]+ [\d,]+\.\d\d ", line)]
     printed = [Decimal(re.findall(r"[\d,]+\.\d\d", row)[-1].replace(",", "")) for row in rows]
     assert sum(printed) == Decimal("1196.00")
+
+
+# Verbatim from the live catalogue behind the demo, read 2026-09-03: the longest
+# SKU names erp_os sells, all of them past the old 38-character cut.
+LONG_LIVE_NAMES = [
+    "Panasonic Electric Kettle 1.8L NC-EG3000",
+    "Old Town White Coffee 3-in-1 Original 12s",
+    "Farm Fresh Chocolate Flavoured Milk 200ml",
+    "Faber-Castell 1432 Ballpoint Pen Blue 12s",
+]
+
+
+@pytest.mark.parametrize("name", LONG_LIVE_NAMES)
+def test_the_customers_copy_names_the_product_the_erp_named(name):
+    """Round 2, P2-1. A name cut to fit is not a shorter name, it is a different
+    one: Malaysian grocery names end in the pack size, so "...Milk 200ml" was
+    billed as "...Milk 20", and a kettle got a model number that does not exist."""
+    assert name in _text({**INVOICE, "lines": [{**INVOICE["lines"][0], "description": name}]})
+
+
+def test_a_name_too_long_for_the_column_wraps_instead_of_losing_its_end():
+    """Nothing in the live catalogue is this long, which is the point: the fix is
+    the wrap, not a bigger number that the next catalogue outgrows."""
+    name = "Panasonic Electric Kettle 1.8L NC-EG3000 Stainless Steel Cordless Jug"
+    rows = invoice_pdf._description_rows(name)
+
+    assert len(rows) > 1
+    assert " ".join(rows) == name

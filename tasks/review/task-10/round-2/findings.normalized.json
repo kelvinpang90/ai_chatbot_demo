@@ -1,0 +1,91 @@
+{
+  "task": "10",
+  "round": "2",
+  "commit": "01d1195f856e39db046450efcdff2701ae84f808",
+  "base": "584af8f2eea93493cc0c2974fc6b9d78768d1623",
+  "verdict": "findings",
+  "suite_result": "231 passed, 2 warnings in 2.35s (bash tasks/review/pytest_docker.sh <worktree>/backend)",
+  "findings": [
+    {
+      "id": "P2-1",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/services/invoice_pdf.py",
+      "line": 36,
+      "summary": "The description column is cut at 38 characters mid-token, so 12 of the 201 SKUs in the live catalogue are billed to the customer under a different pack size or a model number that does not exist -- and the cut buys nothing, because the column has ~73pt of clear space beside it.",
+      "failure": "A live erp_os invoice line for \"Farm Fresh Chocolate Flavoured Milk 200ml\" (SKU seeded in erp.kelvinpeng.com; it is the second line of INV-SEED-00003, which I rendered from the live API with this commit's own invoice_pdf.render) -> the customer's e-Invoice reads \"Farm Fresh Chocolate Flavoured Milk 20 10 26.05 260.50\": a 20ml carton at RM26.05 each. \"Marigold Full Cream Evaporated Milk 390g\" becomes \"...Milk 39\", \"Colgate Total Whitening Toothpaste 200g\" loses its unit, \"Old Town White Coffee 3-in-1 Original 12s\" loses the pack count entirely, and \"Panasonic Electric Kettle 1.8L NC-EG3000\" is billed as model \"NC-EG30\", which is not a product. GET /api/skus over the live catalogue returns 201 SKUs, 12 of them longer than DESCRIPTION_CHARS=38; Malaysian FMCG names carry the pack size last, so the truncation does not shorten the name, it replaces it. Nothing marks the row as truncated -- no ellipsis -- so the page reads as a complete, correct description on a document headed e-Invoice and carrying an LHDN UIN. This is task 10's acceptance criterion (\"PDF 内容对得上刚才那张单\") failing on the data the demo actually contains, and it is the same class of defect as round 1's P2-1 -- a customer-facing document that quietly says something untrue -- in the other column. It also lands hardest on exactly the path commit f2d0f24 opened up: the 129 seeded INVOICED orders whose invoices the tool now finds and sends. There is no layout reason for the limit: DESCRIPTION starts at x=50 in 9pt Courier (0.6em = 5.4pt per character), so the longest live name, 41 characters, ends at x=271.4, while the QTY column's digits start no further left than x=344. About 73pt, or 13 more characters, are free before anything collides.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named",
+        "observed_failure": "E       AssertionError: the ERP sells 'Farm Fresh Chocolate Flavoured Milk 200ml'; the invoice the customer keeps says 'Farm Fresh Chocolate Flavoured Milk 20'\nE       assert 'Farm Fresh Chocolate Flavoured Milk 200ml' in 'Demo Malaysia Sdn Bhd\\nTIN EI00000000010\\ne-Invoice INV-SEED-00003\\n...'\n\nE       AssertionError: the ERP sells 'Panasonic Electric Kettle 1.8L NC-EG3000'; the invoice the customer keeps says 'Panasonic Electric Kettle 1.8L NC-EG30'\n\nE       AssertionError: the ERP sells \"Julie's Biscuit Rolls Peanut Butter 126g\"; the invoice the customer keeps says \"Julie's Biscuit Rolls Peanut Butter 12\"\n\nrepro/test_p2_1_the_invoice_names_a_different_product.py:79: AssertionError\n=========================== short test summary info ============================\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Panasonic Electric Kettle 1.8L NC-EG3000]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Nescafe Classic Instant Coffee Jar 200g]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Old Town White Coffee 3-in-1 Original 12s]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Dutch Lady Chocolate Flavoured Milk 200ml]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Farm Fresh Chocolate Flavoured Milk 200ml]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Marigold Full Cream Evaporated Milk 390g]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Pantene Total Damage Care Shampoo 400ml]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Colgate Total Whitening Toothpaste 200g]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Jasmine Thai Hom Mali Fragrant Rice 5kg]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Julie's Biscuit Rolls Peanut Butter 126g]\nFAILED repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named[Faber-Castell 1432 Ballpoint Pen Blue 12s]\n12 failed in 0.75s"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "P3-1",
+      "severity": "P3",
+      "category": "test-quality",
+      "file": "backend/tests/test_erp_tools.py",
+      "line": 592,
+      "summary": "The round-1 fix moved the AMOUNT column onto line_total_excl_tax and updated one fixture; the fixture the tool-level tests use was left on the old field, so all four tests that drive erp_generate_einvoice end to end now render an invoice with an empty AMOUNT column and none of them notices.",
+      "failure": "tests/test_erp_tools.DRAFT_INVOICE (and VALIDATED_INVOICE, which spreads it) still carries only line_total_incl_tax on its one line. Since 01d1195 invoice_pdf reads line_total_excl_tax, and _money returns \"\" for a missing value by design (\"Blank rather than a lie\"), the PDF those four tests hand to whatsapp_media.upload_media prints 'TWS Earbuds Pro 3 299.00' with nothing under AMOUNT. Every assertion about that document is content.startswith(b'%PDF-'), so the suite is green. tests/test_invoice_pdf.py::test_quantities_and_money_are_rendered_the_way_a_person_writes_them has the same hole -- its inline line dict has no line_total_excl_tax either, and it asserts only on the quantity and the header total. Against the live ERP the field is required by InvoiceLineResponse and always present, so this is not a defect in the document today; it is the hole through which the next regression of the round-1 kind travels unseen, and it is worth pinning because the round-1 fix was verified only by the one fixture that was updated.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p3_1_the_tool_tests_render_a_blank_money_column.py::test_the_fixture_the_tool_tests_render_still_has_an_amount_column",
+        "observed_failure": "E       AssertionError: the PDF the einvoice tool tests hand to Meta prints ['299.00'] on its only line -- the AMOUNT column is empty\nE       assert ['299.00'] == ['299.00', '897.00']\nE         \nE         Right contains one more item: '897.00'\nrepro/test_p3_1_the_tool_tests_render_a_blank_money_column.py:36: AssertionError"
+      },
+      "queue": true,
+      "effective_severity": "P3",
+      "validator_notes": []
+    },
+    {
+      "id": "P3-2",
+      "severity": "P3",
+      "category": "correctness",
+      "file": "backend/app/services/erp_client.py",
+      "line": 242,
+      "summary": "invoice_for_order returns whatever invoice is attached to the order regardless of its status, and the caller treats any answer as the document to send, so a CANCELLED or buyer-REJECTED invoice is rendered and delivered as the customer's bill.",
+      "failure": "erp_generate_einvoice(order_no, customer_id) on an order whose invoice was rejected by the buyer (erp_os POST /api/invoices/{id}/reject, a demo feature with its own 72h window) -> invoice_for_order returns that row, `if invoice is None` is false, so the INVOICEABLE check, the shipment and the generate are all skipped by design, _validated leaves a non-DRAFT invoice alone, and _deliver sends a PDF headed 'LHDN status REJECTED' as the customer's e-Invoice while the tool reports pdf_sent: true with no note. The same holds for CANCELLED. The status is passed back to the model, which is the mitigation, but nothing in the tool or the message strings tells it that this one is not a bill. Reported read-only and low: I checked the live database and it currently holds no such row (GET /api/invoices over all 129 rows: 118 FINAL, 8 SUBMITTED, 3 DRAFT), so this is a gap in a guard rather than something the demo will hit tomorrow. Flagging it because the whole point of the new invoice_for_order path is to decide 'has this already been billed', and 'an invoice exists' and 'a valid invoice exists' were not distinguished.",
+      "evidence": {
+        "kind": "read-only"
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "只读代码推测，不进修复队列（可以作为线索）"
+      ]
+    },
+    {
+      "id": "P3-3",
+      "severity": "P3",
+      "category": "test-quality",
+      "file": "tasks/review/task-10/round-1/repro/test_p3_1_order_number_match_is_stricter_than_the_erp.py",
+      "line": 1,
+      "summary": "Round 1's P3-1 repro is still red on this commit, and not because the fix failed: f2d0f24 added a third GET and the mock is one response short, so it dies with StopIteration. The developer adapted it locally and did not commit the adaptation, so the evidence left in the repository proves nothing to whoever runs it next.",
+      "failure": "bash tasks/review/pytest_docker.sh <worktree>/backend <worktree>/tasks/review/task-10/round-1/repro -> '2 failed, 2 passed'. The two that pass are round 1's P2-1 (the tax-basis fix genuinely holds). The two that fail raise StopIteration inside unittest.mock, not an assertion, because erp_generate_einvoice now issues three reads before it writes and _invoice_gets in that file still supplies two. The developer's own note says this was adapted by adding one response and then went green -- but the file in git is the unadapted one, so the red/green contract that the whole review process rests on is broken for that artefact: a later reader cannot tell 'the fix regressed' from 'the mock is stale'. Same shape as the lesson already written into REVIEW.md ('只有进了 git 的文件才活得过收工', and task 9 round 1's '把 finding 的意图翻译成一条能跑的断言留在仓库里'). Reported with command evidence because the artefact is itself a test; the validator will downgrade it, which is fine -- it costs one line to fix.",
+      "evidence": {
+        "kind": "command",
+        "command": "bash tasks/review/pytest_docker.sh /e/projects/ai_chatbot_demo/.claude/worktrees/review-01d1195f/backend /e/projects/ai_chatbot_demo/.claude/worktrees/review-01d1195f/tasks/review/task-10/round-1/repro",
+        "output": "E               StopIteration\n\n/usr/local/lib/python3.13/unittest/mock.py:1236: StopIteration\n=========================== short test summary info ============================\nFAILED repro/test_p3_1_order_number_match_is_stricter_than_the_erp.py::test_the_erp_found_the_order_so_the_tool_must_not_report_it_missing[so-2026-0042]\nFAILED repro/test_p3_1_order_number_match_is_stricter_than_the_erp.py::test_the_erp_found_the_order_so_the_tool_must_not_report_it_missing[ SO-2026-0042]\n2 failed, 2 passed in 0.84s"
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "command 证据只对 security/config 类开放，category='test-quality' → 降级"
+      ]
+    }
+  ],
+  "self_check": {
+    "spec_coverage": "验收标准是「手机上收到 PDF 发票并能打开，内容对得上刚才那张单」。第三段这一轮仍然没有覆盖（见 e2e）；前两段的情况变了。「能打开」——xref 偏移与 /Length 直接校验，这仍然是本任务质量最高的一组测试，我另外拿线上三张真发票渲染并用 pypdf 回读，都开得开。「内容对得上」——round 1 的 P2-1 修对了，而且我不是只看测试：拿 erp.kelvinpeng.com 上的真实 InvoiceDetail（INV-SEED-00003 / 00155 / 00124）跑这一版 invoice_pdf.render，三张的三条算术全部成立（每行 qty × unit price == AMOUNT、AMOUNT 列合计 == Subtotal、Subtotal + Tax == TOTAL）。**但同一次渲染就暴露了 P2-1**：数字对上了，货名没对上——这正是我把断言从「数字」扩到「这张纸上的每一样东西」之后才看见的。测试会不会在实现有 bug 时照样通过：会，而且现在就在发生（P3-1，四个端到端工具测试渲染的是一张 AMOUNT 列全空的发票，套件 231 全绿）。新加的两条 round-1 修复测试本身不是同义反复——test_the_amount_column_adds_up_to_the_subtotal_printed_under_it 真的去解析渲染出来的页面，我验过它匹配到的是两条明细行而不是零行（零行时 sum 为 0，断言不会恒真）。",
+    "e2e": "端到端仍然没有，断裂点和 round 1 指的是同一个：tools/registry.py 的 _TOOLS_BY_BOT 还是空 dict，没有任何 bot 能调用 erp_generate_einvoice，所以「手机上收到 PDF」这条验收在本 commit 上不可达，要等任务 11。我不重复报成 finding（read-only 只会降级成 P3，round 1 已经在自检里写过），但它是本任务最重要的一句话，不该被两轮全绿掩盖。这一轮我能补的那一半我补了：**第一次拿线上真数据走了一遍「读发票 → 渲染 → 回读」**，这段以前只跑过手写 fixture。仍然完全未验证的是 Meta 那一段——multipart 上传、build_document_message 的 payload 形状、以及网关是否认识 type=document。另外我核过一件 round 1 没核的事：outbox 用 ContextVar，而工具是由 anthropic SDK 的同步 tool_runner 跑的；我进容器 grep 了 _beta_runner.py / _tool_dispatch.py，同步路径不走 ThreadPool（anyio.to_thread.run_sync 只出现在异步分发里），所以工具里的 outbox.add 和 dispatch_message 里的 begin 在同一个 context，这条缝是通的。webhook 那两条接缝测试也是真的接缝测试。",
+    "security": "没有新凭据、新配置项或新公网端点，AR-1 / AR-2 不受影响，不重报。round 1 的 P3-2（一对匹配上的 order_no + customer_id 属于第三方时，会把印着对方姓名和 TIN 的 PDF 送进当前聊天窗口）在本 commit 上依然成立、依然是架构缺口——工具层没有会话身份可用——这一轮没有新事实，不重复占位。有一条 round 1 的担心可以撤销：invoice_pdf 的 _escape 走 cp1252，中文名会变成 '?'；我把线上 50 个客户名和 201 个 SKU 名全拉下来逐个试编码，**没有一个含 WinAnsi 之外的字符**，所以这条在当前数据上不会发生，开发方注释里那句「erp_os's own data is Latin」是对的。",
+    "spec_deviation": "round 1 认定的两处偏离（签名从 order_id 变成 (order_no, customer_id)、工具顺手发货）我复核过，理由仍然成立，不重报。这一轮新增的 f2d0f24 是第三处偏离——规格只说「生成发票」，它变成了「先问有没有开过，有就直接送已有的那张」——但理由硬得很：线上 251 张单里 129 张是 INVOICED，旧代码对每一张都会回一句关于 ERP 里真实存在的文档的假话。这是对的方向。没有正当理由的偏离，这一轮一条没找到。"
+  },
+  "phase2": {
+    "rebuttals": "自辩里绝大部分我核过就成立，不重复。不成立、或者说得比事实宽的有四处：\n\n1. **「审查方的 repro 现在全绿」这句话，一半是真的，而且假的那一半是它自己写下来的。** 我把 round 1 的两个 repro 目录原样跑了一遍：`2 failed, 2 passed`。P2-1 那两条真的绿了；P3-1 那两条**红着**，而且不是断言失败，是 `StopIteration`——f2d0f24 多加了一次 GET，mock 少一个响应。开发方在同一段里如实交代了这件事（「需要一处机械适配」），但**适配没有进 git**。所以正文那句「审查方的 repro 现在全绿」和三行之后那句「需要一处机械适配才能跑」是同一段里互相矛盾的两句话——正是任务 9 第 1 轮记下的那种「同一个人同一小时写的两句话」，只不过这次矛盾的是证据的状态而不是代码的行为（P3-3）。REVIEW.md 自己写过「只有进了 git 的文件才活得过收工」。\n\n2. **「四个变异全部验证过」——四个变异全是结构和控制流，一个都没碰这张纸上的字。** 这句话 round 1 已经驳过一次（当时它没抓住数字），修完之后它**仍然**没抓住货名。更要紧的是这一轮的证据方式：P2-1 的修复，开发方拿来证明的是「审查方的 repro 现在全绿」+ 一条它自己新写的 fixture 测试。而**同一次修复留下的另外两份 fixture 没跟着改**（`test_erp_tools.DRAFT_INVOICE`、`test_invoice_pdf` 里那条 quantities 测试的内联行），于是四个端到端工具测试从此渲染的是一张 AMOUNT 列全空的发票，套件 231 条全绿（P3-1）。用它自己那句纪律说：一写完就绿的断言先怀疑它在测自己——这次要怀疑的是一写完就绿的**套件**。\n\n3. **「零新增运行时依赖」这个决定是对的，但它的代价被记在了一个从没核过的常量上。** 不用 reportlab 的理由讲得很完整，等宽字体让右对齐变成一句乘法，这我认。可同一个选择也让左边那列变成一个硬编码字符数上限 `DESCRIPTION_CHARS = 38`，注释写着「Wide enough for the descriptions erp_os generates」——线上 201 个 SKU 里 12 个不成立，而且版面上还空着约 73pt（十三个字符）。**这不是「手写 PDF 不行」，是那句注释从来没有对着数据核过。** 和第 1 轮那条教训（为决定准备好了辩护，却没验证辩护赖以成立的前提）是同一个形状，第三次出现（P2-1）。\n\n4. **「整个工具重试是安全的」在 f2d0f24 之后语气更绝对了，例外还在。** commit message 写「A second call ... issues no writes at all -- not a shipment, not a generate, not a submit」。对 ERP 三个写入成立，我按四条失败路径推过。但第四个写动作——渲染 + 上传 Meta + 排进 outbox——**依然没有任何状态守卫**：再调一次就再上传一份、再排一条 document 消息，客人收到两份同样的发票。round 1 的 phase2 已经指出过一次，这一轮那句话不但没有加限定，还被加强了。不致命（收两份不如收零份糟），但它是一句带例外的绝对句。\n\n5. **「开过票就直接把那张发票发出去」——「开过票」和「开过一张有效的票」没有分开。** 自查那条 P1 的方向是对的，`invoice_for_order` 只问有没有、不问是什么状态，CANCELLED / REJECTED 的发票会被当成客户的账单渲染并送出（P3-2）。线上目前没有这样的行，所以是缺口不是事故——但自辩读起来像是「要发哪一张」已经想清楚了，它只想清楚了「有没有」。\n\nP3-2（第三方 order_no + customer_id 配对）划给任务 11 这个处置，round 1 已经接受，我也接受，不重开。",
+    "blind_spot": "**它主动承认、而我第一阶段一个字都没碰的，是「发货这一步会真的减库存，第一次跑之前值得先看一眼演示要指的那块屏」。** 而我这一轮比 round 1 更没有借口——round 1 没有凭据，只能读 erp_os 源码；**我真的登进了线上 ERP**。我拉了 129 张发票、251 张销售订单、201 个 SKU、50 个客户，我甚至统计了订单状态的分布，**一次都没有去看库存**。那条 GET 就在我用过的同一个 client 上（`/api/inventory/branch-matrix`），任务 9 的验收记录里白纸黑字写着「KL 可用库存 42 → 39」是整场演示用来证明「这是真的」的那个数字。\n\n写这一段的时候我补跑了（只读）：`SKU-ELE-0001 Sony WF-C710N`，Main Warehouse - Kuala Lumpur **on_hand 42 / reserved 3 / available 39**，和任务 9 验收当天完全一致。也就是说任务 10 一次都还没有真跑过；等它第一次对 `SO-2026-00001` 跑通，on_hand 会从 42 掉到 39，而 `erp_os/backend/app/services/delivery_order.py:17` 写着 DO 的撤销要等 Window 12——**这一格是掉下去就回不来的**。这个基线现在记在这里，事后补拍不了。\n\n盲区的形状：**我把线上访问用成了「取样本」，没有用成「量后果」。** 我拿真实数据去核对渲染出来的那张纸，这确实抓到了 P2-1——但那是一个静态问题：给定这条数据，输出对不对。开发方自己承认的那条是动态的：**跑一次之后，下一次还剩什么。** 我有凭据、有网络、有只读权限，本来一条 GET 就能把演示前的基线钉下来，我却先去数了三遍数据长什么样。\n\n第二条、更小但更该改的：**我差点没有去核开发方对上一轮证据的处置。** 我核了修复本身对不对（读代码、跑套件、拿线上数据渲染），却把「round 1 的 repro 现在是什么状态」当成了不用管的事——是写 phase2 时才回头跑的，一跑就是 P3-3。**轮次之间的连续性也是审查对象**，我一开始把两轮当成了两张互不相关的快照。"
+  },
+  "queued_count": 2
+}

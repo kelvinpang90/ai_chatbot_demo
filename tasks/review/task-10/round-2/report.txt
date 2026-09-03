@@ -1,0 +1,19 @@
+任务 10 / 第 2 轮 / commit 01d1195f
+verdict: findings
+
+报了 4 条，进修复队列 2 条，降级 2 条。
+
+[MUST FIX] P2-1 P2  backend/app/services/invoice_pdf.py:36
+    The description column is cut at 38 characters mid-token, so 12 of the 201 SKUs in the live catalogue are billed to the customer under a different pack size or a model number that does not exist -- and the cut buys nothing, because the column has ~73pt of clear space beside it.
+    证据: repro repro/test_p2_1_the_invoice_names_a_different_product.py::test_the_customers_copy_names_the_product_the_erp_named
+[MUST FIX] P3-1 P3  backend/tests/test_erp_tools.py:592
+    The round-1 fix moved the AMOUNT column onto line_total_excl_tax and updated one fixture; the fixture the tool-level tests use was left on the old field, so all four tests that drive erp_generate_einvoice end to end now render an invoice with an empty AMOUNT column and none of them notices.
+    证据: repro repro/test_p3_1_the_tool_tests_render_a_blank_money_column.py::test_the_fixture_the_tool_tests_render_still_has_an_amount_column
+[降级] P3-2 P3  backend/app/services/erp_client.py:242
+    invoice_for_order returns whatever invoice is attached to the order regardless of its status, and the caller treats any answer as the document to send, so a CANCELLED or buyer-REJECTED invoice is rendered and delivered as the customer's bill.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）
+[降级] P3-3 P3  tasks/review/task-10/round-1/repro/test_p3_1_order_number_match_is_stricter_than_the_erp.py:1
+    Round 1's P3-1 repro is still red on this commit, and not because the fix failed: f2d0f24 added a third GET and the mock is one response short, so it dies with StopIteration. The developer adapted it locally and did not commit the adaptation, so the evidence left in the repository proves nothing to whoever runs it next.
+    证据: command bash tasks/review/pytest_docker.sh /e/projects/ai_chatbot_demo/.claude/worktrees/review-01d1195f/backend /e/projects/ai_chatbot_demo/.claude/worktrees/review-01d1195f/tasks/review/task-10/round-1/repro
+    ! command 证据只对 security/config 类开放，category='test-quality' → 降级

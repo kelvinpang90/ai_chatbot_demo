@@ -1,9 +1,12 @@
+import io
 import json
+import re
 from datetime import datetime
 from unittest.mock import Mock, patch
 
 import httpx
 import pytest
+from pypdf import PdfReader
 
 from app.services import api_client, erp_client, outbox, whatsapp_media
 from app.services.api_client import ApiClientError
@@ -599,6 +602,7 @@ DRAFT_INVOICE = {
             "description": "TWS Earbuds Pro",
             "qty": "3.0000",
             "unit_price_excl_tax": "299.0000",
+            "line_total_excl_tax": "897.0000",
             "line_total_incl_tax": "986.7000",
         }
     ],
@@ -670,10 +674,20 @@ def test_the_order_is_shipped_invoiced_submitted_and_the_pdf_goes_to_the_custome
     assert generate.args[0].endswith("/api/invoices/generate-from-so/77")
     assert submit.args[0].endswith("/api/invoices/9/submit")
 
-    # 3. What Meta was handed is the invoice, and it is a PDF.
+    # 3. What Meta was handed is this invoice, read back out of the PDF rather
+    #    than trusted from its magic number -- round 2, P3-1: this assertion was
+    #    `content.startswith(b"%PDF-")`, and a fixture that had drifted off
+    #    `line_total_excl_tax` rendered a blank AMOUNT column past all four of
+    #    the tests that run this document.
     content, mime, filename = _uploaded.call_args.args
-    assert content.startswith(b"%PDF-")
     assert (mime, filename) == ("application/pdf", "INV-2026-0007.pdf")
+    document = PdfReader(io.BytesIO(content)).pages[0].extract_text()
+    assert "INV-2026-0007" in document
+    # The line row itself, not just the numbers somewhere on the page: 897.00 is
+    # also the subtotal, so `"897.00" in document` passes with the AMOUNT column
+    # blank -- which is the mutation this assertion has to survive.
+    (row,) = [ln for ln in document.splitlines() if ln.startswith("TWS Earbuds Pro")]
+    assert re.findall(r"[\d,]+\.\d\d", row) == ["299.00", "897.00"]
 
     # 4. It is queued as a document addressed to the customer, named so they can
     #    quote the number back.
@@ -784,6 +798,29 @@ def test_an_order_marked_billed_with_no_invoice_on_file_does_not_raise_another(
     assert "PAID" in answer
     assert "Do not raise a new one" in answer
     assert post.call_count == 1
+
+
+def test_a_void_invoice_is_not_sent_as_the_customers_bill(_credentials, _outbox, _uploaded):
+    """Round 2, P3-2. An invoice LHDN rejected or the office withdrew is still
+    attached to the order, and sending it would hand the customer a document the
+    ERP no longer stands behind. Raising a replacement is not this tool's call
+    either -- a credit note and a new invoice is somebody's decision."""
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN)]) as post:
+        with patch.object(
+            api_client.httpx,
+            "get",
+            side_effect=_invoice_gets(
+                {**SO_DETAIL, "status": "INVOICED"},
+                invoiced={**VALIDATED_INVOICE, "status": "CANCELLED"},
+            ),
+        ):
+            answer = erp.erp_generate_einvoice("SO-2026-0042", 3)
+
+    assert "cancelled" in answer
+    assert "Do not raise a new one" in answer
+    assert post.call_count == 1
+    assert _uploaded.call_count == 0
+    assert outbox.drain(A_PHONE) == []
 
 
 def test_an_order_number_that_belongs_to_nobody_here_writes_nothing(_credentials, _outbox):

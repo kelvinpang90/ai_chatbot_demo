@@ -76,7 +76,19 @@ def test_the_erp_found_the_order_so_the_tool_must_not_report_it_missing(as_the_m
         with patch.object(
             api_client.httpx,
             "get",
-            side_effect=[_response({"items": [SO_ROW]}), _response(SO_DETAIL)],
+            # ADAPTED after the fact, and only here. This repro was written
+            # against 11d2ce8; f2d0f24 landed after it and asks whether the
+            # order has already been billed before it ships anything, so the
+            # original two-response mock died of StopIteration on the third
+            # GET rather than on its assertion. The third response below is
+            # the only change to this file -- reverting the casefold in
+            # `_is_the_same_document` still turns it red, so the adaptation
+            # did not make it pass for free. Round 2, P3-3.
+            side_effect=[
+                _response({"items": [SO_ROW]}),
+                _response(SO_DETAIL),
+                _response({"items": []}),
+            ],
         ):
             with patch.object(whatsapp_media, "upload_media", return_value="media-1"):
                 answer = erp.erp_generate_einvoice(as_the_model_typed_it, 3)

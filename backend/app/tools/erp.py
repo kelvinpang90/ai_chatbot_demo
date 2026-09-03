@@ -293,6 +293,11 @@ INVOICE_DRAFT = "DRAFT"
 
 PDF_MIME = "application/pdf"
 
+# An invoice in one of these is not a bill any more: LHDN threw it out, or
+# somebody in the office withdrew it. Sending one as the customer's copy would be
+# handing them a document the ERP no longer stands behind.
+VOID_INVOICE = ("REJECTED", "CANCELLED")
+
 NO_SUCH_ORDER = (
     "No order with that number belongs to this customer, so no invoice was "
     "issued. Use the order number erp_create_sales_order returned and the "
@@ -315,6 +320,15 @@ PDF_NOT_SENT = (
     "the customer the invoice number and total in your reply, and say the "
     "document will follow."
 )
+
+
+def _void_invoice(order_no: str, status: str) -> str:
+    """An invoice that exists and is not a bill."""
+    return (
+        f"The invoice for order {order_no} was {status.lower()} and is no longer "
+        "valid, so it must not be sent. Do not raise a new one -- tell the "
+        "customer a colleague will sort their invoice out and call them back."
+    )
 
 
 def _not_invoiceable(order_no: str, status: str) -> str:
@@ -433,6 +447,9 @@ def erp_generate_einvoice(order_no: str, customer_id: int) -> str:
     except (ApiClientError, KeyError):
         logger.exception("could not look up order %r for customer %s", order_no, customer_id)
         return UNAVAILABLE
+
+    if invoice is not None and invoice.get("status") in VOID_INVOICE:
+        return _void_invoice(order_no, str(invoice.get("status")))
 
     if invoice is None:
         if order.get("status") not in INVOICEABLE:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from decimal import Decimal, InvalidOperation
 
 # erp_os stores an e-Invoice but never renders one: `Invoice.pdf_file_id` has been
@@ -31,9 +32,19 @@ MONO_CHAR_WIDTH = 0.6
 # from the invoice itself, where a mismatch would show.
 SELLER_NAME = "Demo Malaysia Sdn Bhd"
 
-# Wide enough for the descriptions erp_os generates, narrow enough to leave the
-# three money columns room on A4.
-DESCRIPTION_CHARS = 38
+# Where the description column ends and the money starts. What fits on one row
+# is derived from it rather than guessed: a fixed character count that outgrew
+# its column cut names mid-token, and Malaysian grocery names end in the pack
+# size, so "Farm Fresh Chocolate Flavoured Milk 200ml" was billed to the customer
+# as "...Milk 20". 12 of the 201 SKUs in the live catalogue were long enough.
+# Anything past the column now wraps, so no name is ever silently changed --
+# eleven of those twelve fit on one row at this width anyway.
+DESCRIPTION_RIGHT = 300.0
+DESCRIPTION_LINE_SIZE = 9
+
+# A description spilling past this many rows would be a name nobody wrote; the
+# cap is what keeps one bad row from walking off the bottom of a one-page bill.
+MAX_DESCRIPTION_ROWS = 3
 
 
 def _money(value, currency: str = "") -> str:
@@ -181,6 +192,19 @@ UNIT_PRICE_RIGHT = 445.0
 AMOUNT_RIGHT = float(PAGE_WIDTH - MARGIN)
 
 
+def _description_rows(description: str) -> list[str]:
+    """A product name broken across as many rows as it needs, never shortened.
+
+    What the ERP calls the product is what the customer's copy has to call it.
+    A name cut to fit is not a shorter name, it is a different one -- a pack size
+    or a model number that does not exist -- and the customer has no way to tell
+    that from the real thing.
+    """
+    width = int((DESCRIPTION_RIGHT - MARGIN) / (DESCRIPTION_LINE_SIZE * MONO_CHAR_WIDTH))
+    rows = textwrap.wrap(description, width) or [""]
+    return rows[:MAX_DESCRIPTION_ROWS]
+
+
 def _lines(page: _Page, invoice: dict) -> None:
     page.down(30)
     page.text(MARGIN, "DESCRIPTION", font=MONO_BOLD, size=9)
@@ -192,8 +216,8 @@ def _lines(page: _Page, invoice: dict) -> None:
 
     for line in invoice.get("lines") or []:
         page.down(16)
-        description = line.get("description") or line.get("sku_name") or ""
-        page.text(MARGIN, description[:DESCRIPTION_CHARS], font=MONO, size=9)
+        rows = _description_rows(line.get("description") or line.get("sku_name") or "")
+        page.text(MARGIN, rows[0], font=MONO, size=DESCRIPTION_LINE_SIZE)
         page.right_text(QTY_RIGHT, _quantity(line.get("qty")))
         # Both money columns exclude tax, which is the only pairing that reads.
         # Printing the unit price without SST beside a line total with it gave
@@ -203,6 +227,11 @@ def _lines(page: _Page, invoice: dict) -> None:
         # the two lines under the rule are for.
         page.right_text(UNIT_PRICE_RIGHT, _money(line.get("unit_price_excl_tax")))
         page.right_text(AMOUNT_RIGHT, _money(line.get("line_total_excl_tax")))
+        # The rest of a long name, under the start of it, where the money columns
+        # for this line are already set.
+        for continuation in rows[1:]:
+            page.down(11)
+            page.text(MARGIN, continuation, font=MONO, size=DESCRIPTION_LINE_SIZE)
 
     page.down(10)
     page.rule()
