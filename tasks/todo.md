@@ -292,11 +292,35 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **还在争什么**：只有第 1 轮 P1-1 那条 repro 转不绿，理由在上面（它断言 `crm_os` 的 UUID 是 int，恒为假）。问题本身已修。
   - **该不该 push**：**第 2 轮的修复没有经过第 3 轮复验**，而前两轮的记录已经证明「我修完自己看没问题」这句话在这个任务上错了两次。所以我的判断是**先不 push**。真实建单验收也还没做（没凭据）。用户如果要继续，删掉 `tasks/review/state.env` 可以重开轮次。
 
-- [ ] 🔍 **任务 9.1：CRM 写入工具 —— 自动建线索**——**2026-09-02 代码完成**，14 个新测试 / 26 个用例全过（全套 181 passed）。**真机验收未做**：带凭据写外部系统会被权限分类器拦，只能用户手工跑，脚本在下面。
+- [x] 🔍 **任务 9.1：CRM 写入工具 —— 自动建线索**——**2026-09-02 代码完成**（14 个新测试），走了三轮冷审，**2026-09-03 真机验收 PASS**。全套 199 passed（含 2 个端到端）。
   文件：`backend/app/tools/crm.py`（新增）、`backend/tests/test_crm_tools.py`（新增）
   目标：`crm_create_lead(name, phone, requirement, amount)` —— 依次调 `POST /api/contacts`（建联系人）、`POST /api/deals`（建商机，带 `amount`，**会出现在管道看板上**）、`POST /api/deals/{id}/activities`（记一条来源=WhatsApp 的活动）
   ⚠️ **不要设 `is_gateway=True`**。`crm_os` 有 `utils/demo_scope.py` 按这个标记做范围过滤，设了反而可能在主列表里看不见，正好毁掉这个镜头
   验收：调一次，`crm.kelvinpeng.com` 的**看板上那张卡在那里**，标题和金额对得上；卡里能看到那条活动记录
+
+  **2026-09-03 真机验收 PASS**——用户在自己机器上跑了那三条 PowerShell 命令，工具对线上 `crm.kelvinpeng.com` 建出了真实数据：
+
+  ```
+  {"contact_id": "37b39d18-88df-48bf-a615-28c1a11fca85", "contact_name": "Ahmad Faizal",
+   "deal_id": "d4057b4e-a79d-4b83-8ec7-d384eae94a22",
+   "title": "3 units Sony WF-C710N earbuds, COD to Cheras",
+   "amount": 986.7, "status": "lead", "activity_logged": true}
+  ```
+
+  **三条判据在 Chrome 上逐条看过，全中**：
+  - ① **看板 Lead 列多出一张卡**：`Ahmad Faizal` / `3 units Sony WF-C710N earbuds, COD to Cheras` / **RM 986.7** / Medium。列合计 RM 189.0K → **RM 190.0K**，卡数 5 → 6
+  - ② **只有一张**：联系人详情里 `Deals (1)`，旁边没有并排的 RM 0 空卡。联系人总数 26 → **27**（只多一条，没有重复联系人）。**这条是整个任务最容易翻车的地方，也是那条偏离规格的改动唯一要挡的东西——它挡住了**
+  - ③ **卡里有那条活动**：`WhatsApp` 类型，内容 `3 units Sony WF-C710N earbuds, COD to Cheras -- estimated MYR 986.70, captured by the WhatsApp assistant.`
+
+  **顺带确认的四件事**：
+  - 电话按原样存成 `+60 12-333 4444`，没有被截断或改写
+  - `Last Contact` 自动变成 `2026-09-03`——`activity_service.create_activity()` 会回写这个字段，等于活动确实落库了
+  - 负责人自动分成 **Emma Davis**（`crm_os` 的 `routing_service` 干的，我们没传 `assigned_to`）
+  - ⚠️ **活动记录的作者显示成 `Alex Turner`**，也就是工具登录用的那个 API 账号（`admin@crm.com`）。演示时如果客户问「这条是谁记的」，答案是那个账号，不是某个销售。要改就得给 bot 一个专用 CRM 账号，**这是产品决定，不是 bug**
+
+  ⚠️ **验收数据还留在线上**（联系人 `Ahmad Faizal`，Lead 列那张 RM 986.7 的卡）。它长得就像演示要的那个镜头，所以没删；要清就在 CRM 里 Archive 掉（可逆，看板立刻不显示）。
+
+  📌 **之前那个 401 的结论**：是 `backend/.env` 里的 `CRM_PASSWORD` 过期，用户改掉之后一次就通。`CRM_EMAIL` 一直是对的。
 
   **签名**：`crm_create_lead(name: str, phone: str, requirement: str, amount: float)`，四个都是必填，schema 里 `amount` 落成 `number`。
 
