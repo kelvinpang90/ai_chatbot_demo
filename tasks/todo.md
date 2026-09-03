@@ -786,6 +786,77 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - [ ] `session_store` 落 Redis（vps_infra 有现成的）。只在需要「隔天推送」时才是必须的
 - [ ] 每个 bot 类型加不同主色调，视觉上更像「独立产品」
 
+---
+
+## 批次 06：记住这个人（2026-09-04 新增）
+
+> 任务 11 真机验收通过后，用户拍板改思路：**演示不该每次从零开始**。手机号成为唯一身份，客户信息物理落盘，商品用可点列表呈现，客户可以直接发语音。
+>
+> **六个已拍板的前提（不再重新讨论）**：
+> 1. **手机号即身份，「选身份」菜单删掉。** 真实号第一次进来当新客户，问到名字/公司就存下来；第二次直接续上
+> 2. **网页也走同一套**：开场让访客输一个手机号，之后与 WhatsApp 完全同一条代码路径。演示时在电脑上输客户的号，能当场调出他手机上那段对话的历史
+> 3. **存储用共享的 `infra_redis`**（本项目至今零持久化，这是引入的第一个存储层）。7 天滚动 TTL，每次活动刷新——昨天聊过的客户不该明天被忘掉
+> 4. **CRM 清理按标记删**：bot 写的每一行带 `[DEMO]` 前缀，没标记的一律不动
+> 5. **ERP 清理走 erp_os 自己的 demo reset**（见下面「开工前必读」），不自己写删除逻辑
+> 6. **语音转录用 OpenAI Whisper API**，封在可替换的抽象层后面
+>
+> ### 开工前必读：侦察结论（2026-09-04 查证，别再重查一遍）
+>
+> - **`erp_os` 的销售单删不掉也取消不了。** 路由里没有 DELETE，只有 `cancel`，而 `services/sales.py` 的状态机只允许 `DRAFT` / `CONFIRMED` 取消。演示单每次都走到 `FULLY_SHIPPED` + `INVOICED`（任务 10 的设计），**所以它们在 erp_os 里是永久的**。这就是为什么 ERP 侧必须走 reset 而不是逐行删
+> - **`erp_os` 自带 demo reset，已经写好了**：`POST /api/admin/demo-reset`（需 ADMIN 角色 + `DEMO_MODE=true`），走 Celery。`app/tasks/celery_app.py` 里还有一条 `demo_reset_nightly`，**每天凌晨 3 点吉隆坡时间**。现在显然没在跑——earbuds SKU 是 09-01 建的、`SO-2026-00001` 是 09-02 建的，今天都还在
+> - **reset 比想象中安全得多**：`services/demo_reset.py` 的 `RESET_TABLES` **不含 `skus`、不含 `customers`**，只清交易单据 + 库存 + 审计表 + `document_sequences`。**手工建的 earbuds SKU 和 Sunrise Hypermart 这些主数据全都活着，不需要重建**（早先「reseed 会干掉 earbuds」的判断是错的，已更正）
+> - **库存会被重灌**：`seed_initial_stock` 读的是「全部 active SKU」不是硬编码清单，所以 earbuds 会拿到库存。数量按 SKU 编码前缀查 `CATEGORY_BASE_QTY`，而 `ELE` **不在表里**，落到默认值 100 → 重置后大约 KL 150 / 槟城 ~100 / 新山 ~100。剧本要 2-3 个，**够用，不会演坏**，只是数字比现在的 42/25/18 大
+> - **单号会归零**：`document_sequences` 也被清，重置后第一张单又是 `SO-2026-00001`。对演示是好事
+> - **`crm_os` 没有 demo reset**，但有 `DELETE /api/contacts/{id}` 和 `DELETE /api/deals/{id}`——所以 CRM 侧我们自己按标记删
+> - **ERP 侧不需要 `[DEMO]` 标记**：erp_os 的 reset 是整表 TRUNCATE，全有或全无。标记只对 CRM 有意义
+> - **WhatsApp List Message 的硬上限**：10 行，行标题 24 字符，描述 72 字符（`whatsapp_webhook.py` 现有的 `_truncate` 就是按这个写的）。WhatsApp **不渲染表格**，Markdown 表格发过去是一团折行的竖线——这是「用表格展现商品」只能落成 List Message 的原因
+>
+> ### 阻塞项（需要用户处理）
+>
+> - [ ] **F. `erp_os` 要开 `DEMO_MODE=true`，并且 Celery worker + beat 要真的在跑。** 不开的话 `/api/admin/demo-reset` 直接返回 `DEMO_MODE_REQUIRED`，任务 34 的 ERP 那一半无从谈起。这是 `erp_os` 的部署改动，不在本仓库
+> - [ ] **G. `OPENAI_API_KEY`**，任务 36 用。VPS 的 `/opt/ai_chatbot/backend/.env` 和本地都要有
+
+- [ ] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）
+  文件：`backend/app/services/user_store.py`（新增）、`backend/app/config.py`、`docker-compose.prod.yml`、`docker-compose.yml`、测试
+  目标：接上共享 `infra_redis`，一个客户一个 key（`chat:user:{phone}`），**7 天滚动 TTL，每次写入刷新**。这一步**不改任何对外行为**——只是把存取能力建起来，让 32 有东西可用
+  **存什么**（通用字段，全场景共用）：`erp_customer_id` / `crm_contact_id`（**最值钱的两个**：存了就不用每次重查，也杜绝认错人——正是任务 10 那条 P3-2 一直没堵的洞）、`language`（**第二次进来直接用对的语言开口**，成本几乎为零，演示效果极好）、`display_name`、`bot_id`、`first_seen` / `last_seen`、`history`（沿用现有 20 轮上限）
+  **外加一个 per-bot 的自由 `profile` 槽**。**不预先写五套分场景 schema**——除了 `retail`，其余四个场景连工具都还没有，现在定字段就是投机性代码。各场景要存什么记在这里，做到那批再落地：`retail` = 送货地址 / 上一张单号 / 常买 SKU；`food` = 送货地址 / 常点的菜 / 辣度 / 忌口；`realestate` = 预算 / 意向地区 / 房型；`hotel` = 房型偏好 / 入住人数；`saas` = 公司 / 方案 / 未结工单
+  ⚠️ Redis 连不上时**必须降级成「像今天一样用内存」**，不能让一个缓存服务把整个 demo 拖死
+  验收：单测覆盖存取 + TTL 刷新 + Redis 挂掉时降级；线上行为与现在完全一致
+
+- [ ] **任务 32：手机号即身份（WhatsApp 侧）**
+  文件：`backend/app/routers/whatsapp_webhook.py`、`backend/app/bots/registry.py`、六个 bot JSON、`backend/app/services/llm.py`、测试
+  目标：删掉 `_send_identity_list` 那一步和六个 JSON 里的 `identities`；`Identity` 模型、`get_identity` 一并下线。system prompt 里原来那块「当前身份 profile」换成从 31 读出来的真实档案
+  ⚠️ **这是本批影响面最大的一个任务**，牵动 registry、六个 JSON、webhook、llm、以及一堆断言了 `identities` 的测试（`test_registry.py` 现在还断言每个 bot 有 2-3 个身份）。做之前先通读 `llm.build_system_blocks`——缓存断点就架在 identity 那一块上，换掉它会动到缓存结构
+  验收：真机用一个新号进去，全程没有选身份这一步；报上名字后**换一次对话**再进来，bot 认得他
+
+- [ ] **任务 33：网页侧改成输手机号**
+  文件：`frontend/src/pages/`、`backend/app/routers/chat.py`、`backend/app/services/api.ts`、测试
+  目标：网页开场输一个手机号，之后与 WhatsApp 走同一条路径、同一个 Redis 档案
+  验收：网页输入手机上那个真实号码，**能看到手机上那段对话的历史**——这一条本身就是很强的演示素材
+
+- [ ] **任务 34：7 天清理**
+  文件：`backend/app/tasks/`（新增）、`backend/app/tools/crm.py`、`backend/app/tools/erp.py`、测试
+  目标：三件事。① Redis 靠 TTL 自动过期，**不用写任务**；② CRM：bot 建的联系人 `notes` 写 `[DEMO]` 前缀，清理时只删带标记的；③ ERP：调 `POST /api/admin/demo-reset`，不自己写删除
+  ⚠️ **CRM 有个坑**：bot 有时是往**种子联系人**（如 David Park）身上加一张新卡。这种情况**只能删那张卡，不能删人**——删人会把种子数据搞没
+  依赖阻塞项 F
+  验收：跑一次清理，CRM 上带标记的卡没了、种子联系人还在；ERP 单据清空且库存重灌
+
+- [ ] **任务 35：商品列表用 List Message**（不依赖前面，可插队）
+  文件：`backend/app/services/outbox.py`、`backend/app/tools/erp.py`、`backend/app/routers/whatsapp_webhook.py`、测试
+  目标：搜到多个商品时，在文字回复后面跟一条**可点选**的原生 List Message：行标题 = 商品名（24 字符），描述 = 价格 + 库存（72 字符），点一下直接进下单流程
+  **走 `outbox`，不是工具返回值**——工具照常返回 JSON 给模型，后端往 outbox 塞列表。这套机制任务 10 发 PDF 时已经建好，`outbox.available()` 也已经能自动区分「WhatsApp 有、网页没有」
+  超过 10 行就说「还有更多，告诉我品牌或类别」
+  验收：真机问「有什么 rice cooker」，出来一条可点列表，点一下能直接下单
+
+- [ ] **任务 36：语音输入**（原任务 15，口径改为抽象层；不依赖前面，可插队）
+  文件：`backend/app/services/transcribe.py`（新增）、`backend/app/routers/whatsapp_webhook.py`、`backend/app/config.py`、测试
+  目标：收到 `type: "audio"` → 用**任务 1 已经做好的** `whatsapp_media.fetch_media` 下载 → 转录 → 拿到文字后走现有文字路径，**下游一行都不用改**
+  抽象层：`transcribe(audio, mime) -> str` 一个接口 + 一个 OpenAI Whisper API 实现，换供应商只是换实现类
+  **导演台要显示「语音 → 文字」这一步**：客户听不到，但老板看得到它听懂了什么。马来西亚客人大概率中英马夹杂，这一行字就是证据
+  依赖阻塞项 G
+  验收：真机发一条中英夹杂的语音，bot 听懂并正确走工具
+
 ## 评审记录
 
 （每个任务完成后，如有偏离原方案的地方或踩坑教训，记录在这里）
@@ -804,3 +875,6 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - 2026-08-30（demo 线脱离网关）：用户第三次追问「号码不同，还需要网关分发吗」。前两次我都在推迟，而且给过一个循环论证（「网关必需，因为它持有凭据」——凭据在它手里恰恰是这个架构的结果，不是理由）。查证后做了一个 10 分钟可逆实验：把 Meta 的 Callback URL 从 `whatsappgateway.acuventech.com` 改到 `chatbot.acuventech.com/webhook/whatsapp`，`ai_chatbot` 用自己的凭据收发。**通了**——握手 200、消息直连进来、去重工作（5 个 POST 只触发一次业务逻辑）、出站 Graph API 200，网关侧零流量。
   判定成立的三个前提：① `ai_chatbot` 的 v1 直连路径（`GET/POST /webhook/whatsapp` + 四个凭据字段）当初刻意保留了，改动量约等于零；② 今天取消了测试 WABA 的订阅后，App 下只剩 demo 号一个 WABA，**没有东西需要分流**；③ 客服号本就该用自己的 App（它要走 Coexistence → Tech Provider → App Review，不该把 demo 的 App 拖进去），所以两条线永远不会挤同一个 callback URL。
   收益：批次 00 从 7 个任务缩到 4 个，省约 3 个 session，并且这一批「整个工程唯一有回归风险」的属性消失——因为不再碰那个同时扛着公司真实客服线的服务。代价：`acuven_aichat` 将来上线时要自己长一个公网 webhook（它现在只有内网路由）。网关继续部署着不动，零成本，客服号接入时再评估去留。
+- 2026-09-04（批次 06 立项 + 两处自我更正）：任务 11 真机验收通过后，用户拍板改思路——手机号即身份、客户信息物理落盘、商品用可点列表、支持语音。六个前提逐条问定（身份机制 / 网页那条线 / 清理边界 / 表格形式 / 转录选型 / 存储选型），写成批次 06。
+  **侦察推翻了我自己先前说的两件事，记在这里免得下次又搞错**：① 我原以为「ERP 定期 reseed 会干掉手工建的 earbuds SKU、要配重建脚本」——**错的**，`services/demo_reset.py` 的 `RESET_TABLES` 不含 `skus` / `customers`，只清交易单据和库存，主数据全活；② 我原打算 ERP 侧也用 `[DEMO]` 标记逐行删——**不需要**，erp_os 的 reset 是整表 TRUNCATE，全有或全无，标记只对 CRM 有意义。
+  另外确认了一件本来打算自己造的东西 **erp_os 已经有了**：`POST /api/admin/demo-reset` + `demo_reset_nightly`（每天 3am，gated on `DEMO_MODE`）。反过来说，演示单在 erp_os 里**删不掉也取消不了**（没有 DELETE 路由，`cancel` 只接受 DRAFT / CONFIRMED，而我们的单都到了 FULLY_SHIPPED + INVOICED）——这才是 ERP 侧必须走 reset 的真正原因。
