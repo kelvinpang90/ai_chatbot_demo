@@ -1,0 +1,15 @@
+任务 10 / 第 1 轮 / commit 11d2ce8c
+verdict: findings
+
+报了 3 条，进修复队列 2 条，降级 1 条。
+
+[MUST FIX] P2-1 P2  backend/app/services/invoice_pdf.py:205
+    The invoice PDF prints UNIT PRICE excluding tax next to an AMOUNT including it, so every line of the document the customer keeps contradicts itself and the AMOUNT column does not reconcile with the Subtotal printed under it.
+    证据: repro repro/test_p2_1_invoice_lines_do_not_add_up.py::test_each_printed_line_multiplies_out_to_the_amount_beside_it, ::test_the_amount_column_reconciles_with_the_subtotal_printed_under_it
+[MUST FIX] P3-1 P3  backend/app/services/erp_client.py:188
+    sales_order_for_customer discards a row erp_os itself matched: the ERP's search is a case-insensitive LIKE, the local confirmation is a byte-exact ==, so an order number differing only in case or surrounding whitespace is reported as belonging to nobody.
+    证据: repro repro/test_p3_1_order_number_match_is_stricter_than_the_erp.py::test_the_erp_found_the_order_so_the_tool_must_not_report_it_missing
+[降级] P3-2 P3  backend/app/tools/erp.py:405
+    Scoping the lookup by customer_id stops a mismatched pair, not a matched one: a consistent (order_no, customer_id) pair belonging to a third party still ships their stock, issues their invoice and delivers a PDF carrying their name and TIN into whichever chat asked.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）

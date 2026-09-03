@@ -195,8 +195,14 @@ def _lines(page: _Page, invoice: dict) -> None:
         description = line.get("description") or line.get("sku_name") or ""
         page.text(MARGIN, description[:DESCRIPTION_CHARS], font=MONO, size=9)
         page.right_text(QTY_RIGHT, _quantity(line.get("qty")))
+        # Both money columns exclude tax, which is the only pairing that reads.
+        # Printing the unit price without SST beside a line total with it gave
+        # every row of the customer's own invoice an arithmetic they could see
+        # was wrong -- 3 x 299.00 = 986.70 -- and left the AMOUNT column summing
+        # to something other than the subtotal directly beneath it. Tax is what
+        # the two lines under the rule are for.
         page.right_text(UNIT_PRICE_RIGHT, _money(line.get("unit_price_excl_tax")))
-        page.right_text(AMOUNT_RIGHT, _money(line.get("line_total_incl_tax")))
+        page.right_text(AMOUNT_RIGHT, _money(line.get("line_total_excl_tax")))
 
     page.down(10)
     page.rule()

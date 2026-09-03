@@ -423,6 +423,9 @@ def erp_generate_einvoice(order_no: str, customer_id: int) -> str:
         order = client.sales_order_for_customer(order_no, customer_id)
         if order is None:
             return NO_SUCH_ORDER
+        # From here on the ERP's spelling of the number, not the model's: it is
+        # what the customer sees on the document and quotes back on the phone.
+        order_no = order.get("document_no") or order_no
         # Asked before a thing is shipped: an order billed once is not billed
         # again, whether that was a minute ago on a call that failed on its way
         # out or six months ago by somebody in the office.

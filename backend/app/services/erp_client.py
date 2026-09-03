@@ -28,6 +28,15 @@ DEFAULT_WAREHOUSE_ID = 1
 WHATSAPP_SHIPPING_METHOD = "WhatsApp order"
 
 
+def _is_the_same_document(found: str, wanted: str) -> bool:
+    """Two document numbers written the same way, allowing for how they were typed.
+
+    Deliberately no looser than that: this decides which order gets shipped, and
+    a substring rule here would let SO-2026-0042 select SO-2026-00420.
+    """
+    return str(found).strip().casefold() == wanted.strip().casefold()
+
+
 def _outstanding(line: dict) -> Decimal:
     """How much of an order line has not shipped yet.
 
@@ -175,18 +184,30 @@ class ErpClient(JsonApiClient):
         finds nothing instead of finding somebody else's order.
 
         `?search=` is a LIKE on document_no and remarks, so the exact number is
-        matched here rather than trusted from the query.
+        matched here rather than trusted from the query -- SO-2026-0042 also
+        answers for SO-2026-00420, and only one of those is the customer's.
+
+        Exact on the number, not on the spelling. erp_os matches case
+        insensitively, so a compare stricter than the ERP's own would throw away
+        a row the ERP had already found and tell the customer their order does
+        not exist. The number is trimmed on the way out too, or the LIKE goes
+        looking for a leading space that is not in any document number.
         """
+        wanted = str(document_no).strip()
         payload = self.get(
             "/api/sales-orders",
             params={
-                "search": document_no,
+                "search": wanted,
                 "customer_id": customer_id,
                 "page_size": DEFAULT_RESULT_LIMIT,
             },
         )
         row = next(
-            (item for item in payload.get("items", []) if item.get("document_no") == document_no),
+            (
+                item
+                for item in payload.get("items", [])
+                if _is_the_same_document(item.get("document_no", ""), wanted)
+            ),
             None,
         )
         return None if row is None else self.sales_order(row["id"])

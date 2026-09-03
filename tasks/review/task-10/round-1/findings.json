@@ -1,0 +1,60 @@
+{
+  "task": "10",
+  "round": 1,
+  "commit": "11d2ce8cb2f203bbb9a35d656ae93f63f0d28dbe",
+  "base": "584af8f2eea93493cc0c2974fc6b9d78768d1623",
+  "verdict": "findings",
+  "suite_result": "224 passed, 2 warnings in 2.38s (bash tasks/review/pytest_docker.sh <worktree>/backend)",
+  "findings": [
+    {
+      "id": "P2-1",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/services/invoice_pdf.py",
+      "line": 205,
+      "summary": "The invoice PDF prints UNIT PRICE excluding tax next to an AMOUNT including it, so every line of the document the customer keeps contradicts itself and the AMOUNT column does not reconcile with the Subtotal printed under it.",
+      "failure": "A normal erp_os InvoiceDetail (SST 10%, unit_price_excl_tax 299.0000, line_total_incl_tax 986.7000, subtotal_excl_tax 1196.0000) -> the rendered page reads 'TWS Earbuds Pro 3 299.00 986.70' (3 x 299 = 897, not 986.70) and the AMOUNT column adds up to 1,315.60 above a line that says 'Subtotal excl. tax 1,196.00'. This is the acceptance criterion of task 10 ('PDF 内容对得上刚才那张单'), and it is the same excl/incl mismatch the task 9 round-3 P3 flagged as read-only speculation -- now printed onto a customer-facing document. erp_os's InvoiceLineResponse already carries line_total_excl_tax, so putting both columns on one basis needs no new ERP call.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_1_invoice_lines_do_not_add_up.py::test_each_printed_line_multiplies_out_to_the_amount_beside_it, ::test_the_amount_column_reconciles_with_the_subtotal_printed_under_it",
+        "observed_failure": "E           AssertionError: TWS Earbuds Pro: the page says 3 x 299.00 = 986.70, which is wrong by 89.70\nE           assert Decimal('986.70') == (Decimal('3') * Decimal('299.00'))\nrepro/test_p2_1_invoice_lines_do_not_add_up.py:84: AssertionError\n\nE       AssertionError: the AMOUNT column adds up to 1315.60 but the line under it says the subtotal is 1196.00\nE       assert Decimal('1315.60') == Decimal('1196.00')\nrepro/test_p2_1_invoice_lines_do_not_add_up.py:96: AssertionError\n=========================== short test summary info ============================\nFAILED repro/test_p2_1_invoice_lines_do_not_add_up.py::test_each_printed_line_multiplies_out_to_the_amount_beside_it\nFAILED repro/test_p2_1_invoice_lines_do_not_add_up.py::test_the_amount_column_reconciles_with_the_subtotal_printed_under_it\n2 failed, 2 deselected in 0.61s"
+      }
+    },
+    {
+      "id": "P3-1",
+      "severity": "P3",
+      "category": "correctness",
+      "file": "backend/app/services/erp_client.py",
+      "line": 188,
+      "summary": "sales_order_for_customer discards a row erp_os itself matched: the ERP's search is a case-insensitive LIKE, the local confirmation is a byte-exact ==, so an order number differing only in case or surrounding whitespace is reported as belonging to nobody.",
+      "failure": "erp_generate_einvoice('so-2026-0042', 3) or (' SO-2026-0042', 3) -> erp_os returns the row {document_no: 'SO-2026-0042'} (repositories/sales_order.py uses document_no.ilike), the exact compare rejects it, and the tool answers NO_SUCH_ORDER: the customer is told their order does not exist on the one step of the demo where a document was promised. The exact-match guard itself is right -- it is what stops the LIKE handing back SO-2026-00420 -- it just needs to compare on the same footing the ERP searched on (strip + casefold), which does not weaken it: document numbers are ASCII and cannot collide under casefold.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p3_1_order_number_match_is_stricter_than_the_erp.py::test_the_erp_found_the_order_so_the_tool_must_not_report_it_missing",
+        "observed_failure": "E       AssertionError: the ERP returned SO-2026-0042 for 'so-2026-0042' and the tool discarded it\nE       assert 'No order with that number belongs to this customer, so no invoice was issued. ...' != 'No order with that number belongs to this customer, so no invoice was issued. ...'\nrepro/test_p3_1_order_number_match_is_stricter_than_the_erp.py:84: AssertionError\n\nE       AssertionError: the ERP returned SO-2026-0042 for ' SO-2026-0042' and the tool discarded it\n=========================== short test summary info ============================\nFAILED repro/test_p3_1_order_number_match_is_stricter_than_the_erp.py::test_the_erp_found_the_order_so_the_tool_must_not_report_it_missing[so-2026-0042]\nFAILED repro/test_p3_1_order_number_match_is_stricter_than_the_erp.py::test_the_erp_found_the_order_so_the_tool_must_not_report_it_missing[ SO-2026-0042]\n2 failed, 2 deselected in 0.62s"
+      }
+    },
+    {
+      "id": "P3-2",
+      "severity": "P3",
+      "category": "security",
+      "file": "backend/app/tools/erp.py",
+      "line": 405,
+      "summary": "Scoping the lookup by customer_id stops a mismatched pair, not a matched one: a consistent (order_no, customer_id) pair belonging to a third party still ships their stock, issues their invoice and delivers a PDF carrying their name and TIN into whichever chat asked.",
+      "failure": "A visitor who knows or guesses a real order number says 'I am Sunrise Hypermart' -> erp_find_customer (name search) returns that customer's id -> erp_generate_einvoice(order_no, that_id) passes every guard the code has, moves that customer's stock out of the warehouse, submits their e-Invoice to MyInvois, and sends the rendered PDF (customer name, buyer TIN, line items, totals) as a WhatsApp document to the visitor's own number. Nothing in the request path binds a tool call to the session's phone or chosen identity -- tools/registry.get_tools(bot_id) hands back plain module-level functions with no per-conversation context -- so the tool cannot check, and the docstring's 'a wrong id finds nothing rather than invoicing somebody else's order' holds only for the mismatched case. Flagged as a lead, not a fix demand: closing it needs session identity plumbed into the tool layer, which does not exist yet in this repo. Reported read-only on purpose -- any repro would have to assert a feature nobody has specified, which is the wrong-target trap from task 9 round 1.",
+      "evidence": {
+        "kind": "read-only"
+      }
+    }
+  ],
+  "self_check": {
+    "spec_coverage": "验收标准是「手机上收到 PDF 发票并能打开，内容对得上刚才那张单」。三段里两段有真测试、一段没有：(1)「能打开」——test_invoice_pdf.py 用 pypdf 回读，而且**没有**停在那里，它另外直接校验了 xref 偏移和 /Length，理由写得对（pypdf 会静默重建坏表，只回读会恒绿）。这是本轮质量最高的一组测试。(2)「内容对得上」——只断言了几个字符串在不在文本里（897.00 / 89.70 / 986.70 各自出现），**没有一条断言这些数字彼此自洽**，所以 P2-1 那个 3 x 299 = 986.70 完整地穿过了整套测试。(3)「手机上收到」——没有、也不可能有：tools/registry.py 里 _TOOLS_BY_BOT 仍然是空 dict，没有任何 bot 能调用 erp_generate_einvoice，这条工具链在真实对话里一次都没被走过。其余测试有质量：httpx 层被驱动（不是 ErpClient），失败注入用的是真实类型（httpx.ReadTimeout / ConnectError，不是 side_effect=ApiClientError 那种同义反复），outbox 的 autouse 关闭夹具解决的是真问题。没有发现同义反复的测试。",
+    "e2e": "没有端到端。而且这次的断裂点是可指名的：_TOOLS_BY_BOT = {} —— 任务 10 交付的四步写链（ship -> generate -> submit -> upload）和 outbox 送达路径，从 webhook 进来的真实消息永远走不到，要等任务 11 把工具挂到 bot 上。开发方拿 outbox 这个缝把两半接起来并各写了一半的测试（test_whatsapp_webhook.py 里那两条是真接缝测试，不是摆设），这是在缺 e2e 的前提下能做的最好安排，但它仍然不等于「这套东西在真实链路里能用」。三件事因此完全未验证：Meta 是否接受这个 multipart 上传、WhatsApp 是否接受 build_document_message 的 payload 形状、以及网关路径（routers/internal_whatsapp.py 把 payload 交回 whatsapp_gateway）是否认识 type=document。任务 13 真机验收之前，这三条都是纸面的。我自己也没做真机验证：config.py 里已无默认凭据，按 CLAUDE.md 高风险规则我没有去猜密码登录线上 ERP；改为逐条对读 erp_os 源码验证契约——customer_id 过滤确实生效（repositories/sales_order.py:60）、DO 是 single-step ship-and-apply 会把 SO 推到 FULLY_SHIPPED（services/delivery_order.py:231）、generate-from-so 对同一张 SO 幂等（services/einvoice.py:256）、三个写端点的角色与已跑通的 sales-order 写端点完全相同、InvoiceDetail 的每个字段名 invoice_pdf 都用对了。重试安全那句自述（'cannot ship twice, invoice twice or submit twice'）我按四条失败路径推了一遍，成立。",
+    "security": "新增代码没有引入凭据、没有新配置项、没有新公网端点，AR-1 / AR-2 不受影响，不重报。新出现的是一条数据出口：这次交付的东西第一次把一份**含第三方姓名与 TIN 的文件**推进任意来电者的聊天窗口（P3-2）。工具层没有会话身份可用，所以这是架构缺口不是疏忽，按线索报，不要求本轮修。另外 invoice_pdf 的 _escape 走 cp1252 + errors='replace'，中文客户名会变成一串 '?'，不是安全问题但会出现在客户手上的文件里。",
+    "spec_deviation": "两处偏离，都有正当理由，都不报为 finding：(1) 签名从规格的 erp_generate_einvoice(order_id) 变成 (order_no, customer_id)——理由是让模型编出来的号码找不到东西而不是找到别人的单，比原签名更安全；(2) 工具顺手把订单**发货**了（POST /api/delivery-orders，真的把库存搬出仓库），规格里只写了「生成发票」。这一步是 erp_os 强制的（einvoice.py:245 只接受 PARTIAL_SHIPPED / FULLY_SHIPPED），而且任务 9 的记录里已经预告过，不是悄悄扩大范围。真正没有正当理由的偏离一条没找到。"
+  },
+  "phase2": {
+    "rebuttals": "自辩里五条偏离的理由我逐条核过 erp_os 源码，**四条成立**，不重复它们。不成立或说得比事实宽的有四处：\n\n1. **「四个变异全部验证过」不等于验过了这张发票。** 那四个变异——拿掉 outbox.begin()、把精确匹配换成取第一条、拿掉已发货跳过、xref 偏移 +1——**全部是结构和控制流**，没有一个碰数字的含义。这套变异纪律回答的是「我接没接对」，不是「它说的是不是真话」，所以 P2-1（每一行都写着 3 x 299.00 = 986.70，AMOUNT 列合计 1,315.60 压在一行「Subtotal excl. tax 1,196.00」上面）完整地穿过了 25 个新测试、224 条全绿套件和四轮变异。而这恰恰是任务 10 验收标准的正文那句「内容对得上刚才那张单」。更值得记的是：任务 9 第 3 轮那条被降级的 P3（unit_price 299 未税 vs 实收 986.70 含税）**是开发方自己在 todo.md 里写下并标注「任务 11 必须一起处理」的**——这一轮它没有被处理，而是被印到了客户手里的文件上。\n\n2. **「submit 失败不致命，UIN 那行写 pending validation」漏了一种失败。** submit 请求**发出去没回音但落地了**的时候，erp 那头已经是 VALIDATED + UIN，本地 invoice 字典还停在 DRAFT，于是 PDF 上印的是「LHDN status DRAFT / UIN pending validation」。这和同一份自辩里另一句话直接冲突——invoice_pdf.py 的模块注释写的是「from the same InvoiceDetail JSON the ERP screen behind us is showing」。演示现场就是大屏上 VALIDATED 带号、手机上「待验证」。不致命是对的，「一张真发票配一个待验证的号」也是对的，但这一档不是 MyInvois 慢，是我们自己的状态读旧了。没给 finding，因为触发条件是一次恰好落地的超时，写不出一条不打桩到荒谬的 repro。\n\n3. **「整个工具重试是安全的」对 ERP 成立，对 Meta 不成立。** 三个 ERP 写入我按四条失败路径推过，「先读状态再决定做不做」确实守得住。但第四个写动作——渲染 + 上传 Meta + 排进 outbox——**没有任何状态守卫**：再调一次就再上传一份、再排一条 document 消息。模型在同一轮里并行调两次这个工具，客人就收到两份同样的发票。这不改变「重试是安全的」这个给模型的建议（收两份不如收零份糟），但那句话是以绝对语气写的，而它有一个例外。\n\n4. **「编错了的结果是查无此单，不是发错别人的货」只覆盖了配错的那一半。** 前提「任何模型能编的整数都会命中某个真实订单」是对的，customer_id 过滤也确实把编号码这条路堵死了。但**号码和客户 id 一起对上、而这一对属于第三方**的时候，每一道守卫都放行：发那位客户的货、开那位客户的票、把印着对方姓名和买方 TIN 的 PDF 送进当前这个聊天窗口（P3-2）。工具层拿不到会话身份，所以这是架构缺口不是疏忽——但自辩那句话读起来像是这个洞已经堵上了，它没有。",
+    "blind_spot": "**开发方主动承认、而我第一阶段完全没碰的，是「发货这一步会真的减库存」的后果。** 我确实注意到发货是规格外的第三个写动作，但我只问了两个问题——它是不是 erp_os 逼的（是）、重试会不会发两次（不会）——两个都得到令人安心的答案，然后就把这条归进「有正当理由的偏离」结案了。我漏掉的东西**就写在我读过的那个文件的开头**：`erp_os/backend/app/services/delivery_order.py:17` —— 「DO cancellation / reversal is deferred to Window 12 (Credit Note)」。也就是说这个动作**在 erp_os 里没有撤销接口**。每演示一次，种子库存就被永久消耗一次；练三遍旗舰剧本，任务 9 验收时那块「42 → 39」的屏就再也回不到 42，而那块屏正是整场演示用来证明「这是真的」的东西。开发方在「还没验的」里以「值得先看一眼演示要指的那块屏」的语气提了一句，我一句都没提。\n\n盲区的形状是：**我把「契约对不对」当成了「这样做对不对」。** 我为这次审查花的力气几乎全在逐条对读 erp_os 的路由、schema、角色和状态机——customer_id 过滤真的生效、DO 真的一步推到 FULLY_SHIPPED、generate-from-so 真的幂等、字段名一个不差——这些全对，也全是「接口层面它能跑通吗」。而这一轮两条真问题（P2-1 客人手里那张纸自己不自洽、以及这条永久消耗种子数据）都在另一个层面：**跑通之后，人看到的是什么、下一次还剩什么。** 我用来清白发货这一步的那个文件，第 17 行就写着答案，我读过它，然后翻过去了。"
+  }
+}

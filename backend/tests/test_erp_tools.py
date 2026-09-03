@@ -809,6 +809,37 @@ def test_a_number_the_search_only_partly_matched_is_not_taken_as_the_order(_cred
     assert post.call_count == 1
 
 
+def test_the_number_is_matched_the_way_the_erp_matched_it_not_more_strictly(
+    _credentials, _outbox, _uploaded
+):
+    """Round 1, P3-1. erp_os's `?search=` is a case-insensitive LIKE, so a
+    compare stricter than the ERP's own throws away a row the ERP already found
+    and tells the customer their order does not exist. The number is trimmed on
+    the way out too, or the LIKE hunts for a leading space no document number has.
+    """
+    posts = [_response(_LOGIN), _response({"id": 300}, 201), _response(VALIDATED_INVOICE, 201)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets()) as get:
+            payload = json.loads(erp.erp_generate_einvoice("  so-2026-0042 ", 3))
+
+    assert get.call_args_list[0].kwargs["params"]["search"] == "SO-2026-0042".lower()
+    assert payload["invoice_no"] == "INV-2026-0007"
+    # What comes back is the ERP's spelling, which is what is on the document.
+    assert payload["order_no"] == "SO-2026-0042"
+
+
+def test_a_neighbouring_number_is_still_refused_however_it_is_typed(_credentials, _outbox):
+    """The loosening above must not reach as far as a different order."""
+    neighbour = {"id": 78, "document_no": "SO-2026-00420", "status": "CONFIRMED"}
+
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN)]) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response({"items": [neighbour]})):
+            assert erp.erp_generate_einvoice("so-2026-0042", 3) == erp.NO_SUCH_ORDER
+
+    assert post.call_count == 1
+
+
 @pytest.mark.parametrize(
     "status, expected",
     [("DRAFT", "has not been confirmed"), ("CANCELLED", "was cancelled")],

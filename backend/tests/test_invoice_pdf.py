@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import re
+from decimal import Decimal
 
 from pypdf import PdfReader
 
@@ -35,6 +36,7 @@ INVOICE = {
             "description": "Pensonic Stand Fan 16 inch",
             "qty": "3.0000",
             "unit_price_excl_tax": "299.0000",
+            "line_total_excl_tax": "897.0000",
             "line_total_incl_tax": "986.7000",
         }
     ],
@@ -122,3 +124,38 @@ def test_the_declared_stream_length_matches_the_bytes_between_the_keywords():
     declared = int(re.search(rb"<< /Length (\d+) >>", pdf).group(1))
     body = pdf.split(b"stream\n", 1)[1].split(b"\nendstream", 1)[0]
     assert len(body) == declared
+
+
+def test_the_two_money_columns_are_on_one_tax_basis_so_every_row_multiplies_out():
+    """Round 1, P2-1. The unit price excludes SST; printing a line total that
+    includes it gave every row of the customer's own invoice an arithmetic they
+    could see was wrong -- 3 x 299.00 = 986.70 -- and left the AMOUNT column
+    summing to something other than the subtotal directly beneath it."""
+    text = _text(INVOICE)
+
+    assert "897.00" in text  # 3 x 299.00, the amount for that line
+    assert "986.70" in text  # still there once, as the total including tax
+    assert text.count("986.70") == 1
+
+
+def test_the_amount_column_adds_up_to_the_subtotal_printed_under_it():
+    two_lines = {
+        **INVOICE,
+        "subtotal_excl_tax": "1196.0000",
+        "tax_amount": "119.6000",
+        "total_incl_tax": "1315.6000",
+        "lines": INVOICE["lines"] + [
+            {
+                "description": "Pensonic Stand Fan",
+                "qty": "1.0000",
+                "unit_price_excl_tax": "299.0000",
+                "line_total_excl_tax": "299.0000",
+                "line_total_incl_tax": "328.9000",
+            }
+        ],
+    }
+    text = _text(two_lines)
+
+    rows = [line for line in text.splitlines() if re.match(r"^\D.*? [\d.]+ [\d,]+\.\d\d ", line)]
+    printed = [Decimal(re.findall(r"[\d,]+\.\d\d", row)[-1].replace(",", "")) for row in rows]
+    assert sum(printed) == Decimal("1196.00")
