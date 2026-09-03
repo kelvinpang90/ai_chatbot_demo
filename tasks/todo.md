@@ -318,12 +318,23 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **知道但没处理的边缘情况**：① 同一个人换个号码写过来会建成两个联系人（尾号匹配管不到）；② `deals[0]` 取最新那张卡，只在「刚建的新联系人只有一张卡」这个前提下成立，老客户那条路径不走它；③ 手机号查重要翻页扫通讯录（最多 5 页），每次建线索前都有这一跳。
 
-  **验收怎么做（用户手工跑，PowerShell，仓库根目录，先开 Docker Desktop）**：
+  **验收怎么做（用户手工跑，PowerShell，仓库根目录，先开 Docker Desktop）**——三条命令：
 
   ```powershell
-  docker run --rm -v "${PWD}\backend:/app" -w /app -e PYTHONPATH=/app -e PYTHONIOENCODING=utf-8 `
-    python:3.13-slim sh -c "pip install -q -r requirements.txt && python -c ""from app.tools.crm import *; print(crm_create_lead('Ahmad Faizal', '+60 12-333 4444', '3 units Sony WF-C710N earbuds, COD to Cheras', 986.70))"""
+  Set-Content -Encoding utf8 backend\acceptance_lead.py @(
+    'from app.tools.crm import crm_create_lead',
+    'print(crm_create_lead("Ahmad Faizal", "+60 12-333 4444", "3 units Sony WF-C710N earbuds, COD to Cheras", 986.70))'
+  )
+
+  docker run --rm -v "${PWD}\backend:/app" -w /app -e PYTHONPATH=/app -e PYTHONIOENCODING=utf-8 python:3.13-slim sh -c "pip install -q -r requirements.txt && python acceptance_lead.py"
+
+  Remove-Item backend\acceptance_lead.py
   ```
+
+  ⚠️ **两个都踩过的坑，别再踩**：
+  - **不要压成一行 `python -c "..."`。** 2026-09-02 实测：PowerShell 把参数交给 docker 这种原生程序时会吞掉内层引号，`python -c` 只收到 `from` 一个词，报 `SyntaxError: invalid syntax`——**在碰到 CRM 之前就死了**，而现象看起来像凭据没问题。任务 9 的记录里早写过「写入那一步用 here-string 落一个一次性脚本再跑」，这里当初没照做
+  - **也不要用 here-string（`@'...'@`）写进这份文档。** 它要求结束符 `'@` 顶格，而这份 todo 里的代码块是缩进的，照抄必炸。上面改用 `Set-Content ... @('行1','行2')` 的数组形式，**缩进无所谓**，Python 那两行里也只用双引号、不跟 PowerShell 的单引号打架
+  - 上面这三条已实测跑通（在没有 `.env` 的 worktree 里跑，正确地走进工具、停在 `no credentials configured`，全程没碰线上 CRM）
 
   **三条判据**：① `crm.kelvinpeng.com` 的看板 lead 那一列出现一张卡，标题是那句询价、金额 986.70；② **只有一张，不是两张**（这是本任务最容易翻车的地方，也是上面那条偏离要挡的东西）；③ 点进卡里能看到一条 `type=WhatsApp` 的活动，内容带完整询价和 MYR 986.70。
 
