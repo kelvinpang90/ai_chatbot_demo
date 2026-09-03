@@ -1,0 +1,12 @@
+任务 10 / 第 3 轮 / commit 918319ab
+verdict: findings
+
+报了 2 条，进修复队列 1 条，降级 1 条。
+
+[MUST FIX] P3-1 P3  backend/app/services/invoice_pdf.py:47
+    The wrap fixed the 38-character cut and left a 138-character one: past MAX_DESCRIPTION_ROWS the tail of a product name is still dropped with nothing on the page to say so, which is what the same file's comment four lines above promises can no longer happen.
+    证据: repro repro/test_p3_1_a_long_description_is_still_cut_without_saying_so.py::test_the_helper_either_keeps_the_whole_name_or_says_it_cut_it, ::test_the_page_the_customer_opens_carries_the_end_of_the_name
+[降级] P3-2 P3  tasks/review/task-10/round-2/repro/test_p2_1_the_invoice_names_a_different_product.py:81
+    This commit deleted invoice_pdf.DESCRIPTION_CHARS and left round 2's repro referring to it in its assertion message, so if the truncation ever comes back that repro dies with AttributeError instead of reporting the truncation -- the same artefact rot as round 2's own P3-3, committed in the same change that fixed P3-3 for round 1.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）

@@ -149,7 +149,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **token 缓存真的生效**：一个进程里连打 9 次工具，日志只有 2 行 `logging in as`（ERP 一次、CRM 一次）。这正是防限流的那条命——登录 10 次/分钟
 
   ⚠️ **三个必须往下带的发现**：
-  - **ERP 商品库里没有 earbuds，是电风扇**（Pensonic / Khind / Milux）。而本文件的「剧本 1 —— 旗舰戏」整场戏是围绕 *"Boss 这个 earbuds 还有 stock 吗?"* 写的，`erp_search_sku("earbuds")` 实测返回「查无此商品」。~~**任务 11 / 13 之前必须二选一**：把剧本改成风扇，或者往 ERP 里加一个 earbuds SKU~~——**2026-09-01 已解决，补了 SKU，见上面「剧本 1」那一节**。（这行是任务 8 当时发现问题的记录，留着是为了说明来龙去脉；2026-09-03 有人只读到这里就把它当成未决阻塞项汇报过一次）
+  - **ERP 商品库里没有 earbuds，是电风扇**（Pensonic / Khind / Milux）。而本文件的「剧本 1 —— 旗舰戏」整场戏是围绕 *"Boss 这个 earbuds 还有 stock 吗?"* 写的，`erp_search_sku("earbuds")` 实测返回「查无此商品」。**任务 11 / 13 之前必须二选一**：把剧本改成风扇，或者往 ERP 里加一个 earbuds SKU。不处理的话旗舰戏第一句就穿帮
   - **`crm_os` 的 `?search=` 只匹配 name 和 company，不匹配 phone**（`contact_service.list_contacts:49-55`）。而手机号恰恰是 WhatsApp 场景里唯一稳定的身份标识。所以 `crm_lookup_customer` 判断参数长得像电话时**不发 `search`，改成分页拉回来在本地按「digits 后 8 位」比对**——避开了 `+60 17-394 8123` / `0173948123` / `60173948123` 三种写法和国家码的差异。分页上限 5 页 × 100 条，够这个 demo 库（实测 26 个联系人）用得很宽裕
   - **两边只有认证「流程」一样，响应「形状」不一样**：`erp_os` 直接返回 JSON，`crm_os` 把所有响应（含 token）包在 `{"success", "data"}` 里，而且列表路由还要再套一层（`data.data` 才是行）。所以基类留了一个 `_unwrap` 钩子，`CrmClient` 覆盖它，登录和取数共用同一个钩子
 
@@ -445,67 +445,10 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ⚠️ **真机验收又卡住了，原因和以前不同**：本地 `backend/.env` 里的 CRM 凭据对 `crm.kelvinpeng.com/api/auth/login` 返回 **401 Unauthorized**（不是被权限分类器拦，是密码不对或已过期）。线上登录页显示的 demo 账号是 `admin@crm.com`。按 CLAUDE.md 的高风险操作规则，认证失败一次即停止、不连续换凭据重试（登录连错 5 次锁 5 分钟），所以**没有继续试**。
   顺带得到一个真实故障下的观察：**工具优雅降级了**，返回 `LEAD_FAILED` 而不是抛异常穿透——第 1 / 3 轮那两条 P1 要保住的行为，在一次真实故障里跑通了。
 
-- [x] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**——**2026-09-03 代码完成**（25 个新测试，全套 224 passed）。**真机验收未做**，见下面「还没验的」。
-  文件：`backend/app/services/invoice_pdf.py`（新增）、`backend/app/services/outbox.py`（新增）、`backend/app/services/erp_client.py`、`backend/app/services/whatsapp.py`、`backend/app/services/whatsapp_media.py`、`backend/app/tools/erp.py`、`backend/app/routers/whatsapp_webhook.py`、`backend/requirements-dev.txt`、`backend/tests/`（新增 `test_invoice_pdf.py`，扩 `test_erp_tools.py` / `test_whatsapp_webhook.py` / `conftest.py`）
-
-  `erp_generate_einvoice(order_no, customer_id)` 一路做完：按客户找单 → 发货 → 开票 → 提交 MyInvois → 渲染 PDF → 上传 Meta → 排进出站队列，跟回复一起发出去。
-
-  **五处偏离规格，每一处都有非做不可的理由：**
-
-  1. **PDF 是我们自己画的，不是 erp_os 给的。** `Invoice.pdf_file_id` 在 erp_os 里是个**悬空字段**——全仓库没有一行代码往里写过东西，也没有任何 PDF 渲染。所以手写了一个最小 PDF 1.4 生成器（`invoice_pdf.py`，~200 行）：一页 A4、四个 base-14 标准字体（Helvetica 排字，Courier 排钱——等宽字符正好 0.6 em，右对齐就是一句乘法，否则要背 Helvetica 那张 300 项宽度表）。**零新增运行时依赖**：reportlab 和 fpdf2 都会把 Pillow + fonttools 拖进一个目前只有 5 个依赖的镜像，就为了排一张永远不变的版。
-  2. **多做了一步「发货」。** erp_os 不给没发货的单开发票（`services/einvoice.py:245` 要 `PARTIAL_SHIPPED` / `FULLY_SHIPPED`），而 WhatsApp 下的单没有仓管在旁边现敲一张送货单。所以工具会先建 DeliveryOrder 把整单发掉。**注意这会真的动库存**——不只是任务 9 那样的 reserved，on_hand 也会跟着降。
-  3. **多做了一步「提交 MyInvois」。** DRAFT 发票没有 UIN，PDF 上那行「LHDN status / UIN」就是空的。submit 之后是 VALIDATED + UIN + QR（mock adapter 同步返回）。**这一步失败不致命**：照样把 DRAFT 的 PDF 发出去，UIN 那行写 `pending validation`——一张真发票配一个待验证的号，好过没有发票。
-  4. **参数不是规格里的 `order_id`，是 `order_no` + `customer_id`。** 两个原因：① 任务 9 的返回里**根本没有 id**，只有 `order_no`，模型拿不到 id；② 更要紧的是，**任何模型能编的整数都会命中某个真实订单**——这正是任务 9 第 1 轮那条 P1（`customer_id` 无处可得）和任务 9.1 第 1 轮那条 P1 的同一个形状。现在两个标识符必须同时对上：查询本身带 `customer_id` 过滤，返回的 `document_no` 还要**精确等于**传进来的号（`?search=` 是 LIKE，`SO-2026-0042` 会把 `SO-2026-00420` 一起捞出来）。编错了的结果是查无此单，不是发错别人的货。
-  5. **新增 `outbox`（ContextVar）。** 工具不能自己发消息——`dispatch_message` 的 docstring 明确写着「so this never calls whatsapp.send_* directly」，网关那条路径是**返回** payload 给网关发，不是自己发。所以工具把上传好的文件留在 outbox 里，`dispatch_message` 在文字回复后面把它捡出来。网页那条线没有 outbox（`chat.py` 不开），工具会如实返回 `pdf_sent: false` + 一句话叫模型别承诺 PDF，而不是让 bot 说「已发送」然后什么都没到。
-
-  **失败词汇比任务 9 / 9.1 少一套，这是想清楚的，不是偷懒。** 那两个工具分「确定失败」和「不确定」，是因为重试会写出第二张单 / 第二张卡。**这个工具每一步都先读状态再决定做不做**：已发货就不再发、已 VALIDATED 就不再提交、generate-from-so 在 erp_os 那头本来就是幂等的。所以整个工具**重试是安全的**，「确定 / 不确定」这个区分对给模型的建议没有任何影响，多一条消息只是噪音。唯一保留的分叉在发货那一步：**发货请求发出去没回音时不放弃，继续去开票**——开票成不成正好把「到底发出去没有」问出来，而放弃会把这个问题永远悬着。
-
-  **四个变异全部验证过**（REVIEW.md 第 5 条：一写完就绿的断言先怀疑它在测自己）：
-  - 把 `outbox.begin()` 从 dispatcher 拿掉 → webhook 那条附件测试变红
-  - 把「精确匹配 document_no」换成「取搜索结果第一条」 → `SO-2026-00420` 那条测试变红
-  - 把「已发货就跳过」拿掉 → 「不会发第二次货」变红
-  - 把 xref 偏移量 +1 → 「每个交叉引用都指向它声称的对象」变红
-  变异跑完代码已还原，四处 grep 确认回到原样。
-
-  **两条踩坑记录：**
-
-  - ⚠️ **`pypdf` 读得回来，不等于这个 PDF 是对的。** 故意把 xref 偏移量写坏，`PdfReader(..., strict=True)` **照样把页面吐出来**——它打一行警告，然后扫全文重建交叉引用表。也就是说「用 pypdf 读回来、文字都在」这种测试**测不出偏移量算错**，而偏移量算错正是手写 PDF 唯一会出的那类错。所以另写了一个直接按字节校验 xref 表的测试（`test_every_cross_reference_offset_points_at_the_object_it_claims`），上面第四个变异就是验它的。`pypdf` 只进 `requirements-dev.txt`。
-  - ⚠️ **ContextVar 在测试里是共享的，在生产里不是。** 生产每条入站消息各跑在自己的 context 里（后台任务走 `run_in_threadpool`、事件循环任务走 asyncio.Task，两者都会 copy 一份），所以 `begin()` 传不到下一条消息。但 pytest 全跑在一个 context 里，于是「任何一个早跑的测试开了 outbox」会让「没有文件通道的那条测试」时绿时红——**取决于它排在谁后面**。加了 `conftest.py` 里的 autouse fixture 每个测试前后关掉。这一条在第一次跑套件时就以一个假绿现形了。
-
-  **没挂到任何 bot 上**——`tools/registry.py` 一个字节没动，和任务 8 / 9 / 9.1 一致，挂载是任务 11 的事。
-
-  ⚠️ **自查抓到一条自己引入的 P1，已在同一个任务里修掉**（commit 之后、冷审出结果之前）：`SOStatus` 除了 DRAFT / CONFIRMED / PARTIAL_SHIPPED / FULLY_SHIPPED / CANCELLED，还有 **`INVOICED` 和 `PAID`**，而我的 `INVOICEABLE` 只列了前三个能开票的。后果不是「少支持一种情况」——**demo 库里 50% 的销售订单就是 seed 成 `INVOICED` 的，每一张都挂着一张真发票**（`erp_os/backend/scripts/seed_transactional.py:267`）。客户随便问一张历史单，bot 会回「这张单还没确认（INVOICED），请先跟客户确认订单」——**一句关于一份就躺在 ERP 里的文件的假话**，而且正好发生在要证明「后台是真的」的那块屏前面。
-  修法不是往 `INVOICEABLE` 里补两个字符串，而是**在发货之前先问一句「这张单开过票没有」**（`GET /api/invoices?sales_order_id=`）：开过就直接把那张发票的 PDF 发出去，不发货、不开票、不提交。顺带把「重试是安全的」从「靠 erp_os 那头的幂等」变成**这一头自己就拦住了**——第一次调用发货 + 开票之后 PDF 没送出去，第二次调用连一个写请求都不会发。新增 3 个测试，变异验证过（把这一句 lookup 拿掉 → 三条测试变红）。
-
-  **第 1 轮冷审（commit `11d2ce8`）：报 3 条，进队列 2 条，降级 1 条。两条都接受，都修了。**
-
-  - **P2-1（P2，进队列）：发票上每一行自己跟自己对不上。** UNIT PRICE 那列印的是**未税**单价，AMOUNT 那列印的是**含税**行小计——于是客户手里那张纸写着 `3 × 299.00 = 986.70`，而且 AMOUNT 列加起来（986.70）跟正下方的 Subtotal（897.00）也对不上。**这是任务 9 记录里那条 P3-1（报价未税 / 建单含税）第一次变成客户手上一份自相矛盾的文件**——那时候它只是两个数字不一致，现在它印在一张要证明「后台是真的」的发票上。修法：AMOUNT 改用 `line_total_excl_tax`，两列同一个税基，税和总额交给下面那两行。审查方的 repro 现在全绿。
-  - **P3-1（P3，进队列）：本地的匹配比 ERP 自己还严。** erp_os 的 `?search=` 是 `ilike`（大小写不敏感），我这边是字节全等 `==`——大小写不同或前后带空格的单号，**ERP 找到了、我给扔了**，然后告诉客户「查无此单」。修法：出去的搜索词先 `strip()`（否则 LIKE 会去找一个任何单号里都没有的前导空格），回来的比较 `strip().casefold()`。**放宽的边界是「同一个号的不同写法」，不是「相近的号」**——`SO-2026-00420` 照样拒。顺带把返回给模型的 `order_no` 换成 ERP 自己的拼写。
-  - **P3-2（降级，只读推测，不进队列）：** 一对**彼此吻合**但属于第三方的 `(order_no, customer_id)` 照样能过所有检查——访客说「我是 Sunrise Hypermart」，`erp_find_customer` 按名字就把 id 给了他，然后别人的货被发出去、别人的发票 PDF（带对方名字和 TIN）送进他的对话。**接受这个降级判断**：堵它需要把「这通对话是谁」接进工具层（现在 `get_tools(bot_id)` 返回的是模块级裸函数，没有任何 per-conversation 上下文），那是任务 11 决定工具挂载方式时才有的东西。**记在这里，任务 11 处理。** 演示环境里数据本来就是公开 demo 数据，风险已知情。
-  - ⚠️ **审查方的 P3-1 repro 需要一处机械适配才能跑**：它是照着 `11d2ce8` 写的，而 `f2d0f24`（自查那条 P1 的修复）在它之后落地，多了一次「这张单开过票没有」的 GET，于是 mock 的 `side_effect` 少一个响应、以 `StopIteration` 挂掉——**不是断言失败**。只往 mock 里加了那一个响应，其余一字未动，两个参数化用例全绿；再把 `casefold` 那句改回字节全等，它立刻变红，所以适配没有把它变成一个恒真的测试。
-
-  **第 2 轮冷审（commit `01d1195`）：报 4 条，进队列 2 条，降级 2 条。四条全处理了。**
-
-  - **P2-1（P2，进队列）：发票上印的是另一个产品。** 描述列按 38 个字符硬切，**从词中间切断**——而马来西亚快消品的名字末尾就是规格：`Farm Fresh Chocolate Flavoured Milk 200ml` 印成 `...Milk 20`，`Panasonic Electric Kettle 1.8L NC-EG3000` 印成一个**不存在的型号** `...NC-EG30`。**审查方去打了线上真实 catalogue**：201 个 SKU 里 12 个超长。而且这一刀什么都没换来——右边还空着 ~73pt。修法不是把 38 改大（下一批商品又会超），而是**换行**：列宽用点数定义、每行能放几个字符由它算出来，放不下的接着往下一行写，名字永远不被改写。
-  - **P3-1（P3，进队列）：第 1 轮的修复我自己漏改了一个 fixture。** AMOUNT 列改用 `line_total_excl_tax` 之后我只更新了 `test_invoice_pdf.py` 的样本，`test_erp_tools.DRAFT_INVOICE` 还停在旧字段——于是**四个端到端跑工具的测试渲染出的发票，AMOUNT 整列是空的，而没有一个测试发现**。原因是它们对交给 Meta 的字节只断言了一句 `startswith(b"%PDF-")`。改法两条：补字段，**并且把那句断言换成「把 PDF 读回来、找到那一行、断言它上面正好是 299.00 和 897.00」**。
-  - **P3-2（降级，只读）：作废的发票会被当账单发出去。** `invoice_for_order` 不看状态就返回，于是 LHDN 驳回（`REJECTED`）或办公室撤销（`CANCELLED`）的发票照样渲染、照样发。**虽然降级了但还是修了**——五行代码，挡住的是「把一份 ERP 自己都不认的文件发给客户」。也不自作主张补开新发票：那要配红字单，是人的决定。
-  - **P3-3（降级，test-quality）：第 1 轮那份 repro 留在仓库里是红的。** 我当时在本地适配了却没提交，于是**仓库里那份证据对下一个跑它的人什么都证明不了**。已把适配落进去，注释写清楚改了哪一行、为什么改、以及「把 `casefold` 改回去它照样变红」——所以适配没有把它变成恒真测试。
-
-  ⚠️ **一次自己抓自己的假绿**：P3-1 的新断言我第一版写的是 `assert "897.00" in document`，**变异验证时它没变红**——因为 897.00 同时也是页面上 Subtotal 那一行的数字，AMOUNT 列空着它照样通过。改成「定位到那一行、断言那一行上的两个数字」之后才真的红。**REVIEW.md 第 5 条又一次生效，而且这次是在断言里而不是在实现里。**
-
-  两轮的形状：**P2 → P2**，但第 2 轮的两条 queue **一条是第 1 轮修复自己引入的回归**（漏改 fixture），另一条要靠打线上真实 catalogue 才看得见（201 个 SKU 里 12 个）。**轮次上限到了，按约定停在这里。**
-
-  **第 3 轮冷审（commit `918319a`，用户 2026-09-03 拍板把上限提到 3 轮）：报 2 条，进队列 1 条，降级 1 条。两条都修了。**
-
-  - **P3-1（P3，进队列）：换行修掉了 38 字符的截断，留下一个 138 字符的。** 超过 `MAX_DESCRIPTION_ROWS = 3` 的部分照样被丢掉，页面上没有任何标记——**跟第 2 轮那条 P2-1 是同一个失败，只是往右挪了 100 个字符**。而且文件自己前后矛盾：第 40 行的注释写着「no name is ever silently changed」，第 45 行又写着「a description spilling past this many rows would be a name nobody wrote」。审查方明确说了**线上数据够不着**（catalogue 最长 41 字符），但路径是真的：`SOLineCreate.description` 允许 500 字符，`einvoice.py:342` 原样抄到发票行上。修法：放不下就在末尾补 `...`。**页面就一页，「停在某处」是必然的；不必然的是「不告诉人你停了」**——一个标了记号的名字，读的人看得出它不完整；一个没标记号的错名字，看不出来。
-  - **P3-2（降级，test-quality）：第 2 轮那份 repro 引用了这次删掉的常量。** 它在断言消息里写 `description[:invoice_pdf.DESCRIPTION_CHARS]`，而**断言消息只在断言失败时才求值**——也就是它唯一被需要的那一刻。于是将来真出回归，那份 repro 会抛 `AttributeError` 而不是报告截断，跑的人分不清「修复退化了」和「证据文件过期了」。**这跟第 2 轮报我的 P3-3 是同一个毛病，而且就是我修 P3-3 那个 commit 里造出来的。** 改成从页面上把那一行读出来。验证过：把第 2 轮的 bug 放回去，它现在报的是 `AssertionError: ... the invoice the customer keeps says 'Panasonic Electric Kettle 1.8L NC-EG30 10 26.05 260.50'`，正是它该给的诊断。
-
-  📌 **三轮的严重性曲线：P2 → P2 → P3，而且第 3 轮两条审查方都主动说了「线上数据够不着」。** 对比任务 9 的 P1 → P1 → 无 P1。**收敛了。** 三轮里有两轮报的是「上一轮的修复自己造出来的东西」（第 2 轮的 fixture 漂移、第 3 轮的 repro 引用悬空常量），这个模式值得记住：**在这个流程里，改完之后最该怀疑的不是原来那段代码，是刚写下的那次修复。**
-
-  **还没验的（必须由用户拿手机做）：**
-  - PDF 在手机 WhatsApp 里**打不打得开**、缩略图长什么样。这是任务 10 验收标准的正文，测试证明不了
-  - 整条链路打真实 erp_os：发货 → 开票 → MyInvois → 收到 PDF。**Claude 跑不了**，带凭据「写」外部系统会被权限分类器拦（任务 9 / 9.1 两次同样的事）
-  - **发货这一步会真的减库存**，第一次跑之前值得先看一眼演示要指的那块屏
+- [ ] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**
+  文件：`backend/app/tools/erp.py`（扩展）、`backend/app/services/whatsapp_media.py`（用上传接口）
+  目标：`erp_generate_einvoice(order_id)` 拿到 PDF → 走 `upload_media()` → 构造 document 消息 payload
+  验收：手机上收到 PDF 发票并能打开，内容对得上刚才那张单
 
 - [ ] **任务 11：retail bot 改造成工具驱动**
   文件：`backend/app/bots/data/retail.json`、`backend/app/bots/registry.py`

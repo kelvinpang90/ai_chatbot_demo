@@ -37,14 +37,18 @@ SELLER_NAME = "Demo Malaysia Sdn Bhd"
 # its column cut names mid-token, and Malaysian grocery names end in the pack
 # size, so "Farm Fresh Chocolate Flavoured Milk 200ml" was billed to the customer
 # as "...Milk 20". 12 of the 201 SKUs in the live catalogue were long enough.
-# Anything past the column now wraps, so no name is ever silently changed --
-# eleven of those twelve fit on one row at this width anyway.
+# Anything past the column wraps instead -- every one of those twelve fits on a
+# single row at this width.
 DESCRIPTION_RIGHT = 300.0
 DESCRIPTION_LINE_SIZE = 9
 
-# A description spilling past this many rows would be a name nobody wrote; the
-# cap is what keeps one bad row from walking off the bottom of a one-page bill.
+# The page is one page, so the rows a single description may take are capped, and
+# erp_os will accept a 500-character line description (SOLineCreate.description)
+# that would run off the bottom of it. What is not capped is honesty: a name that
+# does not fit is marked as cut. "Shortened" and "renamed" are the same thing to
+# a customer reading a document headed e-Invoice unless the page says which.
 MAX_DESCRIPTION_ROWS = 3
+CUT_MARK = "..."
 
 
 def _money(value, currency: str = "") -> str:
@@ -199,10 +203,21 @@ def _description_rows(description: str) -> list[str]:
     A name cut to fit is not a shorter name, it is a different one -- a pack size
     or a model number that does not exist -- and the customer has no way to tell
     that from the real thing.
+
+    Nothing in the catalogue comes close to the row cap; a description long
+    enough to hit it comes from the free-text field on an order line. It is
+    marked rather than merely dropped, which is the whole distinction: a reader
+    can see that a marked name is incomplete and cannot see that an unmarked one
+    is wrong.
     """
     width = int((DESCRIPTION_RIGHT - MARGIN) / (DESCRIPTION_LINE_SIZE * MONO_CHAR_WIDTH))
     rows = textwrap.wrap(description, width) or [""]
-    return rows[:MAX_DESCRIPTION_ROWS]
+    if len(rows) <= MAX_DESCRIPTION_ROWS:
+        return rows
+
+    kept = rows[:MAX_DESCRIPTION_ROWS]
+    kept[-1] = kept[-1][: width - len(CUT_MARK)].rstrip() + CUT_MARK
+    return kept
 
 
 def _lines(page: _Page, invoice: dict) -> None:

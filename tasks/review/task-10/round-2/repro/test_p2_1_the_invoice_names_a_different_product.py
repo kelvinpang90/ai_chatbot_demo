@@ -76,7 +76,12 @@ def _rendered_text(description: str) -> str:
 def test_the_customers_copy_names_the_product_the_erp_named(description: str) -> None:
     text = _rendered_text(description)
 
+    # The message reads the row off the page rather than recomputing it from a
+    # constant in the module: `DESCRIPTION_CHARS` was deleted by the fix, and an
+    # assertion message is evaluated only when the assertion fails -- so naming
+    # it here turned a future regression into an AttributeError instead of a
+    # diagnosis. Round 3, P3-2.
     assert description in text, (
         f"the ERP sells {description!r}; the invoice the customer keeps says "
-        f"{description[:invoice_pdf.DESCRIPTION_CHARS]!r}"
+        f"{next((line for line in text.splitlines() if description[:12] in line), '<no such row>')!r}"
     )

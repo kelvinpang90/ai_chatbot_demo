@@ -188,3 +188,19 @@ def test_a_name_too_long_for_the_column_wraps_instead_of_losing_its_end():
 
     assert len(rows) > 1
     assert " ".join(rows) == name
+
+
+def test_a_description_past_the_row_cap_says_on_the_page_that_it_was_cut():
+    """Round 3, P3-1. The page is one page, so a description that will not fit
+    has to stop somewhere -- but stopping silently is the 38-character bug with a
+    bigger number in front of it. erp_os takes 500 characters on an order line's
+    description and copies them onto the invoice, so this row is reachable
+    without touching the catalogue."""
+    name = "Kettle " * 40  # far past three rows
+    rows = invoice_pdf._description_rows(name)
+
+    assert len(rows) == invoice_pdf.MAX_DESCRIPTION_ROWS
+    assert rows[-1].endswith(invoice_pdf.CUT_MARK)
+    # And the mark reaches the document, not just the helper.
+    text = _text({**INVOICE, "lines": [{**INVOICE["lines"][0], "description": name}]})
+    assert invoice_pdf.CUT_MARK in text
