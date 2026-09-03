@@ -446,7 +446,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ⚠️ **真机验收又卡住了，原因和以前不同**：本地 `backend/.env` 里的 CRM 凭据对 `crm.kelvinpeng.com/api/auth/login` 返回 **401 Unauthorized**（不是被权限分类器拦，是密码不对或已过期）。线上登录页显示的 demo 账号是 `admin@crm.com`。按 CLAUDE.md 的高风险操作规则，认证失败一次即停止、不连续换凭据重试（登录连错 5 次锁 5 分钟），所以**没有继续试**。
   顺带得到一个真实故障下的观察：**工具优雅降级了**，返回 `LEAD_FAILED` 而不是抛异常穿透——第 1 / 3 轮那两条 P1 要保住的行为，在一次真实故障里跑通了。
 
-- [x] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**——**2026-09-03 代码完成**（25 个新测试，全套 224 passed）。**真机验收未做**，见下面「还没验的」。
+- [x] 🔍 **任务 10：e-Invoice PDF 生成 + 发进 WhatsApp**——**2026-09-03 代码完成**（25 个新测试，全套 224 passed），**同日真机验收 PASS**（跟任务 11 一起验的，实测记录写在任务 11 那一条）。线上：`INV-2026-00001` 状态 **FINAL**、拿到 LHDN UIN `4D061EAF332C4FCB`，PDF（2 kB）作为文件送进了 WhatsApp 对话，带 View / Save as。**只剩「PDF 在手机上点开长什么样」没验**——文件确实送到了，但观感只有人眼能判断。
+  📌 **一处和当初假设不符，记下来**：erp_os 提交 MyInvois 之后的终态是 **`FINAL`**，不是本文件早先写的 `VALIDATED`。代码不受影响（`_validated` 只在 `DRAFT` 时提交，`FINAL` 也不在 `VOID_INVOICE` 里），但以后写判断别照着 `VALIDATED` 写。
   文件：`backend/app/services/invoice_pdf.py`（新增）、`backend/app/services/outbox.py`（新增）、`backend/app/services/erp_client.py`、`backend/app/services/whatsapp.py`、`backend/app/services/whatsapp_media.py`、`backend/app/tools/erp.py`、`backend/app/routers/whatsapp_webhook.py`、`backend/requirements-dev.txt`、`backend/tests/`（新增 `test_invoice_pdf.py`，扩 `test_erp_tools.py` / `test_whatsapp_webhook.py` / `conftest.py`）
 
   `erp_generate_einvoice(order_no, customer_id)` 一路做完：按客户找单 → 发货 → 开票 → 提交 MyInvois → 渲染 PDF → 上传 Meta → 排进出站队列，跟回复一起发出去。
@@ -535,7 +536,28 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   | 工具对线上真的返回数据 | 只读探针打真实 erp_os / crm_os | earbuds SKU-ELE-0001 命中，KL 39 / 槟城 25 / JB 18；Sunrise 的第一笔就是任务 9 建的 `SO-2026-00001`（986.70）；Penang Superstore 5 笔；散客两边都查不到 |
   | 报价口径 | 同上 | 299.0000 未税 / 328.9000 含税，两个字段各自标名 |
 
-  **还没验的（就一条，但它是验收的正文）：**
+  ✅ **2026-09-03 真机验收 PASS，在真实 WhatsApp 上一次走通，而且顺带把任务 9 / 9.1 / 10 一起验了。** 下面「还没验的」那一段写于验收之前，保留是为了说明当时的判断，**现在已经不成立**。
+
+  实测对话（客户侧全中文，身份 = Sunrise Hypermart）：
+  1. 「现在有什么 earbuds」→ **RM 328.90（含 SST）**、**共 82 个：吉隆坡 39 / 槟城 25 / 新山 18**、`SKU-ELE-0001`。三个预设判据全中
+  2. 「介绍一下是什么类型」→ 答了目录里有的，然后**主动说「更详细的规格（续航、防水等级等）系统里没有，我可以请同事帮你确认」**。这是任务 11.3 想立的规矩**在没写之前自己就出现了**——工具返回什么就说什么，没有的就说没有
+  3. 给地址 → **自己判断「地址在吉隆坡，那就从吉隆坡主仓出货」**，选了 warehouse_id 1
+  4. **「只要 1 个」——中途改主意那一步成立**：重算成 RM 328.90 × 1，仓库不变，重新要确认。这一步是剧本里刻意加的，「接不住就证明它是个流程图」
+  5. 「确认」→ `SO-2026-00002` + `INV-2026-00001`，PDF 直接发进对话
+
+  **独立核实（没有只信 bot 自己说的，用只读脚本打了一遍真实 erp_os）**：
+  | 查的 | 结果 |
+  |---|---|
+  | `SO-2026-00002` | 状态 **FULLY_SHIPPED**，`customer_id=1`（Sunrise Hypermart，来自 `erp_find_customer`，不是编的） |
+  | 金额 | 299.00 未税 + 29.90 税 = **328.90 含税**，两栏同一个税基 |
+  | `INV-2026-00001` | 状态 **FINAL**，LHDN UIN `4D061EAF332C4FCB` |
+  | 库存 | KL **39 → 38**，总数 82 → 81，**正好少 1 个** |
+
+  最后一行才是重点：**库存真的动了**，证明 confirm 和发货是真跑的。前面几条一张 DRAFT 也能伪装出来。
+
+  ⚠️ **验收暴露的一个真问题，任务 11 不修，但要记住**：客户发了完整送货地址（`Gdex Express S/B 6, Jalan Tasik Selatan...`），**bot 只拿它判断了从哪个仓发货，没有把地址存进任何地方**。ERP 里那张 DeliveryOrder 上没有这个地址。演示时客户若追问「那到底送去哪」，答案是「系统里没记」。这不是任务 11 引入的（`ship_sales_order` 从任务 10 起就没有地址字段），但**这次是它第一次以「客户明确给了、系统明确丢了」的形式出现**。建议单开一条任务。
+
+  **验收之前还没验的（下面这段已过期，留档）：**
   - **模型是不是真的会去调工具**，以及那两句问话（含 rojak）走出来的工具序列长什么样。**本机跑不了**：`backend/.env` 里 `ANTHROPIC_API_KEY` 是**空的**，没有 key 就没有模型回合。上面所有验证证明的是「工具挂对了、数据是真的」，**证明不了「模型选择了用它」**——这两件事必须分开说
   - 探针脚本已经写好留在仓库外 **`E:\projects\ai_chatbot_task11_probe.py`**（跟 `erp_create_earbuds.py` 同一个位置和理由：要凭据、是验证工具不是产品代码）。跑法写在它的 docstring 里。它**只读**：除 login 外所有对 erp_os / crm_os 的 POST 在 httpx 那一层被拦掉并打印出来，所以哪怕模型决定下单也写不进去。`.env` 里补上 key 之后重跑，第二段会自动执行
 
