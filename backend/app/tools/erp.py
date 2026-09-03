@@ -78,10 +78,19 @@ def _as_json(rows: list) -> str:
     return json.dumps(rows, ensure_ascii=False, default=str)
 
 
-def _price(sku: dict) -> str:
-    """Whichever of the two prices the SKU is actually sold at."""
-    key = "unit_price_incl_tax" if sku.get("price_tax_inclusive") else "unit_price_excl_tax"
-    return str(sku.get(key))
+def _prices(sku: dict) -> dict:
+    """Both tax bases, each under a name that says which it is.
+
+    Quoting one number was the bug: the ERP prices a line excluding tax and
+    totals the order including it, so a bot that read out `unit_price_excl_tax`
+    promised RM 299.00 and then sent an invoice for RM 328.90 -- on the very
+    screen that exists to prove the back office is real. The model cannot pick
+    the right number unless it is told which is which, so it gets both.
+    """
+    return {
+        "unit_price_excl_tax": sku.get("unit_price_excl_tax"),
+        "unit_price_incl_tax": sku.get("unit_price_incl_tax"),
+    }
 
 
 @beta_tool
@@ -90,6 +99,10 @@ def erp_search_sku(keyword: str) -> str:
 
     Use this to find a product the customer mentions before quoting a price or
     checking stock. Returns the product code, name and unit price.
+
+    Quote `unit_price_incl_tax`. That is the number the order total and the
+    e-Invoice will carry, so quoting the other one means the bill arrives higher
+    than the price the customer agreed to.
 
     Args:
         keyword: Part of a product name or code, e.g. "earbuds" or "SKU-00012".
@@ -112,7 +125,7 @@ def erp_search_sku(keyword: str) -> str:
                 "code": sku.get("code"),
                 "name": sku.get("name"),
                 "name_zh": sku.get("name_zh"),
-                "unit_price": _price(sku),
+                **_prices(sku),
                 "currency": sku.get("currency"),
             }
             for sku in skus
@@ -195,6 +208,50 @@ def erp_find_customer(name_or_phone: str) -> str:
                 "currency": customer.get("currency"),
             }
             for customer in customers
+        ]
+    )
+
+
+NO_ORDERS = "This customer has no orders in the ERP system."
+
+
+@beta_tool
+def erp_list_orders(customer_id: int) -> str:
+    """List a customer's own orders, newest first, and where each one has got to.
+
+    Use this whenever the customer asks about something they already ordered --
+    "where is my order", "has it shipped yet", "what did I order last time". The
+    status is the ERP's own word for it: CONFIRMED means the stock is set aside,
+    PARTIAL_SHIPPED and FULLY_SHIPPED mean it has left the warehouse, INVOICED
+    and PAID mean it has been billed.
+
+    The customer_id must come from erp_find_customer. Never guess one: every
+    integer is somebody's real account, so a guessed id reads a stranger's order
+    history out loud in this chat.
+
+    Args:
+        customer_id: The ERP customer whose orders to list, as returned by
+            erp_find_customer.
+    """
+    try:
+        orders = erp_client.client().recent_orders(customer_id)
+    except ApiClientError:
+        logger.exception("erp_list_orders failed for customer %s", customer_id)
+        return UNAVAILABLE
+
+    if not orders:
+        return NO_ORDERS
+
+    return _as_json(
+        [
+            {
+                "order_no": order.get("document_no"),
+                "status": order.get("status"),
+                "ordered_on": order.get("business_date"),
+                "currency": order.get("currency"),
+                "total_incl_tax": order.get("total_incl_tax"),
+            }
+            for order in orders
         ]
     )
 
@@ -483,6 +540,7 @@ TOOLS = [
     erp_search_sku,
     erp_get_inventory,
     erp_find_customer,
+    erp_list_orders,
     erp_create_sales_order,
     erp_generate_einvoice,
 ]

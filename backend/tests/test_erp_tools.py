@@ -57,19 +57,27 @@ def test_search_hits_the_sku_route_and_returns_only_what_a_customer_would_ask():
             "code": "SKU-00012",
             "name": "TWS Earbuds Pro",
             "name_zh": "无线耳机 Pro",
-            "unit_price": "89.00",
+            "unit_price_excl_tax": "89.00",
+            "unit_price_incl_tax": "94.34",
             "currency": "MYR",
         }
     ]
 
 
-def test_search_quotes_the_tax_inclusive_price_when_that_is_how_it_is_sold():
-    inclusive = {**SKU_ROW, "price_tax_inclusive": True}
+def test_search_hands_over_both_tax_bases_so_the_quote_matches_the_invoice():
+    """The order total and the PDF are tax-inclusive; a lone ex-tax price lies.
 
-    with patch.object(erp_client.ErpClient, "get", return_value={"items": [inclusive]}):
+    Quoting one number was the old behaviour and it promised RM 89.00 against a
+    bill of RM 94.34. Both are here, each named for what it is, so the model can
+    read out the one the customer will actually be charged.
+    """
+    with patch.object(erp_client.ErpClient, "get", return_value={"items": [SKU_ROW]}):
         payload = json.loads(erp.erp_search_sku("earbuds"))
 
-    assert payload[0]["unit_price"] == "94.34"
+    assert payload[0]["unit_price_excl_tax"] == "89.00"
+    assert payload[0]["unit_price_incl_tax"] == "94.34"
+    # The ambiguous single field is gone: nothing can read it and get it wrong.
+    assert "unit_price" not in payload[0]
 
 
 def test_inventory_asks_across_every_warehouse_and_totals_what_can_be_sold():
@@ -149,6 +157,7 @@ def test_every_tool_is_declared_with_a_schema_the_model_can_read():
         "erp_search_sku",
         "erp_get_inventory",
         "erp_find_customer",
+        "erp_list_orders",
         "erp_create_sales_order",
         "erp_generate_einvoice",
     }
@@ -557,6 +566,53 @@ def test_an_unreachable_erp_does_not_look_like_an_unknown_customer(_credentials)
     answer: the first one invites creating a duplicate account."""
     with patch.object(api_client.httpx, "post", side_effect=httpx.ConnectError("refused")):
         assert erp.erp_find_customer("Sunrise") == erp.UNAVAILABLE
+
+
+# -- "where is my order" ------------------------------------------------------
+
+ORDER_LIST_ROW = {
+    "id": 251,
+    "document_no": "SO-2026-00001",
+    "status": "FULLY_SHIPPED",
+    "customer_id": 1,
+    "business_date": "2026-09-02",
+    "currency": "MYR",
+    "subtotal_excl_tax": "897.0000",
+    "total_incl_tax": "986.7000",
+}
+
+
+def test_the_orders_a_customer_asks_about_are_only_ever_their_own(_credentials):
+    """The question is "where is my order", and the id decides whose."""
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(
+            api_client.httpx, "get", return_value=_response({"items": [ORDER_LIST_ROW]})
+        ) as get:
+            payload = json.loads(erp.erp_list_orders(1))
+
+    assert get.call_args.args[0].endswith("/api/sales-orders")
+    assert get.call_args.kwargs["params"]["customer_id"] == 1
+    assert payload == [
+        {
+            "order_no": "SO-2026-00001",
+            "status": "FULLY_SHIPPED",
+            "ordered_on": "2026-09-02",
+            "currency": "MYR",
+            "total_incl_tax": "986.7000",
+        }
+    ]
+
+
+def test_a_customer_with_nothing_on_file_is_told_so_not_shown_somebody_elses(_credentials):
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", return_value=_response({"items": []})):
+            assert erp.erp_list_orders(1) == erp.NO_ORDERS
+
+
+def test_an_unreachable_erp_does_not_look_like_a_customer_with_no_orders(_credentials):
+    """"You have no orders" is a claim; "I could not check" is the truth here."""
+    with patch.object(api_client.httpx, "post", side_effect=httpx.ConnectError("refused")):
+        assert erp.erp_list_orders(1) == erp.UNAVAILABLE
 
 
 # -- issuing the e-Invoice ----------------------------------------------------

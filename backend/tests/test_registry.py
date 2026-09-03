@@ -1,4 +1,7 @@
+import pytest
+
 from app.bots import registry
+from app.tools import registry as tool_registry
 
 
 ALL_BOT_IDS = {"retail", "hotel", "banking", "food", "realestate", "saas"}
@@ -32,3 +35,58 @@ def test_get_identity_looks_up_within_bot():
 
     assert registry.get_identity("retail", "does-not-exist") is None
     assert registry.get_identity("does-not-exist", "does-not-exist") is None
+
+
+def test_every_tool_a_bot_declares_actually_exists():
+    """A name that resolves to nothing is a bot that quietly makes things up."""
+    for bot in registry.list_bots():
+        for name in bot.tools:
+            assert name in tool_registry.CATALOGUE
+
+
+def test_retail_is_wired_to_the_erp_and_crm_it_demonstrates():
+    retail = registry.get_bot("retail")
+    assert retail is not None
+    assert set(retail.tools) == {
+        "erp_search_sku",
+        "erp_get_inventory",
+        "erp_find_customer",
+        "erp_list_orders",
+        "erp_create_sales_order",
+        "erp_generate_einvoice",
+        "crm_lookup_customer",
+        "crm_create_lead",
+    }
+    assert [tool.name for tool in tool_registry.get_tools("retail")] == retail.tools
+
+
+def test_retail_no_longer_carries_the_answers_it_is_supposed_to_look_up():
+    """The static catalogue and the fake order history were the thing to remove.
+
+    Left in place they are not merely redundant: the model reads them, answers
+    from them, and the console shows no tool call at all -- which is the one
+    claim this whole demo is making.
+    """
+    retail = registry.get_bot("retail")
+    assert retail is not None
+    assert "products" not in retail.context_data
+    for identity in retail.identities:
+        assert "orders" not in identity.profile
+
+
+def test_a_bot_with_no_tools_declared_still_gets_an_empty_list():
+    """The pre-tool path is a contract, not a gap: bots without tools answer in
+    one turn exactly as they did before the runner existed."""
+    assert registry.get_bot("banking").tools == []
+    assert tool_registry.get_tools("banking") == []
+    assert tool_registry.get_tools("does-not-exist") == []
+
+
+def test_a_tool_name_that_does_not_exist_stops_the_process_rather_than_the_demo():
+    with pytest.raises(ValueError) as failure:
+        tool_registry._resolve("retail", ["erp_search_sku", "erp_serch_sku"])
+
+    # The message has to name the typo and the alternatives, or whoever hits it
+    # at startup is left guessing which of eight names is wrong.
+    assert "erp_serch_sku" in str(failure.value)
+    assert "erp_search_sku" in str(failure.value)

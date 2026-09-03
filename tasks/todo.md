@@ -52,7 +52,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **Lead 那一列现在有一张标题是 `16315551181`、金额 RM 0 的卡**，负责人 Marcus Johnson。这正是 `crm_os/backend/app/utils/demo_scope.py` 注释里写「a dashboard full of leads named after phone numbers and worth RM 0 undercuts the product being demonstrated」的那种卡——但它**没有被过滤掉**，说明这条联系人的 `is_gateway` 是 false（`demo_scope` 只挡 true 的）。任务 9.1 建出来的线索卡就会挨着它出现
   - **联系人列表最上面 5 条是 `KK Hardware` / `demo company 1-4`**，全是 RM 0、0 个商机的空壳（列表按创建时间倒序，所以它们排最前）。客户点开 Contacts 第一眼看到的就是这些
   - 全库 26 条联系人。**要不要删由你定**——删是写操作，而且是你的数据，我没动
-- [ ] **E. 本地 `backend/.env` 的 `CRM_PASSWORD` 已失效**（2026-09-02）：对 `crm.kelvinpeng.com/api/auth/login` 返回 **401**。`CRM_EMAIL` 是对的（`admin@crm.com`，和线上登录页显示的 demo 管理员一致），**密码不对**——`.env` 里是 14 位，而线上登录页预填的密码是 8 位。
+- [x] ~~**E. 本地 `backend/.env` 的 `CRM_PASSWORD` 已失效**~~——**2026-09-03 任务 11 实测已恢复，这一条可以划掉**。同一份 `backend/.env`（文件时间戳 09-03 11:32，看起来是被改过）在容器里跑 `crm_lookup_customer("David Park")` 和 `crm_lookup_customer("+1-858-555-1515")` 都返回真实联系人（MedTech Innovations），说明**登录这一跳是通的**——查不到人会返回 `NOT_FOUND`，登录失败才返回 `UNAVAILABLE`，两者分得开。ERP 侧同样实测 `login 200`。**VPS 上那份 `/opt/ai_chatbot/backend/.env` 仍未验**。以下是原文，留作来龙去脉：
+  ~~（2026-09-02）~~：对 `crm.kelvinpeng.com/api/auth/login` 返回 **401**。`CRM_EMAIL` 是对的（`admin@crm.com`，和线上登录页显示的 demo 管理员一致），**密码不对**——`.env` 里是 14 位，而线上登录页预填的密码是 8 位。
   ⚠️ 同一份凭据在今天早些时候审查方跑 live 脚本时还是好的，所以是中途失效或那份 `.env` 从来就和线上不同步。
   按 CLAUDE.md 的高风险操作规则（认证失败一次即停、不连续换凭据重试，登录连错 5 次锁 5 分钟），**没有再试第二次**。这一条不解决，任务 9.1 及之后所有写 CRM 的真机验收都做不了。VPS 上那份 `/opt/ai_chatbot/backend/.env` 是否同样失效，也需要一并确认
 
@@ -507,10 +508,38 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 整条链路打真实 erp_os：发货 → 开票 → MyInvois → 收到 PDF。**Claude 跑不了**，带凭据「写」外部系统会被权限分类器拦（任务 9 / 9.1 两次同样的事）
   - **发货这一步会真的减库存**，第一次跑之前值得先看一眼演示要指的那块屏
 
-- [ ] **任务 11：retail bot 改造成工具驱动**
-  文件：`backend/app/bots/data/retail.json`、`backend/app/bots/registry.py`
-  目标：`retail` 的 `persona_prompt` 改成「用工具查，不要编」；`context_data` 里的静态商品/订单表删掉（改由工具实时查），只留 FAQ 和政策类文本；bot 元数据加 `tools` 字段声明它能用哪些工具
-  验收：问「我的订单到哪了」，日志显示走的是工具调用而不是背 JSON；再用 rojak 话问一句（`"Boss 这个 earbuds 还有 stock 吗?"`），同样正确走工具——**老板看到自家客人的说话方式被听懂，比任何技术指标都管用**
+- [x] **任务 11：retail bot 改造成工具驱动**——**2026-09-03 代码完成**（全套 246 passed）。**工具已经真的挂上了**：`get_tools("retail")` 返回 8 个工具，`_TOOLS_BY_BOT` 不再是空字典。任务 8 / 9 / 9.1 / 10 每一条记录末尾那句「没挂到任何 bot 上，挂载是任务 11 的事」到此为止。
+  文件：`backend/app/bots/data/retail.json`、`backend/app/bots/registry.py`、`backend/app/tools/registry.py`、`backend/app/tools/erp.py`、`backend/app/services/erp_client.py` + 五个测试文件
+
+  **挂载方式**：bot JSON 里写 `tools: ["erp_search_sku", ...]`，`tools/registry.py` 在**导入时**把名字解析成工具对象。名字打错**直接抛异常、进程起不来**——这是刻意的：一个「能启动、能回答、但因为工具没挂上所以在编」的 bot，正是这一整批要消灭的东西，宁可当场炸也不要它上台。
+
+  **retail.json 的四处改动**：
+  - `context_data` 的 `products`（10 条静态商品）**删了**，`faq` 改写成 `policies`（退换货 / 物流 / COD / 账期 / 营业时间）。留下的全是工具查不到、也不会过期的政策文本
+  - 三个身份里的 `orders` 假订单表（`ORD-58231` 那些）**全删**。这一条比删商品表更要紧：不删的话模型直接照着 profile 念，导演台上一个工具调用都不会有，而那正是验收要看的东西
+  - **身份换成 ERP 里真实存在的客户**——`Sunrise Hypermart Sdn Bhd`（CUS-001）、`Penang Superstore Chain Sdn Bhd`（CUS-004），外加一个 ERP / CRM 都查不到的散客。profile 里**只给公司名和电话，不给 customer_id**：id 必须由 `erp_find_customer` 查出来，这是任务 9 第 1 轮那条 P1 的规矩，不能从身份数据上开后门绕过去
+  - `quick_questions` 第三条从「推荐几款热销商品」换成剧本那句 rojak（`Boss, this earbuds got stock or not?`）。原来那句现在**没有任何工具支撑**——没有「热销榜」这种工具，留着等于请模型编一份商品清单，跟任务 11.3 要立的规矩正面冲突
+
+  **偏离文件清单，三处，都说明理由**：
+  1. **新增了 `erp_list_orders(customer_id)` 工具**（`tools/erp.py` + `erp_client.recent_orders`）。验收第一句是「问『我的订单到哪了』要走工具」，而**批次 01 从头到尾就没有一个能读订单的工具**——任务 8 是商品/库存/客户，9 是建单，10 是开票。删掉假订单表之后，不补这个工具的话 bot 对「我的订单到哪了」唯一诚实的回答是「查不到」，验收第一条直接不可能达成。这是计划本身的缺口，不是我扩需求
+  2. **改了报价口径**（`_price` → `_prices`），这是 todo 里点名要在本任务处理的任务 9 P3-1。`erp_search_sku` 从只返回一个含义不明的 `unit_price`，改成两个**各自写明税基**的字段。线上实测这一条最能说明问题：earbuds 是 `unit_price_excl_tax: 299.0000` / `unit_price_incl_tax: 328.9000`——**就是那两个数**。persona 里硬性规定报含税价，因为订单总额和发票都是含税的
+  3. **拆掉了端到端测试里最后一个桩**。`test_end_to_end.py` 原本 patch `llm.get_tools` 塞 `crm.TOOLS` 进去，任务 9.1 的记录里写着「任务 11 挂上之后这个桩就该拿掉」。现在整条链路从 webhook 到 crm_os 没有一个桩，registry 读的是 `retail` 自己的 JSON——**哪天有人把 `crm_create_lead` 从 JSON 里删掉，这两个测试会红**
+
+  ⚠️ **顺手修的测试漂移，值得记一笔**：`test_get_reply_returns_fallback_on_api_error` 一直拿 `retail` 当「没有工具的 bot」用。工具挂上那一刻它红了——**这不是测试写错，是它一直在测一个再也不存在的前提**。改成两条路径各测一遍（`banking` 走单轮、`retail` 走工具循环）：只测一条，另一条就能一路抛进 webhook，客户那边表现为**发了消息没有任何回复**，比回一句道歉难看得多。
+
+  ⚠️ **线上探针抓到一个我自己写的坑，必须记住**：散客身份我一开始随手填了 `+60 12-345 6789`，读一遍 ERP 发现它**命中真实客户 `Tan Ah Kow`（CUS-031）**——`erp_find_customer` 按「后 8 位数字」比对，而 `345 6789` 这种占位号恰恰最容易撞上 seed 数据。一个本该演「查无此人 → 建 CRM 线索」的身份，会当场把陌生人的订单历史念出来。这就是任务 10 那条 P3-2 的形状，只不过这次是**演示数据自己**制造的。换成实测无人命中的 `+60 19-870 4432`。**教训：demo 数据里任何一个看起来像占位符的号码，都要拿真实系统查一遍再写进去。**
+
+  **验证到什么程度（三栏）**：
+  | 验了 | 怎么验的 | 结果 |
+  |---|---|---|
+  | 挂载、解析、失败模式 | 全套 pytest（容器内） | 246 passed；新增 9 个测试，含「JSON 里写错工具名要炸」 |
+  | 工具对线上真的返回数据 | 只读探针打真实 erp_os / crm_os | earbuds SKU-ELE-0001 命中，KL 39 / 槟城 25 / JB 18；Sunrise 的第一笔就是任务 9 建的 `SO-2026-00001`（986.70）；Penang Superstore 5 笔；散客两边都查不到 |
+  | 报价口径 | 同上 | 299.0000 未税 / 328.9000 含税，两个字段各自标名 |
+
+  **还没验的（就一条，但它是验收的正文）：**
+  - **模型是不是真的会去调工具**，以及那两句问话（含 rojak）走出来的工具序列长什么样。**本机跑不了**：`backend/.env` 里 `ANTHROPIC_API_KEY` 是**空的**，没有 key 就没有模型回合。上面所有验证证明的是「工具挂对了、数据是真的」，**证明不了「模型选择了用它」**——这两件事必须分开说
+  - 探针脚本已经写好留在仓库外 **`E:\projects\ai_chatbot_task11_probe.py`**（跟 `erp_create_earbuds.py` 同一个位置和理由：要凭据、是验证工具不是产品代码）。跑法写在它的 docstring 里。它**只读**：除 login 外所有对 erp_os / crm_os 的 POST 在 httpx 那一层被拦掉并打印出来，所以哪怕模型决定下单也写不进去。`.env` 里补上 key 之后重跑，第二段会自动执行
+
+  📌 **没做、也不打算在本任务做的：任务 10 那条 P3-2（工具层不知道「这通对话是谁」）。** 原文划给了任务 11，理由是「任务 11 决定工具挂载方式时才有的东西」。挂载方式现在定下来了，结论是**它不该在这里做**：`get_tools` 拿到的是模块级裸函数，要让工具知道对话身份，得把 `tools/erp.py` / `crm.py` 全部改成按会话生成闭包的工厂，外加 `llm.get_reply` 和会话层一起动——4 个以上文件，跟本任务「1-3 个文件、单一目的」的粒度完全不是一回事。**更要紧的是它堵不住真正的洞**：WhatsApp 上一通陌生来电本来就没有对应的 ERP 客户，「这通对话是谁」得先有手机号 → ERP 客户的映射，那是一个独立功能，不是挂载的副产品。**建议单开一条任务**；在此之前风险维持原判（demo 公开数据，已知情接受）。
 
 - [ ] **任务 11.2：轻量档也套上工具循环**（`hotel` + `saas`）
   文件：`backend/app/tools/local.py`（新增）、`backend/app/bots/data/hotel.json`、`backend/app/bots/data/saas.json`、测试

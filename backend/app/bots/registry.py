@@ -28,6 +28,9 @@ class BotConfig(BaseModel):
     # Which Claude model answers for this bot. Unset falls back to settings.anthropic_model.
     model: str | None = None
     context_data: dict = {}
+    # The tools this bot may call, by name, resolved in app.tools.registry. Empty
+    # means it answers from its context data alone, as every bot did before.
+    tools: list[str] = []
     quick_questions: list[LocalizedText] = []
     identities: list[Identity]
 

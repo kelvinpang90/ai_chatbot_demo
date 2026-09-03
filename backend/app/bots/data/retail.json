@@ -9,82 +9,76 @@
   },
   "icon": "🛍️",
   "disclaimer": {
-    "zh": "这是演示数据，并非真实电商平台，仅用于产品体验展示。",
-    "en": "This is demo data for a fictional retail store, not a real e-commerce platform.",
-    "ms": "Ini adalah data demo untuk kedai runcit fiksyen, bukan platform e-dagang sebenar."
+    "zh": "这是演示环境：商品、库存和订单来自一套真实运行的 ERP 系统，里面装的是演示数据。",
+    "en": "This is a demo: products, stock and orders come from a real ERP system loaded with demo data.",
+    "ms": "Ini demo: produk, stok dan pesanan datang daripada sistem ERP sebenar yang dimuatkan dengan data demo."
   },
-  "persona_prompt": "You are a friendly customer support assistant for 'ShopMalaysia', a fictional online retail store based in Malaysia. Help customers with product recommendations, order status, returns/exchanges, and shipping questions. Use the product catalog and the current customer's order history provided in context to answer accurately - never invent order numbers or data that isn't in the context. All prices are in Malaysian Ringgit (RM). Keep replies concise, a few sentences at most.",
+  "persona_prompt": "You are the WhatsApp sales assistant for 'ShopMalaysia', a Malaysian retailer. You answer product questions, check stock, quote prices, place orders, report order status and send invoices.\n\nEvery fact you state comes from a tool, never from memory and never from these instructions. Prices, stock levels, customer accounts, order numbers and order status are all looked up. You have no product catalogue and no order list in front of you - if you have not called a tool, you do not know. When a tool finds nothing, say plainly that you could not find it and offer to pass the customer to a colleague; never guess a product, a price, a stock figure, an order number or a customer id.\n\nHow the tools fit together: erp_search_sku finds the product the customer means; erp_get_inventory says how many can actually be sold and from which branch; erp_find_customer turns a company name or phone number into the customer_id that erp_list_orders, erp_create_sales_order and erp_generate_einvoice all require; erp_list_orders answers \"where is my order\"; erp_create_sales_order books a real order, only after the customer has agreed to the products and quantities; erp_generate_einvoice sends them the invoice PDF. If the customer is not in the ERP, use crm_lookup_customer and crm_create_lead so a salesperson picks the enquiry up.\n\nQuote unit_price_incl_tax, the price with SST included. That is the number the order total and the invoice will carry, so quoting the other one means the bill arrives higher than the price the customer agreed to.\n\nIf the customer changes their mind - a different quantity, a different product, a different branch - check the stock and work the price out again before you agree to it. Do not reuse the numbers from earlier in the conversation.\n\nAll prices are in Malaysian Ringgit (RM). Keep replies short, a few sentences at most.",
   "context_data": {
-    "products": [
-      {"sku": "SP-1001", "name": "Wireless Bluetooth Earbuds", "price_rm": 129.90, "category": "Electronics"},
-      {"sku": "SP-1002", "name": "Stainless Steel Water Bottle 750ml", "price_rm": 39.90, "category": "Lifestyle"},
-      {"sku": "SP-1003", "name": "Batik Print Cotton Shirt", "price_rm": 89.00, "category": "Fashion"},
-      {"sku": "SP-1004", "name": "Portable Power Bank 20000mAh", "price_rm": 79.90, "category": "Electronics"},
-      {"sku": "SP-1005", "name": "Non-stick Frying Pan 28cm", "price_rm": 55.00, "category": "Home"},
-      {"sku": "SP-1006", "name": "Yoga Mat with Carry Strap", "price_rm": 49.90, "category": "Sports"},
-      {"sku": "SP-1007", "name": "Ceramic Coffee Mug Set (4pcs)", "price_rm": 35.00, "category": "Home"},
-      {"sku": "SP-1008", "name": "Kids Backpack - Dinosaur Print", "price_rm": 65.00, "category": "Kids"},
-      {"sku": "SP-1009", "name": "LED Desk Lamp with USB Charging", "price_rm": 45.90, "category": "Electronics"},
-      {"sku": "SP-1010", "name": "Organic Honey 500g", "price_rm": 28.90, "category": "Grocery"}
-    ],
-    "faq": [
-      {"q": "What is your return policy?", "a": "Items can be returned within 7 days of delivery if unused and in original packaging. Refunds are processed within 5-7 business days."},
-      {"q": "How long does shipping take within Malaysia?", "a": "Standard shipping takes 2-4 business days within Peninsular Malaysia, and 4-7 business days for Sabah/Sarawak."},
-      {"q": "Do you offer cash on delivery?", "a": "Yes, cash on delivery is available for orders under RM 500 within Klang Valley."}
-    ]
+    "policies": {
+      "returns": "Items can be returned within 7 days of delivery if unused and in original packaging. Refunds are processed within 5-7 business days.",
+      "shipping": "Standard shipping takes 2-4 business days within Peninsular Malaysia, and 4-7 business days for Sabah/Sarawak.",
+      "cash_on_delivery": "Cash on delivery is available for orders under RM 500 within Klang Valley.",
+      "payment_terms": "Trade accounts are invoiced with 30 day payment terms. All prices include SST where it applies.",
+      "hours": "Support answers 9am-6pm Malaysia time, Monday to Saturday."
+    }
   },
+  "tools": [
+    "erp_search_sku",
+    "erp_get_inventory",
+    "erp_find_customer",
+    "erp_list_orders",
+    "erp_create_sales_order",
+    "erp_generate_einvoice",
+    "crm_lookup_customer",
+    "crm_create_lead"
+  ],
   "quick_questions": [
     {"zh": "我的订单到哪里了？", "en": "Where is my order?", "ms": "Di mana pesanan saya?"},
-    {"zh": "有什么退换货政策？", "en": "What's your return policy?", "ms": "Apakah dasar pemulangan anda?"},
-    {"zh": "推荐几款热销商品", "en": "Recommend some bestsellers", "ms": "Cadangkan beberapa produk terlaris"}
+    {"zh": "这个 earbuds 还有 stock 吗？", "en": "Boss, this earbuds got stock or not?", "ms": "Bos, earbuds ni ada stok tak?"},
+    {"zh": "有什么退换货政策？", "en": "What's your return policy?", "ms": "Apakah dasar pemulangan anda?"}
   ],
   "identities": [
     {
-      "id": "vip_tan",
+      "id": "trade_sunrise",
       "label": {
-        "zh": "VIP 会员陈伟玲 - 有 3 笔在途订单",
-        "en": "VIP member Tan Wei Ling - 3 orders in transit",
-        "ms": "Ahli VIP Tan Wei Ling - 3 pesanan dalam perjalanan"
+        "zh": "陈伟玲 - Sunrise Hypermart 采购（ERP 里的老客户）",
+        "en": "Tan Wei Ling - buyer at Sunrise Hypermart (an existing ERP account)",
+        "ms": "Tan Wei Ling - pembeli di Sunrise Hypermart (akaun ERP sedia ada)"
       },
       "profile": {
         "customer_name": "Tan Wei Ling",
-        "customer_tier": "VIP",
-        "member_since": "2022-03",
-        "orders": [
-          {"order_id": "ORD-58231", "items": ["Wireless Bluetooth Earbuds"], "status": "Out for delivery", "total_rm": 129.90, "ordered_on": "2026-08-02"},
-          {"order_id": "ORD-58177", "items": ["Batik Print Cotton Shirt", "Ceramic Coffee Mug Set (4pcs)"], "status": "In transit - arriving in 2 days", "total_rm": 124.00, "ordered_on": "2026-07-30"},
-          {"order_id": "ORD-58090", "items": ["Portable Power Bank 20000mAh"], "status": "Processing", "total_rm": 79.90, "ordered_on": "2026-08-04"}
-        ]
+        "company": "Sunrise Hypermart Sdn Bhd",
+        "phone": "+60 3-2284 1111",
+        "account_note": "Existing trade account. Look the company up with erp_find_customer to get the customer_id before checking orders or placing one."
       }
     },
     {
-      "id": "new_customer",
+      "id": "walk_in",
       "label": {
-        "zh": "新客户李国豪 - 暂无历史订单",
-        "en": "New customer Lee Kok Hao - no order history",
-        "ms": "Pelanggan baharu Lee Kok Hao - tiada sejarah pesanan"
+        "zh": "李国豪 - 新客户，ERP 里查不到（会走建线索那条路）",
+        "en": "Lee Kok Hao - new customer, not in the ERP (goes down the CRM lead path)",
+        "ms": "Lee Kok Hao - pelanggan baharu, tiada dalam ERP (ikut laluan lead CRM)"
       },
       "profile": {
         "customer_name": "Lee Kok Hao",
-        "customer_tier": "New",
-        "member_since": "2026-08-05",
-        "orders": []
+        "company": null,
+        "phone": "+60 19-870 4432",
+        "account_note": "No trade account yet. erp_find_customer will find nothing - say so honestly, and record the enquiry with crm_create_lead."
       }
     },
     {
-      "id": "regular_returning",
+      "id": "trade_penang",
       "label": {
-        "zh": "普通会员陈美芬 - 有一笔退货处理中",
-        "en": "Regular member Chen Mei Fen - one return in progress",
-        "ms": "Ahli biasa Chen Mei Fen - satu pemulangan sedang diproses"
+        "zh": "陈美芬 - Penang Superstore 采购（走槟城仓）",
+        "en": "Chen Mei Fen - buyer at Penang Superstore (served from the Penang branch)",
+        "ms": "Chen Mei Fen - pembeli di Penang Superstore (dilayan dari cawangan Pulau Pinang)"
       },
       "profile": {
         "customer_name": "Chen Mei Fen",
-        "customer_tier": "Regular",
-        "member_since": "2024-11",
-        "orders": [
-          {"order_id": "ORD-57894", "items": ["Non-stick Frying Pan 28cm"], "status": "Return in progress - refund expected in 3 days", "total_rm": 55.00, "ordered_on": "2026-07-20"}
-        ]
+        "company": "Penang Superstore Chain Sdn Bhd",
+        "phone": "+60 4-228 4444",
+        "account_note": "Existing trade account in Penang. Check which branch actually holds the stock with erp_get_inventory before promising a delivery."
       }
     }
   ]

@@ -69,14 +69,23 @@ def test_a_bot_that_declares_no_model_falls_back_to_the_setting():
 
 
 def test_get_reply_returns_fallback_on_api_error():
-    bot = get_bot("retail")
-    identity = bot.identities[0]
+    """Both paths, since task 11: `retail` runs the tool loop, `banking` does not.
+
+    Testing only one of them would leave the other free to raise into the
+    webhook, where a customer's message goes unanswered instead of getting an
+    apology.
+    """
     error = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
 
+    plain = get_bot("banking")
+    assert llm.get_tools(plain.id) == []
     with patch.object(llm._client.messages, "create", side_effect=error):
-        reply = llm.get_reply(bot, identity, history=[])
+        assert llm.get_reply(plain, plain.identities[0], history=[]) == llm.FALLBACK_REPLY
 
-    assert reply == llm.FALLBACK_REPLY
+    with_tools = get_bot("retail")
+    assert llm.get_tools(with_tools.id)
+    with patch.object(llm._client.beta.messages, "parse", side_effect=error):
+        assert llm.get_reply(with_tools, with_tools.identities[0], history=[]) == llm.FALLBACK_REPLY
 
 
 def test_bot_without_tools_takes_the_plain_single_turn_path():

@@ -173,6 +173,21 @@ class ErpClient(JsonApiClient):
         """
         return self.post(f"/api/sales-orders/{so_id}/confirm")
 
+    def recent_orders(self, customer_id: int, *, limit: int = DEFAULT_RESULT_LIMIT) -> list[dict]:
+        """The customer's own orders, newest first.
+
+        erp_os sorts by business date then id, both descending
+        (`repositories/sales_order.py:78`), so "newest first" is the ERP's doing
+        rather than an assumption made here. Scoped to one customer for the same
+        reason `sales_order_for_customer` is: this id decides whose order history
+        gets read out loud in somebody's chat.
+        """
+        payload = self.get(
+            "/api/sales-orders",
+            params={"customer_id": customer_id, "page_size": limit},
+        )
+        return payload.get("items", [])
+
     def sales_order_for_customer(self, document_no: str, customer_id: int) -> dict | None:
         """The customer's own order with that number, in full, or None.
 

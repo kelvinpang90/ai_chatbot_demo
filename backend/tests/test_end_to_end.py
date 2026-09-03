@@ -11,10 +11,11 @@ every seam is fine and nothing is joined up -- a tool written correctly that the
 model is never offered, a tool result that never gets back to the model, a reply
 that never leaves the process.
 
-One thing here is not yet wired for real: `tools/registry.py` maps no tools to
-any bot, because mounting them is task 11's decision, not task 9.1's. So the
-registry lookup is the single stub in the chain, and it hands over the actual
-`crm.TOOLS` objects. Everything downstream of it is production code.
+Nothing in the chain is stubbed any more. Task 11 mounted the tools, so the
+registry lookup that used to be handed `crm.TOOLS` now reads `retail`'s own JSON
+like it does in production -- which is why this file no longer patches
+`llm.get_tools`. If that declaration ever loses `crm_create_lead`, these tests go
+red rather than passing on a tool list the shipped bot does not have.
 """
 from __future__ import annotations
 
@@ -213,13 +214,12 @@ def test_a_customer_message_becomes_a_card_in_the_crm_and_a_reply_on_whatsapp(cu
     turns = [_wants_the_lead_written(), _assistant([BetaTextBlock(type="text", text=FINAL_REPLY)], "end_turn")]
 
     with patch.object(whatsapp, "send_raw") as send:
-        with patch.object(llm, "get_tools", return_value=list(crm.TOOLS)):
-            with patch.object(llm._client.beta.messages, "parse", side_effect=turns) as parse:
-                with patch.object(llm.settings, "anthropic_api_key", "sk-not-real"):
-                    with patch("app.services.api_client.httpx.get", side_effect=crm_os.get):
-                        with patch("app.services.api_client.httpx.post", side_effect=crm_os.post):
-                            _walk_up_to_the_question(customer, send.call_args_list)
-                            customer.says(ENQUIRY)
+        with patch.object(llm._client.beta.messages, "parse", side_effect=turns) as parse:
+            with patch.object(llm.settings, "anthropic_api_key", "sk-not-real"):
+                with patch("app.services.api_client.httpx.get", side_effect=crm_os.get):
+                    with patch("app.services.api_client.httpx.post", side_effect=crm_os.post):
+                        _walk_up_to_the_question(customer, send.call_args_list)
+                        customer.says(ENQUIRY)
 
     # 1. The CRM got the lead, as one card rather than two.
     assert crm_os.paths() == ["/api/contacts", "/api/deals/d-e2e/activities"]
@@ -258,13 +258,12 @@ def test_a_cloudflare_error_reaches_the_model_as_not_known_rather_than_not_saved
     turns = [_wants_the_lead_written(), _assistant([BetaTextBlock(type="text", text=FINAL_REPLY)], "end_turn")]
 
     with patch.object(whatsapp, "send_raw") as send:
-        with patch.object(llm, "get_tools", return_value=list(crm.TOOLS)):
-            with patch.object(llm._client.beta.messages, "parse", side_effect=turns) as parse:
-                with patch.object(llm.settings, "anthropic_api_key", "sk-not-real"):
-                    with patch("app.services.api_client.httpx.get", side_effect=crm_os.get):
-                        with patch("app.services.api_client.httpx.post", side_effect=crm_os.post):
-                            _walk_up_to_the_question(customer, send.call_args_list)
-                            customer.says(ENQUIRY)
+        with patch.object(llm._client.beta.messages, "parse", side_effect=turns) as parse:
+            with patch.object(llm.settings, "anthropic_api_key", "sk-not-real"):
+                with patch("app.services.api_client.httpx.get", side_effect=crm_os.get):
+                    with patch("app.services.api_client.httpx.post", side_effect=crm_os.post):
+                        _walk_up_to_the_question(customer, send.call_args_list)
+                        customer.says(ENQUIRY)
 
     (result,) = _tool_results_fed_back(parse)
     assert result.strip("[]'\" ") == crm.LEAD_UNKNOWN or crm.LEAD_UNKNOWN in result
