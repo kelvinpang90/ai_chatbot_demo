@@ -623,9 +623,16 @@ def _uploaded():
         yield upload
 
 
-def _invoice_gets(order: dict = SO_DETAIL) -> list:
-    """The two reads: find the customer's order by number, then load it in full."""
-    return [_response({"items": [SO_LIST_ROW]}), _response(order)]
+NO_INVOICE_YET = {"items": []}
+
+
+def _invoice_gets(order: dict = SO_DETAIL, invoiced: dict | None = None) -> list:
+    """The three reads before anything is written: find the customer's order by
+    number, load it in full, then ask whether it has been billed already."""
+    reads = [_response({"items": [SO_LIST_ROW]}), _response(order)]
+    if invoiced is None:
+        return reads + [_response(NO_INVOICE_YET)]
+    return reads + [_response({"items": [{"id": invoiced["id"]}]}), _response(invoiced)]
 
 
 def test_the_order_is_shipped_invoiced_submitted_and_the_pdf_goes_to_the_customer(
@@ -651,6 +658,9 @@ def test_the_order_is_shipped_invoiced_submitted_and_the_pdf_goes_to_the_custome
         "page_size": erp_client.DEFAULT_RESULT_LIMIT,
     }
     assert get.call_args_list[1].args[0].endswith("/api/sales-orders/77")
+    billed_already = get.call_args_list[2]
+    assert billed_already.args[0].endswith("/api/invoices")
+    assert billed_already.kwargs["params"]["sales_order_id"] == 77
 
     # 2. Three writes, in the order erp_os's state machine demands.
     ship, generate, submit = post.call_args_list[1:]
@@ -714,6 +724,66 @@ def test_an_invoice_that_is_no_longer_a_draft_is_not_submitted_again(
 
     assert not any("/submit" in call.args[0] for call in post.call_args_list)
     assert payload["status"] == "VALIDATED"
+
+
+def test_an_order_that_was_billed_before_is_sent_its_existing_invoice(
+    _credentials, _outbox, _uploaded
+):
+    """Half the orders in the demo database are seeded INVOICED with a real
+    invoice attached, and a customer asking about one of those wants the document
+    that exists. Raising a second one would bill them twice; refusing would be a
+    lie about a document sitting in the ERP."""
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN)]) as post:
+        with patch.object(
+            api_client.httpx,
+            "get",
+            side_effect=_invoice_gets(
+                {**SO_DETAIL, "status": "INVOICED"}, invoiced=VALIDATED_INVOICE
+            ),
+        ):
+            payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    # Nothing was shipped, generated or submitted -- only the login went out.
+    assert post.call_count == 1
+    assert payload["invoice_no"] == "INV-2026-0007"
+    assert payload["pdf_sent"] is True
+    (message,) = outbox.drain(A_PHONE)
+    assert message["document"]["filename"] == "INV-2026-0007.pdf"
+
+
+def test_a_second_call_after_a_failed_delivery_does_not_bill_the_customer_twice(
+    _credentials, _outbox, _uploaded
+):
+    """The tool tells the model it is safe to call again. This is the call that
+    follows, with the shipment and the invoice from the first one already done."""
+    posts = [_response(_LOGIN), _response(VALIDATED_INVOICE)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SHIPPED_SO, invoiced=DRAFT_INVOICE)
+        ):
+            payload = json.loads(erp.erp_generate_einvoice("SO-2026-0042", 3))
+
+    # The invoice found on file was still a draft, so it is submitted -- but it is
+    # not raised again, and the order is not shipped again.
+    assert post.call_args_list[1].args[0].endswith("/api/invoices/9/submit")
+    assert not any("generate-from-so" in call.args[0] for call in post.call_args_list)
+    assert not any("/api/delivery-orders" in call.args[0] for call in post.call_args_list)
+    assert payload["pdf_sent"] is True
+
+
+def test_an_order_marked_billed_with_no_invoice_on_file_does_not_raise_another(
+    _credentials, _outbox
+):
+    with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN)]) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets({**SO_DETAIL, "status": "PAID"})
+        ):
+            answer = erp.erp_generate_einvoice("SO-2026-0042", 3)
+
+    assert "PAID" in answer
+    assert "Do not raise a new one" in answer
+    assert post.call_count == 1
 
 
 def test_an_order_number_that_belongs_to_nobody_here_writes_nothing(_credentials, _outbox):

@@ -218,6 +218,26 @@ class ErpClient(JsonApiClient):
             },
         )
 
+    def invoice_for_order(self, so_id: int) -> dict | None:
+        """The invoice already raised against an order, in full, or None.
+
+        Asked before anything is shipped, because an order that has been billed
+        before must not be billed again -- and because half the orders in the
+        demo database are seeded as INVOICED with a real invoice attached
+        (`erp_os/backend/scripts/seed_transactional.py:267`). A customer asking
+        for one of those wants the document that exists, not a refusal.
+
+        erp_os allows at most one invoice per sales order, so the first row is
+        the row.
+        """
+        payload = self.get("/api/invoices", params={"sales_order_id": so_id, "page_size": 1})
+        items = payload.get("items", [])
+        return None if not items else self.invoice(items[0]["id"])
+
+    def invoice(self, invoice_id: int) -> dict:
+        """One invoice with its lines, which is what the PDF is drawn from."""
+        return self.get(f"/api/invoices/{invoice_id}")
+
     def invoice_for_sales_order(self, so_id: int) -> dict:
         """The e-Invoice for a shipped order, created if it does not exist yet.
 

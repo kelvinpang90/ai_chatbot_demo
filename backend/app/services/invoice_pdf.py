@@ -190,7 +190,7 @@ def _lines(page: _Page, invoice: dict) -> None:
     page.down(6)
     page.rule()
 
-    for line in invoice.get("lines", []):
+    for line in invoice.get("lines") or []:
         page.down(16)
         description = line.get("description") or line.get("sku_name") or ""
         page.text(MARGIN, description[:DESCRIPTION_CHARS], font=MONO, size=9)

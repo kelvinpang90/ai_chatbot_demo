@@ -474,6 +474,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **没挂到任何 bot 上**——`tools/registry.py` 一个字节没动，和任务 8 / 9 / 9.1 一致，挂载是任务 11 的事。
 
+  ⚠️ **自查抓到一条自己引入的 P1，已在同一个任务里修掉**（commit 之后、冷审出结果之前）：`SOStatus` 除了 DRAFT / CONFIRMED / PARTIAL_SHIPPED / FULLY_SHIPPED / CANCELLED，还有 **`INVOICED` 和 `PAID`**，而我的 `INVOICEABLE` 只列了前三个能开票的。后果不是「少支持一种情况」——**demo 库里 50% 的销售订单就是 seed 成 `INVOICED` 的，每一张都挂着一张真发票**（`erp_os/backend/scripts/seed_transactional.py:267`）。客户随便问一张历史单，bot 会回「这张单还没确认（INVOICED），请先跟客户确认订单」——**一句关于一份就躺在 ERP 里的文件的假话**，而且正好发生在要证明「后台是真的」的那块屏前面。
+  修法不是往 `INVOICEABLE` 里补两个字符串，而是**在发货之前先问一句「这张单开过票没有」**（`GET /api/invoices?sales_order_id=`）：开过就直接把那张发票的 PDF 发出去，不发货、不开票、不提交。顺带把「重试是安全的」从「靠 erp_os 那头的幂等」变成**这一头自己就拦住了**——第一次调用发货 + 开票之后 PDF 没送出去，第二次调用连一个写请求都不会发。新增 3 个测试，变异验证过（把这一句 lookup 拿掉 → 三条测试变红）。
+
   **还没验的（必须由用户拿手机做）：**
   - PDF 在手机 WhatsApp 里**打不打得开**、缩略图长什么样。这是任务 10 验收标准的正文，测试证明不了
   - 整条链路打真实 erp_os：发货 → 开票 → MyInvois → 收到 PDF。**Claude 跑不了**，带凭据「写」外部系统会被权限分类器拦（任务 9 / 9.1 两次同样的事）

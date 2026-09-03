@@ -284,8 +284,9 @@ def erp_create_sales_order(
     )
 
 
-# The statuses an order can be invoiced from. Anything else is either not yet
-# agreed (DRAFT) or no longer an order at all (CANCELLED).
+# The statuses a first invoice can be raised from. erp_os also has INVOICED and
+# PAID, and those are deliberately absent: an order in one of them has an invoice
+# already, which is found before this tuple is consulted.
 INVOICEABLE = ("CONFIRMED", "PARTIAL_SHIPPED", "FULLY_SHIPPED")
 SHIPPED = "FULLY_SHIPPED"
 INVOICE_DRAFT = "DRAFT"
@@ -317,15 +318,26 @@ PDF_NOT_SENT = (
 
 
 def _not_invoiceable(order_no: str, status: str) -> str:
-    """An order that is not in a state anybody can bill for."""
+    """An order that is not in a state anybody can bill for.
+
+    Only reached with no invoice already on file, which is what rules out the
+    reading that would otherwise be tempting here: an order marked INVOICED whose
+    invoice cannot be found is not an order to bill again.
+    """
     if status == "CANCELLED":
         return (
             f"Order {order_no} was cancelled, so there is nothing to invoice. Tell "
             "the customer the order is not active and offer to place a new one."
         )
+    if status == "DRAFT":
+        return (
+            f"Order {order_no} has not been confirmed yet, so it cannot be "
+            "invoiced. Confirm the order with the customer first."
+        )
     return (
-        f"Order {order_no} has not been confirmed yet ({status}), so it cannot be "
-        "invoiced. Confirm the order with the customer first."
+        f"Order {order_no} is marked {status} but no invoice could be found for "
+        "it. Do not raise a new one -- tell the customer a colleague will send "
+        "them their invoice."
     )
 
 
@@ -408,24 +420,27 @@ def erp_generate_einvoice(order_no: str, customer_id: int) -> str:
     """
     client = erp_client.client()
     try:
-        so = client.sales_order_for_customer(order_no, customer_id)
-    except ApiClientError:
+        order = client.sales_order_for_customer(order_no, customer_id)
+        if order is None:
+            return NO_SUCH_ORDER
+        # Asked before a thing is shipped: an order billed once is not billed
+        # again, whether that was a minute ago on a call that failed on its way
+        # out or six months ago by somebody in the office.
+        invoice = client.invoice_for_order(order["id"])
+    except (ApiClientError, KeyError):
         logger.exception("could not look up order %r for customer %s", order_no, customer_id)
         return UNAVAILABLE
 
-    if so is None:
-        return NO_SUCH_ORDER
-    if so.get("status") not in INVOICEABLE:
-        return _not_invoiceable(order_no, str(so.get("status")))
-
-    if not _worth_invoicing(client, so):
-        return INVOICE_FAILED
-
-    try:
-        invoice = client.invoice_for_sales_order(so["id"])
-    except (ApiClientError, KeyError):
-        logger.exception("could not issue the invoice for order %s", order_no)
-        return INVOICE_FAILED
+    if invoice is None:
+        if order.get("status") not in INVOICEABLE:
+            return _not_invoiceable(order_no, str(order.get("status")))
+        if not _worth_invoicing(client, order):
+            return INVOICE_FAILED
+        try:
+            invoice = client.invoice_for_sales_order(order["id"])
+        except (ApiClientError, KeyError):
+            logger.exception("could not issue the invoice for order %s", order_no)
+            return INVOICE_FAILED
 
     invoice = _validated(client, invoice)
     delivered = _deliver(invoice, order_no)
