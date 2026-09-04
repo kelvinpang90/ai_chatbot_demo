@@ -3,3 +3,6 @@ uvicorn[standard]>=0.32,<1.0
 pydantic-settings>=2.6,<3.0
 anthropic>=0.40,<1.0
 httpx>=0.27,<1.0
+# WXBizMsgCrypt: WeCom encrypts its callback bodies (AES-256-CBC) rather than
+# only signing them, so the wecom webhook cannot read a request without this.
+cryptography>=43,<47

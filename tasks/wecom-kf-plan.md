@@ -142,15 +142,21 @@ app/routers/
       验收：现有测试**一个不少地全绿**，一行业务行为都不许变。
       ✅ **基线已实测（2026-09-04）：`254 passed`，1.78 秒。** 这是跑出来的，不是数出来的。
       两个流传中的旧数字都别再引用：`todo.md` 任务 1 里的「全套 41 passed」是 2026-08-31 的；本文件早前写的 186 是静态数的测试函数个数，`parametrize` 展开后实际是 254。
-- [ ] **W2：WXBizMsgCrypt**
-      `services/wecom_crypto.py`，纯函数。验签、解密、加密三件事。
-      验收：用官方示例代码里的测试向量写单测。**不需要任何凭据就能验收。**
+- [x] **W2：WXBizMsgCrypt** —— **2026-09-04 完成**
+      `services/wecom_crypto.py` + `tests/test_wecom_crypto.py`，**19 个测试全绿**。
+      两处偏离原计划：
+      - **只做接收半边，没写 encrypt。** 回微信客服的消息走 `send_msg` API，不是从回调原路返回，所以这个代码库永远不需要加密。一个没人用的加密函数出了错也没人会发现——按 CLAUDE.md「不写投机性代码」砍掉了。
+      - **没用官方测试向量。** 测试自己造密文做往返，所以证明的是「解析器自洽 + 每种畸形输入都被拒」，**不是「和腾讯逐字节一致」**。真正的一致性只有企业微信接受回调 URL 那一刻才算验过。这一点写在测试文件的模块 docstring 里，别让后人误读绿灯。
+      依赖：`requirements.txt` 增加 `cryptography>=43,<47`。
 - [ ] **W3：微信客服 API 客户端**
       `services/wecom.py`：`gettoken` 缓存、`sync_msg`、`send_msg`。
       验收：httpx mock 单测。
-- [ ] **W4：回调路由**
-      `routers/wecom_webhook.py`：GET 解密 `echostr` 回明文；POST 验签 → 后台拉 `sync_msg` → 交给 `conversation` → `send_msg` 发回。含**冷启动 cursor 快进**（见上文边缘情况）。
-      验收：mock 回调打进去，断言拉取和发送的调用序列。
+- [~] **W4：回调路由** —— **GET 半边 2026-09-04 完成，POST 半边待做**
+      `routers/wecom_webhook.py` + `tests/test_wecom_webhook.py`，**15 个测试全绿**。已接进 `main.py`，路径 `/webhook/wecom`。
+      - ✅ **GET**：验签 → 解密 `echostr` → 回**裸明文**（不带引号/BOM/换行，测试里按字节断言）。四种失败各有出口：签名错 401、发给别家企业的 401、没有 `echostr` 400、**没配凭据 503**（没配置是部署状态，不是伪造请求，不该谎报 401）。
+      - ✅ **POST**：目前只验签 + 回 200，**不处理消息**。理由写在 docstring 里：回调配置一存下企业微信就开始 POST，全都 404/405 会在账号上堆成投递失败；而回调本来就不带消息内容，`sync_msg` 三天内还能补拉，所以先签收不办事是安全的。
+      - `<Encrypt>` 是**手写字符串切割**取的，没过 XML 解析器——这个 body 在验签之前是未认证、外部可达的，不该变成文档树。5 种畸形 body 断言返回空串而不是抛异常。
+      - [ ] **待做**：POST 真正拉取 → `sync_msg` → `conversation` → `send_msg`，含**冷启动 cursor 快进**（见上文边缘情况）。依赖 W3。
 - [ ] **W5：菜单消息**
       `channels/wecom.py` 把 `Menu` 渲染成 `msgmenu`，并把点击回调映射回 bot/identity 选择。
       ⚠️ **依赖前面第 2 条未验证项**——点击回调的形状要先确认，可能需要退化成「让用户直接打字选」。
@@ -169,7 +175,8 @@ W1 到 W6 全部可以在**没有任何企业微信凭据**的情况下写完并
 - [x] ~~**境外主体能否开通微信客服**~~——**2026-09-04 解除，这个担心整个不成立**：用户注册用的是**中国大陆个体工商户**（广州荔湾…商贸服务店），后台显示**已认证**、有效期到 2027-9-4。微信客服已开通，客服账号已建好。境外主体那条路根本没走。
       连带修正：接待配额不是「累计 100 位」那一档。**已认证 = 每天 100 位**，用完次日重置，对演示完全够用。
 - [ ] **回调地址**：微信客服要求公网可达。现在 `chatbot.acuventech.com` 已经在 VPS 上收 WhatsApp 回调，加一条 `/webhook/wecom` 路径即可，不需要新域名。
-- [ ] **新依赖**：WXBizMsgCrypt 需要 AES 实现，`requirements.txt` 里现在没有加密库，要加一个（`pycryptodome`）。
+- [x] ~~**新依赖**~~——2026-09-04 已加 `cryptography>=43,<47`（不是原计划的 `pycryptodome`；`cryptography` 维护更活跃、wheel 更全，两者都能做 AES-256-CBC）。
+- [ ] **部署**：`/webhook/wecom` 的 GET 已经能应答，但**必须先部署到 `chatbot.acuventech.com` 才有意义**——企业微信保存回调配置时打的是公网地址。部署前要先在 VPS 的 `/opt/ai_chatbot/backend/.env` 里填好 `WECOM_CORPID` / `WECOM_TOKEN` / `WECOM_ENCODING_AES_KEY`，否则端点一律返回 503。`WECOM_SECRET` 那时还拿不到，留空即可。
 
 ## 七、还没决定的事
 
