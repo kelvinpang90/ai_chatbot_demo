@@ -816,7 +816,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 > - [ ] **F. `erp_os` 要开 `DEMO_MODE=true`，并且 Celery worker + beat 要真的在跑。** 不开的话 `/api/admin/demo-reset` 直接返回 `DEMO_MODE_REQUIRED`，任务 34 的 ERP 那一半无从谈起。这是 `erp_os` 的部署改动，不在本仓库
 > - [ ] **G. `OPENAI_API_KEY`**，任务 36 用。VPS 的 `/opt/ai_chatbot/backend/.env` 和本地都要有
 
-- [x] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）——**2026-09-04 完成**。22 个新 pytest（全套 254 → **276 passed**），另外拿**真的 redis:7-alpine + 真的 redis-py** 跑了一遍活体验证（不是打桩）：写入/读回全字段含中文、`ttl=600s`、把 TTL 手动压到 30s 后再 save 又回到 600s、delete 生效、指向不存在的主机时降级到内存仍能读回。两个 compose 都过了 `docker compose config`。
+- [x] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）——**2026-09-04 完成**。22 个新 pytest（全套 254 → **276 passed**），另外拿**真的 redis:7-alpine + 真的 redis-py** 跑了一遍活体验证（不是打桩）：写入/读回全字段含中文、`ttl=600s`、把 TTL 手动压到 30s 后再 save 又回到 600s、delete 生效、指向不存在的主机时降级到内存仍能读回。两个 compose 都过了 `docker compose config`。**已推 master 并部署，线上也验了**：`/api/bots` 401、`/webhook/whatsapp` 带错 token 403（加了 `data_net` 之后容器正常起来了）；`ai_chatbot_backend` 确实挂在 `data_net` 上、容器内 `REDIS_URL=redis://infra_redis:6379/16`；最关键的一步——**拿刚部署的那个镜像本身**在 `data_net` 上跑了一次真实存取：写入含中文的档案、读回一致、`ttl=60s`、探针 key 已删除。所以 db 16 和 `databases 256` 这两条假设是在线上被证实的，不是推断的。
   落地与计划的差异 / 需要知道的几件事：
   - **key 用「只留数字」的手机号**（`chat:user:60173948123`）。`+60 17-394 8123` / `017-3948123` / `60173948123` 落到同一个 key——**任务 33「网页输号码调出手机上的历史」直接依赖这一条**，否则两条渠道各存各的
   - **空号码抛 `ValueError`，不是存进 `chat:user:`**。否则所有匿名访客共用一条记录 = 把甲的对话给乙看
