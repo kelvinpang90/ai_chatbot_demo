@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 
 from app.bots.registry import BotConfig, get_bot, list_bots
 from app.config import settings
+from app.console import events
 from app.services import llm, outbox, whatsapp
 from app.services.user_store import user_store
 from app.session_store import session_store
@@ -61,8 +62,18 @@ def _handle_incoming_message(message: dict) -> None:
     try:
         for payload in dispatch_message(message):
             whatsapp.send_raw(payload)
-    except Exception:
+    except Exception as failure:
         logger.exception("Unhandled error processing WhatsApp message %s", message.get("id"))
+        # The customer is looking at a chat where nothing arrived. Say so on the
+        # console too: a log line is found afterwards, a console line is seen
+        # while the room is still watching.
+        events.emit(
+            type=events.SEND_FAILED,
+            tool="whatsapp.send",
+            tool_use_id=str(message.get("id", "")),
+            output=f"{type(failure).__name__}: {failure}",
+            status="error",
+        )
 
 
 def dispatch_message(message: dict) -> list[dict]:
@@ -139,14 +150,19 @@ def _handle_text_message(phone: str, text: str) -> list[dict]:
 
     profile.add_message("user", text)
     reply = llm.get_reply(bot, profile, profile.history)
+    # Built before it is recorded, deliberately. A reply WhatsApp will not carry
+    # must not become part of this customer's history either: the turn is
+    # dropped whole and the next message starts from the last good exchange,
+    # rather than from one the model cannot be shown again.
+    # Anything a tool produced goes out after the words explaining it.
+    payloads = [whatsapp.build_text_message(phone, reply), *outbox.drain(phone)]
     profile.add_message("assistant", reply)
     # Saved after the reply, so the exchange survives a restart and is still
     # there when they write again days later - this is what "the bot remembers
     # me" is actually made of.
     user_store.save(profile)
     logger.info("Sending LLM reply to %s for bot=%s", phone, bot.id)
-    # Anything a tool produced goes out after the words explaining it.
-    return [whatsapp.build_text_message(phone, reply), *outbox.drain(phone)]
+    return payloads
 
 
 def _handle_interactive_reply(phone: str, interactive: dict) -> list[dict]:

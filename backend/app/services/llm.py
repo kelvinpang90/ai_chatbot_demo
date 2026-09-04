@@ -17,7 +17,12 @@ logger = logging.getLogger(__name__)
 
 _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-MAX_REPLY_TOKENS = 512
+# Shared by the reply text and, on a turn that calls a tool, the JSON arguments
+# of that call. 512 left too little room for both: a turn that spent its whole
+# budget mid-tool-call produced no text at all, and the empty "reply" went to
+# WhatsApp, which refused it. The ceiling is now well clear of a chat-length
+# answer plus a tool call, and `_reply_text` below no longer trusts either way.
+MAX_REPLY_TOKENS = 1024
 
 # The runner loops until Claude stops asking for tools, with no ceiling of its own.
 # A demo that quietly spends a minute and a stack of tokens in a tool loop is worse
@@ -238,4 +243,35 @@ def get_reply(bot: BotConfig, customer: UserProfile | None, history: list[Messag
 
     _log_usage(bot, model, response)
 
-    return "".join(block.text for block in response.content if block.type == "text")
+    return _reply_text(bot, response)
+
+
+def _reply_text(bot: BotConfig, response) -> str:
+    """The words to send, or the apology, but never nothing.
+
+    Two ways a turn can finish without a usable answer, both of which used to be
+    passed straight on as if they were one:
+
+    `stop_reason == "max_tokens"` means generation was cut off wherever it
+    happened to be. If it stopped inside a tool call there is no text at all; if
+    it stopped inside a sentence the text ends mid-word, and in a sales demo
+    that means a price that arrives with a digit missing. Neither is worth
+    sending, and both are worth a line in the log naming the bot.
+
+    A caller may treat the return value as sendable, which is what lets the
+    router build the outgoing message before committing the turn to history.
+    """
+    text = "".join(block.text for block in response.content if block.type == "text").strip()
+    stop_reason = getattr(response, "stop_reason", None)
+
+    if stop_reason == "max_tokens":
+        logger.error(
+            "bot=%s ran out of output tokens mid-reply (max_tokens=%s); sending the fallback instead",
+            bot.id,
+            MAX_REPLY_TOKENS,
+        )
+        return FALLBACK_REPLY
+    if not text:
+        logger.error("bot=%s produced no text to send (stop_reason=%s)", bot.id, stop_reason)
+        return FALLBACK_REPLY
+    return text

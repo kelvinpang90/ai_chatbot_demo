@@ -7,7 +7,7 @@ from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock, B
 
 from app.bots.registry import get_bot
 from app.console import events
-from app.services import llm
+from app.services import llm, whatsapp
 from app.services.user_store import UserProfile
 
 PHONE = "60173948123"
@@ -308,3 +308,55 @@ def test_a_bot_without_tools_says_nothing_to_the_console():
             llm.get_reply(bot, customer, history=[])
 
     assert events.since(0) == []
+
+
+# -- a turn that did not finish is not an answer -------------------------------
+
+
+def test_a_reply_cut_off_at_the_token_ceiling_becomes_the_fallback():
+    """What actually happened: the turn spent all 512 tokens inside a tool call
+    and produced no text, and the empty string went to WhatsApp as a reply."""
+    bot = get_bot("retail")
+    truncated = _assistant_message([], "max_tokens")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=truncated):
+            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY
+
+
+def test_a_sentence_cut_off_mid_word_is_not_sent_either():
+    """Half an answer is worse than an apology when the half that survived is a
+    price: `RM 26` for `RM 263.67` is a number the customer will hold you to."""
+    bot = get_bot("retail")
+    truncated = _assistant_message([BetaTextBlock(type="text", text="That comes to RM 26")], "max_tokens")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=truncated):
+            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY
+
+
+def test_a_turn_that_produced_no_text_becomes_the_fallback():
+    bot = get_bot("retail")
+    silent = _assistant_message([], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=silent):
+            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY
+
+
+def test_get_reply_never_returns_something_whatsapp_would_refuse():
+    """The contract the router leans on when it builds the message before
+    committing the turn to history."""
+    bot = get_bot("retail")
+    for content, stop in (([], "end_turn"), ([], "max_tokens"), ([BetaTextBlock(type="text", text="  ")], "end_turn")):
+        with patch.object(llm, "get_tools", return_value=[]):
+            with patch.object(llm._client.messages, "create", return_value=_assistant_message(content, stop)):
+                reply = llm.get_reply(bot, _customer(), history=[])
+        assert reply.strip()
+        whatsapp.build_text_message("60123456789", reply)  # would raise if unsendable
+
+
+def test_the_token_ceiling_leaves_room_for_a_reply_and_a_tool_call():
+    """512 was the ceiling a turn hit while writing tool arguments, leaving no
+    tokens for any text. The number is not sacred; being clear of that is."""
+    assert llm.MAX_REPLY_TOKENS >= 1024

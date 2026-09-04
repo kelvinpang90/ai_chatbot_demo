@@ -91,7 +91,10 @@ def test_upload_media_posts_multipart_and_returns_the_id():
 def test_send_message_posts_the_payload_to_the_messages_endpoint():
     payload = {"messaging_product": "whatsapp", "to": "+60123456789", "type": "text"}
 
-    with patch.object(whatsapp_media.httpx, "post") as mock_post:
+    # A real response, not a bare mock: send_message delegates to
+    # `whatsapp.send_raw`, which now reads the status back and raises on a
+    # refusal, and a MagicMock's `.is_error` is truthy.
+    with patch.object(whatsapp_media.httpx, "post", return_value=httpx.Response(200)) as mock_post:
         whatsapp_media.send_message(payload)
 
     assert mock_post.call_args.args[0].endswith(

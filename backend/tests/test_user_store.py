@@ -273,3 +273,34 @@ def test_profile_slots_are_per_bot(store):
         "retail": {"address": "12 Jalan Bukit"},
         "food": {"spice": "extra"},
     }
+
+
+def test_a_record_holding_an_empty_turn_heals_itself_on_read(store, fake):
+    """The trap this store could set for the whole demo.
+
+    The Messages API refuses an empty text block, so a single empty turn on file
+    made every later message from that number fail -- for the seven days the
+    record lives, with nothing to do about it but delete the key by hand. Dropping
+    such turns as the record loads means the numbers already spoiled come back on
+    their own, rather than only new ones being safe.
+    """
+    fake.values[f"{KEY_PREFIX}60111222333"] = json.dumps(
+        {
+            "phone": "60111222333",
+            "history": [
+                {"role": "user", "content": "do you have earbuds"},
+                {"role": "assistant", "content": "We have three."},
+                {"role": "user", "content": "Update me after it ships"},
+                {"role": "assistant", "content": ""},
+            ],
+        }
+    )
+
+    healed = store.get("+60111222333")
+
+    assert [m.content for m in healed.history] == [
+        "do you have earbuds",
+        "We have three.",
+        "Update me after it ships",
+    ]
+    assert all(m.content.strip() for m in healed.history)

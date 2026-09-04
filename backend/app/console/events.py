@@ -12,6 +12,10 @@ MAX_EVENTS = 200
 
 TOOL_START = "tool_start"
 TOOL_END = "tool_end"
+# A reply that never reached the customer. On the director's screen this is the
+# one event worth interrupting a demo for: everything else on the console is
+# something that worked, and a silent failure looks exactly like a pause.
+SEND_FAILED = "send_failed"
 
 
 class ConsoleEvent(BaseModel):

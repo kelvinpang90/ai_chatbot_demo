@@ -94,7 +94,17 @@ def _serialise(profile: UserProfile) -> str:
 def _deserialise(raw: str) -> UserProfile | None:
     try:
         data = json.loads(raw)
-        history = [Message(role=m["role"], content=m["content"]) for m in data.get("history", [])]
+        # Empty turns are dropped on the way in, not merely kept out on the way
+        # out. The Messages API rejects an empty text block, so one such turn on
+        # file makes every later message from that number fail for as long as the
+        # record lives -- seven days of a customer getting nothing but the
+        # apology, fixable only by deleting their key by hand. Healing on read
+        # means the records already spoiled recover by themselves.
+        history = [
+            Message(role=m["role"], content=m["content"])
+            for m in data.get("history", [])
+            if (m.get("content") or "").strip()
+        ]
         # Unknown keys are dropped rather than passed on: a record written by a
         # newer build and read by an older container should cost us a field, not
         # a TypeError in the middle of a demo.

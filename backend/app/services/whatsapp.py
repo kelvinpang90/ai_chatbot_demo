@@ -11,6 +11,29 @@ from app.config import settings
 GRAPH_API_BASE = "https://graph.facebook.com/v20.0"
 REQUEST_TIMEOUT_SECONDS = 10
 
+# Meta's own caps on the text a message may carry. Going over is a 400, which is
+# indistinguishable from every other 400 unless we keep inside them ourselves.
+MAX_TEXT_BODY_CHARS = 4096
+MAX_INTERACTIVE_BODY_CHARS = 1024
+
+# How much of Meta's rejection to quote back into the log. Their errors carry a
+# message, a code and a trace id, and all three are worth having.
+MAX_ERROR_CHARS = 500
+
+
+class UnsendableMessage(ValueError):
+    """We were asked to build a message WhatsApp would refuse.
+
+    Always a bug on our side rather than a fact about the customer, so it is
+    raised where the message is built: the alternative is Meta answering a bare
+    400 several layers away, with nothing left to say which of our callers
+    produced it.
+    """
+
+
+class WhatsAppSendError(RuntimeError):
+    """Meta refused to deliver a message. Carries what they said about it."""
+
 
 def _headers() -> dict[str, str]:
     return {
@@ -39,12 +62,33 @@ def markdown_to_whatsapp(text: str) -> str:
     return text
 
 
+def _body(text: str, limit: int) -> str:
+    """The text as WhatsApp will actually accept it.
+
+    Every message we send ends up here, which is the point: the channel's rules
+    belong at the one door out, not repeated at each of the growing number of
+    places that produce text -- a model reply, a transcription, a proactive
+    notification. A caller cannot forget a rule it never has to know.
+
+    Empty is refused rather than repaired. Meta answers an empty body with a
+    plain 400 and no explanation, and the only way to produce one is a bug
+    upstream; sending filler in its place would hide that bug behind a message
+    the customer cannot act on either.
+    """
+    text = markdown_to_whatsapp(text or "").strip()
+    if not text:
+        raise UnsendableMessage("refusing to send a message with no text in it")
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + "…"
+    return text
+
+
 def build_text_message(to: str, text: str) -> dict:
     return {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "text",
-        "text": {"body": markdown_to_whatsapp(text)},
+        "text": {"body": _body(text, MAX_TEXT_BODY_CHARS)},
     }
 
 
@@ -58,7 +102,7 @@ def build_interactive_list(
     """sections follows Meta's format: [{"title": str, "rows": [{"id": str, "title": str, "description": str}]}]."""
     interactive: dict = {
         "type": "list",
-        "body": {"text": body_text},
+        "body": {"text": _body(body_text, MAX_INTERACTIVE_BODY_CHARS)},
         "action": {"button": button_text, "sections": sections},
     }
     if header_text:
@@ -98,7 +142,7 @@ def build_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> d
         "type": "interactive",
         "interactive": {
             "type": "button",
-            "body": {"text": body_text},
+            "body": {"text": _body(body_text, MAX_INTERACTIVE_BODY_CHARS)},
             "action": {
                 "buttons": [
                     {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
@@ -110,7 +154,20 @@ def build_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> d
 
 
 def send_raw(payload: dict) -> httpx.Response:
-    return httpx.post(_messages_url(), headers=_headers(), json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+    """Hand one built payload to Meta, and refuse to shrug off a rejection.
+
+    Returning the response and letting callers ignore it is how a customer came
+    to sit in silence while the log showed nothing but a routine httpx line at
+    INFO: Meta had answered 400 and no code anywhere looked. A raise here lands
+    in the caller's handler as a logged traceback carrying Meta's own words.
+    """
+    response = httpx.post(_messages_url(), headers=_headers(), json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+    if response.is_error:
+        raise WhatsAppSendError(
+            f"WhatsApp refused a {payload.get('type', '?')} message "
+            f"(HTTP {response.status_code}): {response.text[:MAX_ERROR_CHARS]}"
+        )
+    return response
 
 
 def send_text_message(to: str, text: str) -> httpx.Response:

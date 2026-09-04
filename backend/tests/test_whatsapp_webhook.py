@@ -1,17 +1,20 @@
 import json
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.console import events
 from app.main import app
 from app.routers.whatsapp_webhook import (
     _extract_messages,
+    _handle_incoming_message,
     _resolve_quick_question,
     _truncate,
     dispatch_message,
 )
-from app.services import llm, outbox
+from app.services import llm, outbox, whatsapp
 from app.services.user_store import user_store
 
 client = TestClient(app)
@@ -247,3 +250,59 @@ def test_however_the_number_is_written_it_is_the_same_customer():
     _in_conversation("60129991008")
 
     assert user_store.get("+60 12-999 1008").bot_id == "retail"
+
+
+# -- a failed reply must be loud, and must not poison the record ---------------
+
+
+def test_a_reply_that_cannot_be_sent_does_not_enter_the_history():
+    """One bad turn used to be written to Redis and shown to the model on every
+    later message, so the number stayed broken until someone deleted the key."""
+    phone = "60129992001"
+    _in_conversation(phone)
+    with patch.object(llm, "get_reply", return_value="We have three."):
+        dispatch_message(_text_message(phone, "do you have earbuds"))
+
+    # A reply no builder will accept: get_reply is contracted not to do this, so
+    # reaching here at all means a bug, and the turn must be dropped whole.
+    with patch.object(llm, "get_reply", return_value=""):
+        with pytest.raises(whatsapp.UnsendableMessage):
+            dispatch_message({**_text_message(phone, "and how many left?"), "id": "wamid.bad"})
+
+    stored = user_store.get(phone)
+    assert [m.content for m in stored.history] == ["do you have earbuds", "We have three."]
+
+
+def test_a_rejected_send_reaches_the_console_rather_than_only_the_log():
+    """On the director's screen a silent failure is indistinguishable from the
+    model thinking. It should not be."""
+    phone = "60129992002"
+    _in_conversation(phone)
+    events.clear()
+
+    refused = whatsapp.WhatsAppSendError("WhatsApp refused a text message (HTTP 400): ...")
+    with patch.object(llm, "get_reply", return_value="We have three."):
+        with patch.object(whatsapp, "send_raw", side_effect=refused):
+            _handle_incoming_message(_text_message(phone, "do you have earbuds"))
+
+    failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
+    assert len(failures) == 1
+    assert failures[0].status == "error"
+    assert "HTTP 400" in failures[0].output
+    events.clear()
+
+
+def test_a_message_that_blows_up_is_never_answered_with_silence_in_the_log():
+    """`_handle_incoming_message` is the last catcher. Whatever it swallows has
+    to leave both a traceback and a console event behind."""
+    phone = "60129992003"
+    _in_conversation(phone)
+    events.clear()
+
+    with patch.object(llm, "get_reply", side_effect=RuntimeError("tool blew up")):
+        _handle_incoming_message(_text_message(phone, "do you have earbuds"))
+
+    failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
+    assert len(failures) == 1
+    assert "tool blew up" in failures[0].output
+    events.clear()
