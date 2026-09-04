@@ -1198,7 +1198,7 @@ def test_the_account_carries_the_number_that_will_have_to_find_it_again():
 
     body = post.call_args.kwargs["json"]
     assert body["phone"] == "+60 17-394 8123"
-    assert body["code"] == "WA-60173948123"  # derived from the number, so it is unique
+    assert body["code"].startswith("WA-60173948123-")
     assert body["address_line1"] == "Unit 140, Reed"
 
 
@@ -1259,3 +1259,28 @@ def test_a_refused_write_and_an_unanswered_one_are_told_apart():
         unanswered = ApiClientError("timed out", may_have_landed=True)
         with patch.object(erp_client.ErpClient, "post", side_effect=unanswered):
             assert erp.erp_create_customer("K", "60173948123") == erp.ACCOUNT_UNKNOWN
+
+
+def test_a_cleaned_up_number_can_open_an_account_again():
+    """erp_os counts deleted rows when checking a code is unique, "to prevent
+    reuse" -- so a code that is only the phone number is burned the first time
+    task 34's cleanup runs, and the demo number is the same one every time."""
+    first = erp._customer_code("60173948123")
+    with patch.object(erp, "datetime") as clock:
+        clock.now.return_value.strftime.return_value = "2609060900"
+        later = erp._customer_code("60173948123")
+
+    assert first != later
+    assert first.startswith("WA-60173948123-") and later.startswith("WA-60173948123-")
+    assert len(later) <= 32  # erp_os caps the column there
+
+
+def test_one_customer_still_cannot_hold_two_accounts():
+    """The guarantee moved from the code to the lookup, which is where it
+    belongs: it asks whether this person has an account, not whether this exact
+    string was ever issued."""
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[WALK_IN_ROW]):
+        with patch.object(erp_client.ErpClient, "post") as post:
+            erp.erp_create_customer("Kelvin Pang", "60173948123")
+
+    post.assert_not_called()

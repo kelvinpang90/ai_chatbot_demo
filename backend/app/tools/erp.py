@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import TypedDict
 
 from anthropic import beta_tool
@@ -240,18 +241,28 @@ def erp_find_customer(name_or_phone: str) -> str:
     )
 
 
-# erp_os caps a customer code at 32 characters. A number is well inside that.
+# erp_os caps a customer code at 32 characters. A number and a stamp fit inside
+# it with room to spare: "WA-60173948123-2609051423" is 25.
 CUSTOMER_CODE_PREFIX = "WA-"
 
 
 def _customer_code(digits: str) -> str:
-    """A code derived from the number, so one number cannot open two accounts.
+    """A code that carries the number but is not only the number.
 
-    erp_os rejects a duplicate code outright, which turns a repeated call into a
-    refusal rather than a second account -- but the tool looks the customer up
-    before creating one anyway, so that refusal should never be reached.
+    The number alone would be the obvious choice, and it was, until the cleanup
+    in task 34 turned it into a trap. erp_os deletes a customer by marking it
+    deleted, and its code-uniqueness check deliberately counts deleted rows
+    "to prevent reuse" (`repositories/customer.py:15`). So a demo number whose
+    account has been cleaned up could never open one again -- and the demo
+    number is the same one every time.
+
+    The stamp keeps that from happening. What stops one customer holding two
+    accounts is not this string but the lookup the tool does first, which is the
+    honest place for that rule anyway: it asks whether this person has an
+    account, rather than whether this exact code was ever issued.
     """
-    return f"{CUSTOMER_CODE_PREFIX}{digits}"
+    stamp = datetime.now(erp_client.MALAYSIA_TIME).strftime("%y%m%d%H%M")
+    return f"{CUSTOMER_CODE_PREFIX}{digits}-{stamp}"
 
 
 def _customer_summary(customer: dict) -> dict:

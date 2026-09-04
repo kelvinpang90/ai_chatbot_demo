@@ -855,10 +855,18 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 - [ ] **任务 34：7 天清理**
   文件：`backend/app/tasks/`（新增）、`backend/app/tools/crm.py`、`backend/app/tools/erp.py`、测试
-  目标：三件事。① Redis 靠 TTL 自动过期，**不用写任务**；② CRM：bot 建的联系人 `notes` 写 `[DEMO]` 前缀，清理时只删带标记的；③ ERP：调 `POST /api/admin/demo-reset`，不自己写删除
+  目标：**四**件事。① Redis 靠 TTL 自动过期，**不用写任务**；② CRM：bot 建的联系人 `notes` 写 `[DEMO]` 前缀，清理时只删带标记的；③ ERP 单据：调 `POST /api/admin/demo-reset`，不自己写删除；④ **ERP 客户：按 `WA-` 前缀删**（2026-09-05 用户拍板要清）
   ⚠️ **CRM 有个坑**：bot 有时是往**种子联系人**（如 David Park）身上加一张新卡。这种情况**只能删那张卡，不能删人**——删人会把种子数据搞没
+
+  **④ 的侦察结论（2026-09-05 查证，别再重查）**：
+  - **`demo-reset` 清不掉客户**——`services/demo_reset.py` 的 `RESET_TABLES` **不含 `customers`**（这本来是好事，Sunrise Hypermart 那些主数据靠它活着）。所以 `erp_create_customer` 演一次留一个，**只会越积越多**，必须单独删
+  - **`DELETE /api/customers/{id}` 是软删**（`repositories/base.py:soft_delete` 设 `deleted_at` + `is_active`），**不受订单外键阻挡**，演示留下的单据不会跟着消失
+  - 角色要 `[ADMIN, MANAGER]`，我们用的 `admin@demo.my` 是 ADMIN，**够**
+  - 列表和搜索都带 `deleted_at IS NULL`（`repositories/customer.py:31,49`），所以**软删后确实从后台和 `find_customers` 里消失**，清理是有效的
+  - ⚠️ **已经踩过并已修的坑**：`get_by_code`（`repositories/customer.py:15`）的注释写着「Check code uniqueness **including soft-deleted records** to prevent reuse」——**code 唯一性检查算上已删记录**。原本 code 就是 `WA-{手机号}`，那么**清理一次之后同一个号码永远开不了户**，而演示用的就是同一个号。已经改成 `WA-{手机号}-{YYMMDDHHMM}`，清理后可以重新开户。**任务 34 不要把它改回去**
+  - **只删自己建的**：`WA-` 前缀是 `erp_create_customer` 独有的，种子客户（`CUST-` 之类）碰不到。跟 CRM 的 `[DEMO]` 标记是同一个思路
   依赖阻塞项 F
-  验收：跑一次清理，CRM 上带标记的卡没了、种子联系人还在；ERP 单据清空且库存重灌
+  验收：跑一次清理，CRM 上带标记的卡没了、种子联系人还在；ERP 单据清空且库存重灌；**`WA-` 客户从后台消失、种子客户还在，且清理后同一个号码还能重新开户**（这一条最容易漏，专门验）
 
 - [ ] **任务 35：商品列表用 List Message**（不依赖前面，可插队）
   文件：`backend/app/services/outbox.py`、`backend/app/tools/erp.py`、`backend/app/routers/whatsapp_webhook.py`、测试
@@ -910,6 +918,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **顺手堵掉最后一处静默失败**：`dispatch_message` 以前遇到认不出发件人就 `return []`，**一行日志都没有**。现在是 ERROR + 导演台事件，并且把 message / contact 的**字段名列表**打进日志——Meta 正在改这些 payload 的形状，下次再变时这行日志就是线索
   - **老档案的兼容**：`key_id` 是新字段，而 Redis 里的记录 TTL 7 天、部署必然落在旧记录上。`_deserialise` 读不到 `key_id` 时回退到 `phone`。**漏了这一条，上线当天所有老客户全被忘掉**
   ⚠️ **有一处没验、且验不了**：给没有手机号的用户**发**消息要用 `recipient` 字段而不是 `to`。这条来自 Meta 的 SDK 文档，**他们自己的 send-message 指南里至今只写了 `to`**，我拉了原文确认过。代码里集中在 `whatsapp._recipient()` 一个函数上并写了警告注释；猜错的话，现在会是 `send_raw` 抛出的一条**响亮的** `WhatsAppSendError` + 导演台报错，而不是又一次静默。**要真机验只能等到确实有这样一个用户写进来**
+  ✅ **2026-09-05：没号码的客户改成主动要号码**（用户拍板）。原来的提示只说「username 不能用来查，需要时再问」，太被动——后台里**每一样东西都是按手机号找的**（查订单、开户、建线索），没号码就什么都做不了。现在明确要求**尽早问**，并且说清楚是为了查账户和联系他。同时写死一条：**问归问，不得在拿到号码前拒绝回答问题**——否则就从「认不出你」变成「不给号码不伺候」，后者在演示里更难看
   **暂不做（已知取舍）**：同一个人先带号码出现、后来隐藏号码，会变成两条记录。修法是加一条 `chat:bsuid:{id}` → 手机号 key 的别名。没做是因为**现在一个这样的用户都还不存在**，做了也验不了；触发条件还要求他在 7 天 TTL 内回来。要做时是个小改动
   验证：348 passed（334 → **348**），**九处变异全部被捕获**（丢掉 contacts / 无号码又被丢弃 / 认不出时恢复静默 / BSUID 压过手机号 / username 覆盖真名 / BSUID 塞进 `to` / BSUID 被压成纯数字 / 老档案读不出来 / prompt 谎称有号码）
 
@@ -930,7 +939,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - persona 改成按**意图**分流：还在问、在比较、没想好 → 照旧 `crm_create_lead` 留线索；**现在就要下单 → 当场开户，直接往下走建单和发票**
   验证：355 passed（348 → **355**），**七处变异全部被捕获**（重复开户 / 不写手机号 / 一律 B2B / 空号码也开户 / 把未知当失败 / code 不再唯一 / retail 掉了这个工具）
   ✅ **2026-09-05 真机验收通过**（用户做的，Claude 做不了——带凭据写外部系统会被权限分类器拦）：拿一个 ERP 里没有的号码走完整条链，**下单成功、收到 e-Invoice PDF、`erp.kelvinpeng.com` 后台确实多了一个客户**。所以「ERP 里有身份就够下单开票」这条结论不是从代码推出来的，是线上跑出来的——无信用额度检查、precheck 不拦提交、B2C 不需要 TIN，三条都成立
-  ⚠️ 另一件事：**开出来的客户在 `erp_os` 的 demo reset 里是活的**——`RESET_TABLES` 不含 `customers`，所以演示攒出来的账号不会被凌晨那次重置清掉，会越攒越多。任务 34 做 CRM 清理时应当一并考虑要不要按 `WA-` 前缀清 ERP 客户
+  ✅ **2026-09-05 补两处**（用户拍板）：
+  - **客户 code 从 `WA-{手机号}` 改成 `WA-{手机号}-{YYMMDDHHMM}`**。原因是查任务 34 清理方案时发现的陷阱：`erp_os` 的 code 唯一性检查**算上软删记录**（注释明写 "to prevent reuse"），所以清理一次之后**同一个号码永远开不了户**——而演示每次都用同一个号。防重复开户的保证**移到了「先 `find_customers` 查一遍」那一步**，那本来也是更诚实的位置：它问的是「这个人有没有账号」，不是「这个字符串发过没有」
+  - **ERP 客户要清，已写进任务 34**（连同软删语义、角色、以及上面这个 code 陷阱的完整侦察结论） ERP 客户
 
 - 2026-08-30（轻量档）：`hotel` + `saas` 原本 30 个任务一个都碰不到，会保持静态 JSON 形态，和工具驱动的 `retail` 并列在菜单里落差太大。新增任务 11.2 给它们套同样的工具外壳，读 JSON / 写内存。剩下的差别（retail 后台真的长出东西）反而可以坦白讲成卖点：「接你们自己的系统是同样的工具接口」。
 - 2026-08-30（RAG 的定位）：用户问怎么做 RAG。结论是**现在不需要**——六个 bot 全部素材 31 KB 约一万多 token，上下文有 100 万，prompt caching 一开重复读取几乎免费；RAG 解决的是装不下，差三个数量级。但「读客户自己的文档」值得做，**不是为了性能，是为了那句话：把你们的手册丢进来，五分钟变客服**。落成任务 15.1，用 Claude 原生的 `document` block + citations，零检索基础设施。真到装不下那天，下一步是关键词检索工具（`search_docs` 接 MySQL 全文索引），**不是向量库**：Anthropic 无 embedding 接口，上向量要引入新供应商 + 切块调参，且召回不准时极难 debug；结构化业务数据用关键词天然更合适。

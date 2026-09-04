@@ -71,7 +71,7 @@ PHONE_ON_FILE = "`phone` is the number this message really came from - the chann
 # here would leave the model to reach for the one identifier it can see and pass
 # a handle to a phone lookup, which finds nothing and reads as "you are not a
 # customer" to someone who is.
-NO_PHONE_ON_FILE = "This customer has not given us a phone number - WhatsApp does not pass one on for them, and `username` is a handle they can change at any time, so it is something to greet them by and nothing to search on. Neither back office can be looked up without a number: ask them for one, or for an order reference, before trying."
+NO_PHONE_ON_FILE = "This customer has not given us a phone number - WhatsApp does not pass one on for them, and `username` is a handle they can change at any time, so it is something to greet them by and nothing to search on. Ask them for their phone number early, in your first reply once they raise anything real: every account, order and invoice in the back offices is found by phone, so until you have one you cannot see what they have bought, open an account for them, or hand the enquiry to a colleague. Ask for it plainly, say it is so you can look their account up and reach them about the order, and carry on helping while you wait - do not refuse to answer questions until they give it. Once they do, use it with the lookup tools exactly as if the channel had supplied it."
 
 # The web chat has no phone number to key a record on until task 33 gives it one.
 # Saying so plainly beats an empty record, which reads as "a customer about whom

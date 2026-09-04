@@ -393,3 +393,24 @@ def test_a_username_travels_with_the_record():
     volatile = llm.build_system_blocks(get_bot("retail"), _customer(username="kelvin.p"))[1]
 
     assert "kelvin.p" in volatile["text"]
+
+
+def test_a_customer_with_no_number_is_asked_for_one_rather_than_stalled():
+    """Everything the back offices can do is keyed on a phone number, so a
+    customer who has hidden theirs has to be asked -- early, and without the bot
+    holding the conversation hostage until they answer."""
+    hidden = UserProfile(key_id="US.1349120865", user_id="US.1349120865", username="kelvin.p")
+
+    text = llm.build_system_blocks(get_bot("retail"), hidden)[1]["text"]
+
+    assert "Ask them for their phone number early" in text
+    # Asking is not the same as refusing to help until they answer.
+    assert "carry on helping while you wait" in text
+    assert "do not refuse to answer questions until they give it" in text
+
+
+def test_a_customer_who_gave_a_number_is_not_asked_for_it_again():
+    text = llm.build_system_blocks(get_bot("retail"), _customer())[1]["text"]
+
+    assert "Ask them for their phone number early" not in text
+    assert llm.PHONE_ON_FILE in text
