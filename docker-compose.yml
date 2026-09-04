@@ -7,6 +7,17 @@ services:
       - ./backend/app:/app/app
     env_file:
       - ./backend/.env
+    # Overrides whatever .env says, so a developer cannot point their laptop at
+    # the VPS's Redis by copying a production .env across.
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+
+  # A local stand-in for the shared infra_redis. Deliberately unpersisted: this
+  # one is for exercising the Redis path, not for keeping anything.
+  redis:
+    image: redis:7-alpine
 
   frontend:
     build: ./frontend

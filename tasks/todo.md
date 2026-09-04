@@ -816,7 +816,16 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 > - [ ] **F. `erp_os` 要开 `DEMO_MODE=true`，并且 Celery worker + beat 要真的在跑。** 不开的话 `/api/admin/demo-reset` 直接返回 `DEMO_MODE_REQUIRED`，任务 34 的 ERP 那一半无从谈起。这是 `erp_os` 的部署改动，不在本仓库
 > - [ ] **G. `OPENAI_API_KEY`**，任务 36 用。VPS 的 `/opt/ai_chatbot/backend/.env` 和本地都要有
 
-- [ ] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）
+- [x] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）——**2026-09-04 完成**。22 个新 pytest（全套 254 → **276 passed**），另外拿**真的 redis:7-alpine + 真的 redis-py** 跑了一遍活体验证（不是打桩）：写入/读回全字段含中文、`ttl=600s`、把 TTL 手动压到 30s 后再 save 又回到 600s、delete 生效、指向不存在的主机时降级到内存仍能读回。两个 compose 都过了 `docker compose config`。
+  落地与计划的差异 / 需要知道的几件事：
+  - **key 用「只留数字」的手机号**（`chat:user:60173948123`）。`+60 17-394 8123` / `017-3948123` / `60173948123` 落到同一个 key——**任务 33「网页输号码调出手机上的历史」直接依赖这一条**，否则两条渠道各存各的
+  - **空号码抛 `ValueError`，不是存进 `chat:user:`**。否则所有匿名访客共用一条记录 = 把甲的对话给乙看
+  - **TTL 没做成配置项**，`DEFAULT_TTL_SECONDS = 7 天` 写在模块里，构造函数可传（测试用）。只新增了一个配置 `REDIS_URL`，**留空 = 纯内存**，所以测试和裸 `uvicorn` 不会去连任何东西
+  - **降级带熔断**：连不上后 30 秒内不再重试。没有这一条，Redis 挂掉时每条消息都要等一次连接超时（已把 connect/socket 超时压到 1 秒）——演示时客户正盯着「正在输入」
+  - **内存兜底也存序列化后的 JSON**，和 Redis 完全一样。这样「改了 profile 但忘了 `save`」在两种模式下都同样丢失，不会出现「本地测着好好的，上了 Redis 就丢数据」
+  - **db 编号选 16**：crm_os 占 0-4、erp_os 占 5-11，`vps_infra/README.md` 的分配口径是每个项目 16 个。⚠️ **依赖 `infra_redis` 的 `databases 256`**（`vps_infra/redis/redis.conf` 里确实是 256，已核）——本地起的默认 redis 只有 16 个 db，db 16 会报 `DB index is out of range`，这个错在我们代码里会被吃掉、静默降级成内存，只留一条 warning 日志
+  - **`get_or_create` 不写盘**，要显式 `save()`。一个打错号码的人说一句话就走，不会因此变成一条客户记录
+  - **未做（留给后面）**：没有任何调用方接进来，`session_store` 原样不动、对外行为零变化，这正是本任务的定义。并发写是「后写覆盖先写」无加锁——本服务按设计是单进程（见 `session_store` 的 docstring），到多 worker 那天才需要重看
   文件：`backend/app/services/user_store.py`（新增）、`backend/app/config.py`、`docker-compose.prod.yml`、`docker-compose.yml`、测试
   目标：接上共享 `infra_redis`，一个客户一个 key（`chat:user:{phone}`），**7 天滚动 TTL，每次写入刷新**。这一步**不改任何对外行为**——只是把存取能力建起来，让 32 有东西可用
   **存什么**（通用字段，全场景共用）：`erp_customer_id` / `crm_contact_id`（**最值钱的两个**：存了就不用每次重查，也杜绝认错人——正是任务 10 那条 P3-2 一直没堵的洞）、`language`（**第二次进来直接用对的语言开口**，成本几乎为零，演示效果极好）、`display_name`、`bot_id`、`first_seen` / `last_seen`、`history`（沿用现有 20 轮上限）

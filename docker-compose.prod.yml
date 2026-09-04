@@ -5,9 +5,14 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
+    # db 16: crm_os holds 0-4 and erp_os 5-11 on this same instance, and
+    # vps_infra's README allocates numbers in blocks of 16 per project.
+    environment:
+      - REDIS_URL=redis://infra_redis:6379/16
     networks:
       - default
       - proxy_net
+      - data_net
 
   frontend:
     image: ${FRONTEND_IMAGE}
@@ -19,4 +24,8 @@ services:
 
 networks:
   proxy_net:
+    external: true
+  # infra_redis lives here and publishes no host port, so this is the only way
+  # to reach it. Created by vps_infra, same as proxy_net.
+  data_net:
     external: true

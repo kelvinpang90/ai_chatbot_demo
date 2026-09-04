@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     crm_email: str = ""
     crm_password: str = ""
 
+    # The shared infra_redis, where customer profiles live. Empty on purpose:
+    # unset means "keep everything in memory", which is how this service ran
+    # before there was a Redis and how it has to keep running if there is not
+    # one. Both compose files set it.
+    redis_url: str = ""
+
     demo_access_password: str = ""
 
     internal_shared_secret: str = ""
