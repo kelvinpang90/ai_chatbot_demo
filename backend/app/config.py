@@ -22,9 +22,12 @@ class Settings(BaseSettings):
     # channel is simply not configured, which is the state every deployment but
     # the demo one is in.
     #
-    # The secret is not handed out until the callback config below is saved, and
-    # WeCom verifies that callback the moment you save it. So on a first setup
-    # these arrive in two rounds: token and key first, secret afterwards.
+    # Nothing has ever filled these in, and on this account nothing can: calling
+    # any 微信客服 API needs a trusted-IP allowlist, which cannot be configured
+    # without a domain filed to the enterprise, which a Malaysian domain on an
+    # overseas VPS cannot be. tasks/wecom-kf-plan.md has the whole chain and what
+    # a filing would cost. Until then the callback route answers 503 and this
+    # channel is inert.
     wecom_corpid: str = ""
     wecom_secret: str = ""
     wecom_token: str = ""
