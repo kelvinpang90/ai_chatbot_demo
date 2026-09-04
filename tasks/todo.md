@@ -846,7 +846,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - free-form `profile` **只放当前 bot 那一格**。跟房产 bot 说的预算，不是零售 bot 该提起的
   **还没做（不是漏了，是没有东西会去写）**：`display_name` / `language` / `erp_customer_id` / `crm_contact_id` 四个字段现在**全程无人写入**，档案里实际只有 `phone` + history。所以「bot 认得他」目前靠两条真路径：① history 在 Redis 里存 7 天，第二天写信直接续上；② 零售靠真手机号走 `crm_lookup_customer` 查回上次的线索卡。要把那四个字段填上，得等工具侧动手（`erp_find_customer` / `crm_lookup_customer` 命中后回写 id，是最自然的落点），**不在本任务范围**
   ⚠️ **代价：另外五个 bot 丢了它们唯一的「客户数据」**。`hotel` 的 bookings、`saas` 的 tickets、`food` 的 orders、`realestate` 的 appointments、`banking` 的账户，全都只活在 `identities[].profile` 里，删身份就一起没了。它们现在只剩 `context_data`（行业通用资料），谈不了「你那张订单」。这是「不演假身份」的必然代价，补回来的地方是**任务 11.2**（hotel/saas 套工具外壳）和**批次 04**（food/realestate 自建后端），届时写进 `profile[bot_id]` 这一格。`banking` 反正任务 30 要下架
-  验收现状：**代码侧验完了**（见上，含变异测试）。**真机那一条没验，需要用户做**：用一个新号进去，确认全程没有选身份这一步；聊几句报上名字，隔一段时间再写，看 bot 是否接得上——这一条 Claude 用模拟 webhook 只能证明代码路径，证明不了手机上的观感
+  **验收：2026-09-05 真机通过**。用户拿真实号码走完全程——**没有选身份这一步**，直接进对话；问价、下单、收到 e-Invoice PDF 都成立。历史续接也在 09-04 那次容器重启后当场证实了（重启是比「换一次对话」更强的条件：以前必失忆，这次接上了）。**仍未验**：把手机号隐藏、只有 username 的那条路——线上还不存在这样的用户，见下面 BSUID 那条
 
 - [ ] **任务 33：网页侧改成输手机号**
   文件：`frontend/src/pages/`、`backend/app/routers/chat.py`、`backend/app/services/api.ts`、测试
@@ -929,7 +929,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 写失败区分 `ACCOUNT_FAILED` / `ACCOUNT_UNKNOWN`，沿用 `ORDER_UNKNOWN` 那套理由——告诉模型「失败了」它会重试，而重试会开出第二个账号
   - persona 改成按**意图**分流：还在问、在比较、没想好 → 照旧 `crm_create_lead` 留线索；**现在就要下单 → 当场开户，直接往下走建单和发票**
   验证：355 passed（348 → **355**），**七处变异全部被捕获**（重复开户 / 不写手机号 / 一律 B2B / 空号码也开户 / 把未知当失败 / code 不再唯一 / retail 掉了这个工具）
-  ⚠️ **没验的**：**从没对线上 ERP 真的建过一个客户**。按记忆里那条，带凭据「写」外部系统会被 Claude Code 的权限分类器拦（只读放行），所以这一步只能由用户真机验收：拿一个 ERP 里没有的号码走完「问价 → 下单 → 开户 → 建单 → 发票 PDF」，然后去 `erp.kelvinpeng.com` 后台核对客户和单据都在
+  ✅ **2026-09-05 真机验收通过**（用户做的，Claude 做不了——带凭据写外部系统会被权限分类器拦）：拿一个 ERP 里没有的号码走完整条链，**下单成功、收到 e-Invoice PDF、`erp.kelvinpeng.com` 后台确实多了一个客户**。所以「ERP 里有身份就够下单开票」这条结论不是从代码推出来的，是线上跑出来的——无信用额度检查、precheck 不拦提交、B2C 不需要 TIN，三条都成立
   ⚠️ 另一件事：**开出来的客户在 `erp_os` 的 demo reset 里是活的**——`RESET_TABLES` 不含 `customers`，所以演示攒出来的账号不会被凌晨那次重置清掉，会越攒越多。任务 34 做 CRM 清理时应当一并考虑要不要按 `WA-` 前缀清 ERP 客户
 
 - 2026-08-30（轻量档）：`hotel` + `saas` 原本 30 个任务一个都碰不到，会保持静态 JSON 形态，和工具驱动的 `retail` 并列在菜单里落差太大。新增任务 11.2 给它们套同样的工具外壳，读 JSON / 写内存。剩下的差别（retail 后台真的长出东西）反而可以坦白讲成卖点：「接你们自己的系统是同样的工具接口」。
