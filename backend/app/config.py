@@ -16,6 +16,20 @@ class Settings(BaseSettings):
     # can put in front of the model, so refuse it before pulling it into memory.
     whatsapp_media_max_bytes: int = 5 * 1024 * 1024
 
+    # 微信客服 (WeCom customer service). All four are secrets and all four default
+    # to empty for the same reason the back-office passwords do -- this repository
+    # is public. Empty is also what the callback route checks to decide the
+    # channel is simply not configured, which is the state every deployment but
+    # the demo one is in.
+    #
+    # The secret is not handed out until the callback config below is saved, and
+    # WeCom verifies that callback the moment you save it. So on a first setup
+    # these arrive in two rounds: token and key first, secret afterwards.
+    wecom_corpid: str = ""
+    wecom_secret: str = ""
+    wecom_token: str = ""
+    wecom_encoding_aes_key: str = ""
+
     # The two back offices the retail demo reads and writes. Neither offers an API
     # key, only an email and a password, so those come from the environment and have
     # no default: this repository is public, and a default here is a published
