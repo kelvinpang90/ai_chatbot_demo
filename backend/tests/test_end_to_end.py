@@ -1,7 +1,7 @@
 """One conversation, end to end: Meta's webhook in, a row in the CRM out.
 
 Everything between is the real thing -- the signature check, the session store,
-the bot and identity registries, the SDK's tool runner, the shipped
+the bot registry, the customer store, the SDK's tool runner, the shipped
 `crm_create_lead`, and the client that talks to crm_os. Only the three parties
 outside this process stand in for themselves, each at its own HTTP boundary:
 Meta calling us, Anthropic's Messages API, and crm_os.
@@ -189,13 +189,17 @@ def customer(crm_credentials):
 
 
 def _walk_up_to_the_question(customer: Customer, sent: list) -> None:
-    """Say hello, pick the retail demo, pick an identity. All real router code."""
+    """Say hello and pick the retail demo. All real router code.
+
+    There is no third step any more: since task 32 the number they are writing
+    from is who they are, so the demo menu is the only thing standing between
+    hello and the assistant.
+    """
     customer.says("hi")
     customer.chooses("retail")
-    customer.chooses(get_bot("retail").identities[0].id)
 
-    # The menu, the identity list, then the greeting and its quick-reply buttons.
-    assert len(sent) == 4
+    # The menu, then the greeting and its quick-reply buttons.
+    assert len(sent) == 3
 
 
 def _tool_results_fed_back(parse_mock) -> list[str]:

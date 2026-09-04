@@ -33,54 +33,5 @@
     {"zh": "我登录不进去，怎么办？", "en": "I can't log in, what should I do?", "ms": "Saya tidak boleh log masuk, apa patut saya buat?"},
     {"zh": "帮我创建一个工单", "en": "Help me create a support ticket", "ms": "Bantu saya cipta tiket sokongan"},
     {"zh": "各个套餐有什么区别？", "en": "What's the difference between plans?", "ms": "Apakah perbezaan antara pelan?"}
-  ],
-  "identities": [
-    {
-      "id": "business_customer",
-      "label": {
-        "zh": "Business 套餐客户 - 有一张待处理工单",
-        "en": "Business plan customer - one open ticket",
-        "ms": "Pelanggan pelan Business - satu tiket terbuka"
-      },
-      "profile": {
-        "customer_name": "Priya (Workspace Admin)",
-        "plan": "Business",
-        "seats_used": 42,
-        "tickets": [
-          {"ticket_id": "TCK-5521", "subject": "Slack integration not syncing", "status": "In progress", "opened_on": "2026-08-03"}
-        ]
-      }
-    },
-    {
-      "id": "starter_user",
-      "label": {
-        "zh": "Starter 免费用户 - 咨询升级套餐",
-        "en": "Starter (free) user - asking about upgrading",
-        "ms": "Pengguna Starter (percuma) - bertanya tentang naik taraf"
-      },
-      "profile": {
-        "customer_name": "Hafiz",
-        "plan": "Starter",
-        "seats_used": 3,
-        "tickets": []
-      }
-    },
-    {
-      "id": "team_customer",
-      "label": {
-        "zh": "Team 套餐客户 - 有 2 张已解决工单",
-        "en": "Team plan customer - 2 resolved tickets on record",
-        "ms": "Pelanggan pelan Team - 2 tiket diselesaikan"
-      },
-      "profile": {
-        "customer_name": "Wong Li Xin",
-        "plan": "Team",
-        "seats_used": 15,
-        "tickets": [
-          {"ticket_id": "TCK-5390", "subject": "Dashboard loading slowly", "status": "Resolved", "opened_on": "2026-07-15"},
-          {"ticket_id": "TCK-5210", "subject": "File upload stuck at 0%", "status": "Resolved", "opened_on": "2026-06-28"}
-        ]
-      }
-    }
   ]
 }

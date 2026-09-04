@@ -127,39 +127,6 @@
   }
 }
 
-.back-link {
-  display: inline-block;
-  border: none;
-  background: none;
-  color: var(--accent);
-  font-size: 14px;
-  padding: 0;
-  margin-bottom: 12px;
-}
-
-.identity-list {
-  margin-top: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  text-align: left;
-}
-
-.identity-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--card-bg);
-  padding: 14px 16px;
-  color: var(--text-h);
-  font-size: 15px;
-  transition: box-shadow 0.2s, border-color 0.2s;
-}
-
-.identity-card:hover {
-  border-color: var(--accent-border);
-  box-shadow: var(--shadow);
-}
-
 .chat-page {
   flex: 1;
   min-height: 0;

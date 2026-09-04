@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.bots import registry
@@ -13,12 +15,11 @@ def test_all_bots_load_without_error():
     assert ids == ALL_BOT_IDS
 
 
-def test_each_bot_has_localized_name_and_identities():
+def test_each_bot_has_localized_name_and_quick_questions():
     for bot in registry.list_bots():
         assert bot.name.zh and bot.name.en and bot.name.ms
         assert bot.description.zh and bot.description.en and bot.description.ms
         assert bot.disclaimer.zh and bot.disclaimer.en and bot.disclaimer.ms
-        assert 2 <= len(bot.identities) <= 3
         assert 3 <= len(bot.quick_questions) <= 4
 
 
@@ -26,15 +27,19 @@ def test_get_bot_returns_none_for_unknown_id():
     assert registry.get_bot("does-not-exist") is None
 
 
-def test_get_identity_looks_up_within_bot():
-    retail = registry.get_bot("retail")
-    assert retail is not None
-    identity = registry.get_identity("retail", retail.identities[0].id)
-    assert identity is not None
-    assert identity.id == retail.identities[0].id
+def test_no_bot_still_carries_a_pick_your_own_identity_menu():
+    """Task 32: the phone number is the identity, so the menu of pretend ones is
+    gone -- from the model, from the JSON, and from the loader.
 
-    assert registry.get_identity("retail", "does-not-exist") is None
-    assert registry.get_identity("does-not-exist", "does-not-exist") is None
+    A leftover `identities` key would load silently (pydantic drops what the
+    model does not declare) and read as still supported by whoever opens the
+    file next.
+    """
+    assert not hasattr(registry, "Identity")
+    assert not hasattr(registry, "get_identity")
+    for path in sorted(registry.DATA_DIR.glob("*.json")):
+        assert "identities" not in json.loads(path.read_text(encoding="utf-8")), path.name
+        assert not hasattr(registry.get_bot(path.stem), "identities")
 
 
 def test_every_tool_a_bot_declares_actually_exists():
@@ -70,8 +75,6 @@ def test_retail_no_longer_carries_the_answers_it_is_supposed_to_look_up():
     retail = registry.get_bot("retail")
     assert retail is not None
     assert "products" not in retail.context_data
-    for identity in retail.identities:
-        assert "orders" not in identity.profile
 
 
 def test_a_bot_with_no_tools_declared_still_gets_an_empty_list():

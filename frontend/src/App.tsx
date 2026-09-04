@@ -3,7 +3,6 @@ import './App.css'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import PasswordGate from './pages/PasswordGate'
 import BotSelect from './pages/BotSelect'
-import IdentitySelect from './pages/IdentitySelect'
 import Chat from './pages/Chat'
 import { clearToken, createSessionId, getToken, type BotSummary } from './api'
 import { DEFAULT_LANG, type Lang } from './i18n/strings'
@@ -11,8 +10,7 @@ import { DEFAULT_LANG, type Lang } from './i18n/strings'
 type View =
   | { name: 'password' }
   | { name: 'botSelect' }
-  | { name: 'identitySelect'; bot: BotSummary }
-  | { name: 'chat'; bot: BotSummary; identityId: string; sessionId: string }
+  | { name: 'chat'; bot: BotSummary; sessionId: string }
 
 function App() {
   const [lang, setLang] = useState<Lang>(DEFAULT_LANG)
@@ -34,19 +32,7 @@ function App() {
       {view.name === 'botSelect' && (
         <BotSelect
           lang={lang}
-          onSelect={(bot) => setView({ name: 'identitySelect', bot })}
-          onAuthError={handleAuthError}
-        />
-      )}
-
-      {view.name === 'identitySelect' && (
-        <IdentitySelect
-          lang={lang}
-          botId={view.bot.id}
-          onSelect={(identityId) =>
-            setView({ name: 'chat', bot: view.bot, identityId, sessionId: createSessionId() })
-          }
-          onBack={() => setView({ name: 'botSelect' })}
+          onSelect={(bot) => setView({ name: 'chat', bot, sessionId: createSessionId() })}
           onAuthError={handleAuthError}
         />
       )}
@@ -55,7 +41,6 @@ function App() {
         <Chat
           lang={lang}
           bot={view.bot}
-          identityId={view.identityId}
           sessionId={view.sessionId}
           onAuthError={handleAuthError}
         />

@@ -18,6 +18,7 @@ import pytest
 
 from app.config import settings
 from app.services import crm_client, erp_client, outbox
+from app.services.user_store import user_store
 
 
 def _with_credentials(name, module):
@@ -53,3 +54,18 @@ def _no_outbox_left_open():
     outbox.close()
     yield
     outbox.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_customers_on_file():
+    """Every test starts against a store that has never met anyone.
+
+    REDIS_URL is unset under pytest, so the shared `user_store` keeps its
+    profiles in a process-wide dictionary that would otherwise outlive the test
+    that wrote them. Since task 32 that dictionary decides which demo a number
+    is already in, so a stale entry is the difference between "shown the menu"
+    and "answered by the retail bot" in a test that never mentioned either.
+    """
+    user_store.reset()
+    yield
+    user_store.reset()

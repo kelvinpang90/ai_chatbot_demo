@@ -35,53 +35,5 @@
     {"zh": "有哪些房源推荐？", "en": "What listings do you recommend?", "ms": "Apakah hartanah yang anda cadangkan?"},
     {"zh": "帮我查一下我的看房预约", "en": "Check my viewing appointment", "ms": "Semak temujanji tinjauan saya"},
     {"zh": "帮我算一下房贷大概多少", "en": "Estimate my mortgage", "ms": "Anggarkan pinjaman perumahan saya"}
-  ],
-  "identities": [
-    {
-      "id": "scheduled_viewer",
-      "label": {
-        "zh": "客户张俊贤 - 已预约本周看房",
-        "en": "Client Teoh Jun Xian - viewing scheduled this week",
-        "ms": "Pelanggan Teoh Jun Xian - tinjauan dijadualkan minggu ini"
-      },
-      "profile": {
-        "client_name": "Teoh Jun Xian",
-        "appointments": [
-          {"listing_id": "PROP-201", "date": "2026-08-08", "time": "14:00", "status": "Confirmed"}
-        ],
-        "shortlisted": ["PROP-201", "PROP-206"]
-      }
-    },
-    {
-      "id": "first_time_buyer",
-      "label": {
-        "zh": "首购族努鲁 - 刚开始看房，还没预约",
-        "en": "First-time buyer Nurul - just started browsing, no appointment yet",
-        "ms": "Pembeli kali pertama Nurul - baru mula melayari, belum ada temujanji"
-      },
-      "profile": {
-        "client_name": "Nurul",
-        "appointments": [],
-        "shortlisted": []
-      }
-    },
-    {
-      "id": "investor_client",
-      "label": {
-        "zh": "投资客户拿督刘 - 已购入 1 套，正物色第二套",
-        "en": "Investor Dato Liew - owns 1 unit, looking for a second",
-        "ms": "Pelabur Dato Liew - memiliki 1 unit, mencari yang kedua"
-      },
-      "profile": {
-        "client_name": "Dato Liew",
-        "appointments": [
-          {"listing_id": "PROP-205", "date": "2026-08-09", "time": "10:30", "status": "Confirmed"}
-        ],
-        "shortlisted": ["PROP-205", "PROP-208"],
-        "past_purchases": [
-          {"listing_id": "PROP-207-SOLD-2024", "area": "Ampang, KL", "purchased_price_rm": 350000, "purchased_on": "2024-05"}
-        ]
-      }
-    }
   ]
 }

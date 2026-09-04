@@ -5,7 +5,6 @@ def test_get_or_create_then_read_back():
     store = SessionStore(daily_msg_limit=100)
     session = store.get_or_create("session-1")
     session.bot_id = "retail"
-    session.identity_id = "vip_tan"
     session.add_message("user", "hello")
 
     fetched = store.get("session-1")
@@ -31,17 +30,15 @@ def test_history_truncates_to_max_messages():
     assert session.history[0].content == "msg-10"
 
 
-def test_reset_clears_bot_identity_and_history():
+def test_reset_clears_bot_and_history():
     store = SessionStore(daily_msg_limit=100)
     session = store.get_or_create("session-3")
     session.bot_id = "hotel"
-    session.identity_id = "confirmed_guest"
     session.add_message("user", "hi")
 
     store.reset("session-3")
 
     assert session.bot_id is None
-    assert session.identity_id is None
     assert session.history == []
 
 

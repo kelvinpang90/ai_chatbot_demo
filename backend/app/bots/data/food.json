@@ -39,48 +39,5 @@
     {"zh": "有什么推荐的菜？", "en": "What do you recommend?", "ms": "Apa yang anda cadangkan?"},
     {"zh": "我的订单送到哪里了？", "en": "Where's my delivery?", "ms": "Di mana penghantaran saya?"},
     {"zh": "配送范围和费用是多少？", "en": "What's your delivery area and fee?", "ms": "Apakah kawasan dan bayaran penghantaran?"}
-  ],
-  "identities": [
-    {
-      "id": "active_order",
-      "label": {
-        "zh": "客户吴俊贤 - 订单正在配送中",
-        "en": "Customer Goh Chun Hian - order out for delivery",
-        "ms": "Pelanggan Goh Chun Hian - pesanan sedang dihantar"
-      },
-      "profile": {
-        "customer_name": "Goh Chun Hian",
-        "orders": [
-          {"order_id": "FD-9021", "items": ["Nasi Lemak Special", "Iced Milo"], "status": "Out for delivery - arriving in ~10 min", "total_rm": 17.90, "ordered_on": "2026-08-05 12:30"}
-        ]
-      }
-    },
-    {
-      "id": "new_diner",
-      "label": {
-        "zh": "新客户西蒂 - 第一次浏览菜单",
-        "en": "New customer Siti - browsing the menu for the first time",
-        "ms": "Pelanggan baharu Siti - melayari menu buat kali pertama"
-      },
-      "profile": {
-        "customer_name": "Siti",
-        "orders": []
-      }
-    },
-    {
-      "id": "regular_diner",
-      "label": {
-        "zh": "常客拉杰什 - 有 2 笔历史订单",
-        "en": "Regular customer Rajesh - 2 past orders",
-        "ms": "Pelanggan tetap Rajesh - 2 pesanan lepas"
-      },
-      "profile": {
-        "customer_name": "Rajesh",
-        "orders": [
-          {"order_id": "FD-8890", "items": ["Curry Laksa", "Roti Canai (2pcs)"], "status": "Delivered", "total_rm": 19.90, "ordered_on": "2026-08-01 19:15"},
-          {"order_id": "FD-8756", "items": ["Butter Prawns", "Teh Tarik"], "status": "Delivered", "total_rm": 26.50, "ordered_on": "2026-07-25 20:00"}
-        ]
-      }
-    }
   ]
 }

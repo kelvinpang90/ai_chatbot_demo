@@ -37,49 +37,5 @@
     {"zh": "我的订单到哪里了？", "en": "Where is my order?", "ms": "Di mana pesanan saya?"},
     {"zh": "earbuds 还有 stock 吗？", "en": "Earbuds got stock?", "ms": "Earbuds ada stok?"},
     {"zh": "退换货政策？", "en": "Return policy?", "ms": "Dasar pemulangan?"}
-  ],
-  "identities": [
-    {
-      "id": "trade_sunrise",
-      "label": {
-        "zh": "Sunrise Hypermart 采购 - 陈伟玲，ERP 里的老客户",
-        "en": "Sunrise Hypermart buyer - Tan Wei Ling, an existing ERP account",
-        "ms": "Pembeli Sunrise Hypermart - Tan Wei Ling, akaun ERP sedia ada"
-      },
-      "profile": {
-        "customer_name": "Tan Wei Ling",
-        "company": "Sunrise Hypermart Sdn Bhd",
-        "phone": "+60 3-2284 1111",
-        "account_note": "Existing trade account. Look the company up with erp_find_customer to get the customer_id before checking orders or placing one."
-      }
-    },
-    {
-      "id": "walk_in",
-      "label": {
-        "zh": "无 ERP 账户的散客 - 李国豪，会走建 CRM 线索那条路",
-        "en": "Walk-in, no ERP account - Lee Kok Hao, becomes a CRM lead",
-        "ms": "Pelanggan baharu, tiada akaun ERP - Lee Kok Hao, jadi lead CRM"
-      },
-      "profile": {
-        "customer_name": "Lee Kok Hao",
-        "company": null,
-        "phone": "+60 19-870 4432",
-        "account_note": "No trade account yet. erp_find_customer will find nothing - say so honestly, and record the enquiry with crm_create_lead."
-      }
-    },
-    {
-      "id": "trade_penang",
-      "label": {
-        "zh": "Penang Superstore 采购 - 陈美芬，走槟城仓",
-        "en": "Penang Superstore buyer - Chen Mei Fen, ships from Penang",
-        "ms": "Pembeli Penang Superstore - Chen Mei Fen, dari cawangan Pulau Pinang"
-      },
-      "profile": {
-        "customer_name": "Chen Mei Fen",
-        "company": "Penang Superstore Chain Sdn Bhd",
-        "phone": "+60 4-228 4444",
-        "account_note": "Existing trade account in Penang. Check which branch actually holds the stock with erp_get_inventory before promising a delivery."
-      }
-    }
   ]
 }

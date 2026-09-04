@@ -833,11 +833,20 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ⚠️ Redis 连不上时**必须降级成「像今天一样用内存」**，不能让一个缓存服务把整个 demo 拖死
   验收：单测覆盖存取 + TTL 刷新 + Redis 挂掉时降级；线上行为与现在完全一致
 
-- [ ] **任务 32：手机号即身份（WhatsApp 侧）**
-  文件：`backend/app/routers/whatsapp_webhook.py`、`backend/app/bots/registry.py`、六个 bot JSON、`backend/app/services/llm.py`、测试
-  目标：删掉 `_send_identity_list` 那一步和六个 JSON 里的 `identities`；`Identity` 模型、`get_identity` 一并下线。system prompt 里原来那块「当前身份 profile」换成从 31 读出来的真实档案
-  ⚠️ **这是本批影响面最大的一个任务**，牵动 registry、六个 JSON、webhook、llm、以及一堆断言了 `identities` 的测试（`test_registry.py` 现在还断言每个 bot 有 2-3 个身份）。做之前先通读 `llm.build_system_blocks`——缓存断点就架在 identity 那一块上，换掉它会动到缓存结构
-  验收：真机用一个新号进去，全程没有选身份这一步；报上名字后**换一次对话**再进来，bot 认得他
+- [x] **任务 32：手机号即身份（WhatsApp 侧）**——**2026-09-04 完成，代码侧全绿；真机那一半没做（要用户拿手机）**。287 passed（276 → **287**，净增 11 个测试），前端 `tsc -b && vite build` 也过了。另外做了一轮**变异测试**——手工把 5 处行为逐个改坏，确认每处都有测试变红，不是「写完就绿」的假绿：不写盘 / menu 把人删了 / 陌生人也建档 / 塞错手机号给模型 / 一个 bot 读到另一个 bot 的备注。
+  **身份这一层是真的没了**：`Identity` 模型、`get_identity`、六个 JSON 的 `identities`、WhatsApp 的 `_send_identity_list`、网页的 `IdentitySelect.tsx` 全部删除。`test_registry.py` 里补了一条守门测试，因为 **pydantic 默认吃掉多余的 key**——JSON 里如果有人再写回 `identities`，加载时一声不吭，只有这条测试会喊。
+  超出计划文件清单的几处（都是删 `identities` 逼出来的，不是顺手改的）：
+  - **对话历史和 `bot_id` 从 `session_store` 搬到了 31 建的 Redis 档案里。** 不搬这一步验收就是空话——原来的 history 在进程内存里，重启即失忆，「换一次对话再进来 bot 认得他」无从谈起。`session_store` 现在只剩两件事：**消息去重**和**每日限流**，那两件本来就该是按天/按消息 id 的进程内状态
+  - **`menu` 的语义变了**：清 `bot_id` + 清 history，**但人还在**（`display_name` / `language` / 两个后台 id / per-bot 备注都留着）。「换一个行业演示」不该等于「忘了这个客户是谁」
+  - **只看过菜单的号码不建档**。第一条消息是 `hi` 或 `menu` 的陌生号，Redis 里什么都不写——沿用 31 的 `get_or_create` 不写盘。打错号码的人说一句就走，不该变成一条客户记录（到任务 34 还会顺着进 CRM）
+  - **网页侧被迫一起改了**（`chat.py` / `models.py` / `api.ts` / `App.tsx` / `Chat.tsx` / 两处死掉的 CSS 和 i18n）。`identities` 一删，网页那条路径直接编译不过。网页现在从选场景**直接进聊天**，`llm.get_reply(bot, None, ...)` 走匿名分支——原来 `IdentitySelect` 那个位置，正好留给任务 33 放输手机号那一页
+  system prompt 那块（缓存断点仍在同一处，稳定块逐字节不变，有测试盯着）：
+  - 可变块从「假身份 profile」换成 `{"phone": "60173948123", ...}`，并**明说这个号码是渠道已经验证过的、不要再问客户要**。零售的 persona 早就写了「先用手机号 `crm_lookup_customer` 查一遍」，但以前模型手上只有假身份里那个假号码——**这一条从今天起才真的成立**
+  - **没有的字段不写成 `null`，直接不出现**。`"display_name": null` 读起来像「查过了，没有名字」，会让模型不再问；不出现才是「我们还没问过」
+  - free-form `profile` **只放当前 bot 那一格**。跟房产 bot 说的预算，不是零售 bot 该提起的
+  **还没做（不是漏了，是没有东西会去写）**：`display_name` / `language` / `erp_customer_id` / `crm_contact_id` 四个字段现在**全程无人写入**，档案里实际只有 `phone` + history。所以「bot 认得他」目前靠两条真路径：① history 在 Redis 里存 7 天，第二天写信直接续上；② 零售靠真手机号走 `crm_lookup_customer` 查回上次的线索卡。要把那四个字段填上，得等工具侧动手（`erp_find_customer` / `crm_lookup_customer` 命中后回写 id，是最自然的落点），**不在本任务范围**
+  ⚠️ **代价：另外五个 bot 丢了它们唯一的「客户数据」**。`hotel` 的 bookings、`saas` 的 tickets、`food` 的 orders、`realestate` 的 appointments、`banking` 的账户，全都只活在 `identities[].profile` 里，删身份就一起没了。它们现在只剩 `context_data`（行业通用资料），谈不了「你那张订单」。这是「不演假身份」的必然代价，补回来的地方是**任务 11.2**（hotel/saas 套工具外壳）和**批次 04**（food/realestate 自建后端），届时写进 `profile[bot_id]` 这一格。`banking` 反正任务 30 要下架
+  验收现状：**代码侧验完了**（见上，含变异测试）。**真机那一条没验，需要用户做**：用一个新号进去，确认全程没有选身份这一步；聊几句报上名字，隔一段时间再写，看 bot 是否接得上——这一条 Claude 用模拟 webhook 只能证明代码路径，证明不了手机上的观感
 
 - [ ] **任务 33：网页侧改成输手机号**
   文件：`frontend/src/pages/`、`backend/app/routers/chat.py`、`backend/app/services/api.ts`、测试

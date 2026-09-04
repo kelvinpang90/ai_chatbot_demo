@@ -4,9 +4,10 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Request, Response
 
-from app.bots.registry import BotConfig, get_bot, get_identity, list_bots
+from app.bots.registry import BotConfig, get_bot, list_bots
 from app.config import settings
 from app.services import llm, outbox, whatsapp
+from app.services.user_store import user_store
 from app.session_store import session_store
 
 router = APIRouter(prefix="/webhook/whatsapp")
@@ -102,34 +103,47 @@ def dispatch_message(message: dict) -> list[dict]:
     return _handle_text_message(phone, text)
 
 
+def _start_over(phone: str) -> None:
+    """Put this number back at the demo menu, without forgetting the person.
+
+    The conversation goes; the customer record stays, which is the whole
+    difference between "menu" and never having written in. Nothing is stored for
+    a number we have never seen, so a stranger who opens with "menu" still
+    leaves no record behind.
+    """
+    profile = user_store.get(phone)
+    if profile is None:
+        return
+    profile.bot_id = None
+    profile.history.clear()
+    user_store.save(profile)
+
+
 def _handle_text_message(phone: str, text: str) -> list[dict]:
     if text.strip().lower() in MENU_KEYWORDS:
         logger.info("Menu reset requested by %s", phone)
-        session_store.reset(phone)
+        _start_over(phone)
         return _send_bot_list(phone)
 
-    session = session_store.get_or_create(phone)
+    profile = user_store.get_or_create(phone)
 
-    if session.bot_id is None:
+    if profile.bot_id is None:
         logger.info("No bot selected yet for %s, showing bot list", phone)
         return _send_bot_list(phone)
 
-    if session.identity_id is None:
-        bot = get_bot(session.bot_id)
-        if not bot:
-            return []
-        logger.info("No identity selected yet for %s, showing identity list", phone)
-        return _send_identity_list(phone, bot)
-
-    bot = get_bot(session.bot_id)
-    identity = get_identity(session.bot_id, session.identity_id)
-    if not bot or not identity:
-        session_store.reset(phone)
+    bot = get_bot(profile.bot_id)
+    if not bot:
+        # A demo that was retired between one message and the next.
+        _start_over(phone)
         return _send_bot_list(phone)
 
-    session.add_message("user", text)
-    reply = llm.get_reply(bot, identity, session.history)
-    session.add_message("assistant", reply)
+    profile.add_message("user", text)
+    reply = llm.get_reply(bot, profile, profile.history)
+    profile.add_message("assistant", reply)
+    # Saved after the reply, so the exchange survives a restart and is still
+    # there when they write again days later - this is what "the bot remembers
+    # me" is actually made of.
+    user_store.save(profile)
     logger.info("Sending LLM reply to %s for bot=%s", phone, bot.id)
     # Anything a tool produced goes out after the words explaining it.
     return [whatsapp.build_text_message(phone, reply), *outbox.drain(phone)]
@@ -146,27 +160,20 @@ def _handle_interactive_reply(phone: str, interactive: dict) -> list[dict]:
     if not selected_id:
         return []
 
-    session = session_store.get_or_create(phone)
+    profile = user_store.get_or_create(phone)
 
-    if session.bot_id is None:
+    if profile.bot_id is None:
         bot = get_bot(selected_id)
         if not bot:
             return _send_bot_list(phone)
-        session.bot_id = bot.id
+        profile.bot_id = bot.id
+        # Picking a demo off the menu is deliberate enough to file the record on;
+        # the greeting that follows has to still be there on the next message.
+        user_store.save(profile)
         logger.info("%s selected bot %s", phone, bot.id)
-        return _send_identity_list(phone, bot)
+        return _start_conversation(phone, bot)
 
-    if session.identity_id is None:
-        identity = get_identity(session.bot_id, selected_id)
-        if not identity:
-            bot = get_bot(session.bot_id)
-            return _send_identity_list(phone, bot) if bot else []
-        session.identity_id = identity.id
-        logger.info("%s selected identity %s for bot %s", phone, identity.id, session.bot_id)
-        bot = get_bot(session.bot_id)
-        return _start_conversation(phone, bot) if bot else []
-
-    question = _resolve_quick_question(session.bot_id, selected_id)
+    question = _resolve_quick_question(profile.bot_id, selected_id)
     return _handle_text_message(phone, question) if question else []
 
 
@@ -209,21 +216,6 @@ def _send_bot_list(phone: str) -> list[dict]:
             button_text="Select",
             sections=[{"title": "Demo types", "rows": rows}],
             header_text="AI Chatbot Demo",
-        )
-    ]
-
-
-def _send_identity_list(phone: str, bot: BotConfig) -> list[dict]:
-    rows = [
-        {"id": identity.id, "title": _truncate(identity.label.en, 24), "description": _truncate(identity.label.en, 72)}
-        for identity in bot.identities
-    ]
-    return [
-        whatsapp.build_interactive_list(
-            phone,
-            body_text=f"Great choice! Who would you like to be for this {bot.name.en} demo?",
-            button_text="Select",
-            sections=[{"title": "Demo identities", "rows": rows}],
         )
     ]
 

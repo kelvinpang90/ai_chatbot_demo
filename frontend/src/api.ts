@@ -60,19 +60,6 @@ export async function listBots(lang: string): Promise<BotSummary[]> {
   return request<BotSummary[]>(`/api/bots?lang=${lang}`)
 }
 
-export interface IdentitySummary {
-  id: string
-  label: string
-}
-
-export interface BotDetail extends BotSummary {
-  identities: IdentitySummary[]
-}
-
-export async function getBot(botId: string, lang: string): Promise<BotDetail> {
-  return request<BotDetail>(`/api/bots/${botId}?lang=${lang}`)
-}
-
 export interface SelectBotResponse {
   greeting: string
   quick_questions: string[]
@@ -81,12 +68,11 @@ export interface SelectBotResponse {
 export async function selectBot(
   sessionId: string,
   botId: string,
-  identityId: string,
   lang: string,
 ): Promise<SelectBotResponse> {
   return request<SelectBotResponse>(`/api/chat/${sessionId}/select`, {
     method: 'POST',
-    body: JSON.stringify({ bot_id: botId, identity_id: identityId, lang }),
+    body: JSON.stringify({ bot_id: botId, lang }),
   })
 }
 

@@ -12,12 +12,11 @@ interface ChatMessage {
 interface Props {
   lang: Lang
   bot: BotSummary
-  identityId: string
   sessionId: string
   onAuthError: () => void
 }
 
-export default function Chat({ lang, bot, identityId, sessionId, onAuthError }: Props) {
+export default function Chat({ lang, bot, sessionId, onAuthError }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [quickQuestions, setQuickQuestions] = useState<string[]>([])
   const [input, setInput] = useState('')
@@ -30,7 +29,7 @@ export default function Chat({ lang, bot, identityId, sessionId, onAuthError }: 
     setStarting(true)
     setMessages([])
     setQuickQuestions([])
-    return selectBot(sessionId, bot.id, identityId, lang)
+    return selectBot(sessionId, bot.id, lang)
       .then((res) => {
         setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: res.greeting }])
         setQuickQuestions(res.quick_questions)
@@ -44,10 +43,10 @@ export default function Chat({ lang, bot, identityId, sessionId, onAuthError }: 
   useEffect(() => {
     startConversation()
     // Switching the UI language mid-chat shouldn't wipe the conversation - only a new
-    // session/bot/identity should. Claude replies in whatever language the user types in,
+    // session or bot should. Claude replies in whatever language the user types in,
     // independent of the UI toggle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, bot.id, identityId])
+  }, [sessionId, bot.id])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })

@@ -4,12 +4,11 @@ import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from app.bots.registry import LocalizedText, get_bot, get_identity, list_bots
+from app.bots.registry import LocalizedText, get_bot, list_bots
 from app.config import settings
 from app.models import (
     BotDetail,
     BotSummary,
-    IdentitySummary,
     LoginRequest,
     LoginResponse,
     ResetResponse,
@@ -74,7 +73,6 @@ def get_bot_endpoint(bot_id: str, lang: str = "en") -> BotDetail:
         name=_localize(bot.name, lang),
         description=_localize(bot.description, lang),
         icon=bot.icon,
-        identities=[IdentitySummary(id=i.id, label=_localize(i.label, lang)) for i in bot.identities],
     )
 
 
@@ -87,14 +85,10 @@ def select_bot(session_id: str, body: SelectBotRequest) -> SelectBotResponse:
     bot = get_bot(body.bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
-    identity = get_identity(body.bot_id, body.identity_id)
-    if not identity:
-        raise HTTPException(status_code=404, detail="Identity not found")
 
     session = session_store.get_or_create(session_id)
     session.reset()
     session.bot_id = bot.id
-    session.identity_id = identity.id
 
     disclaimer = _localize(bot.disclaimer, body.lang)
     suffix = GREETING_SUFFIX.get(body.lang, GREETING_SUFFIX["en"])
@@ -110,16 +104,17 @@ def select_bot(session_id: str, body: SelectBotRequest) -> SelectBotResponse:
 )
 def send_message(session_id: str, body: SendMessageRequest) -> SendMessageResponse:
     session = session_store.get(session_id)
-    if not session or not session.bot_id or not session.identity_id:
-        raise HTTPException(status_code=409, detail="Session has no bot/identity selected yet")
+    if not session or not session.bot_id:
+        raise HTTPException(status_code=409, detail="Session has no bot selected yet")
 
     bot = get_bot(session.bot_id)
-    identity = get_identity(session.bot_id, session.identity_id)
-    if not bot or not identity:
-        raise HTTPException(status_code=409, detail="Session's bot/identity no longer exists")
+    if not bot:
+        raise HTTPException(status_code=409, detail="Session's bot no longer exists")
 
     session.add_message("user", body.message)
-    reply = llm.get_reply(bot, identity, session.history)
+    # No customer record: a web visitor has no phone number to key one on until
+    # task 33 asks them for it. WhatsApp is where identity lives today.
+    reply = llm.get_reply(bot, None, session.history)
     session.add_message("assistant", reply)
 
     return SendMessageResponse(reply=reply)

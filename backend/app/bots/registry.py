@@ -12,12 +12,6 @@ class LocalizedText(BaseModel):
     ms: str
 
 
-class Identity(BaseModel):
-    id: str
-    label: LocalizedText
-    profile: dict
-
-
 class BotConfig(BaseModel):
     id: str
     name: LocalizedText
@@ -32,7 +26,6 @@ class BotConfig(BaseModel):
     # means it answers from its context data alone, as every bot did before.
     tools: list[str] = []
     quick_questions: list[LocalizedText] = []
-    identities: list[Identity]
 
 
 def _load_bot(path: Path) -> BotConfig:
@@ -53,10 +46,3 @@ def list_bots() -> list[BotConfig]:
 
 def get_bot(bot_id: str) -> BotConfig | None:
     return _BOTS.get(bot_id)
-
-
-def get_identity(bot_id: str, identity_id: str) -> Identity | None:
-    bot = get_bot(bot_id)
-    if not bot:
-        return None
-    return next((i for i in bot.identities if i.id == identity_id), None)

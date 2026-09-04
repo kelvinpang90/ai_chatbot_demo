@@ -35,48 +35,5 @@
     {"zh": "有哪些房型和价格？", "en": "What room types and rates do you have?", "ms": "Apakah jenis bilik dan kadar yang ada?"},
     {"zh": "帮我查一下我的预订", "en": "Check my booking", "ms": "Semak tempahan saya"},
     {"zh": "有推荐的行程安排吗？", "en": "Any itinerary recommendations?", "ms": "Ada cadangan itinerari?"}
-  ],
-  "identities": [
-    {
-      "id": "confirmed_guest",
-      "label": {
-        "zh": "已订房客人黄志明 - 3晚海景套房，下周入住",
-        "en": "Confirmed guest Ng Chee Ming - 3 nights Sea View Suite, arriving next week",
-        "ms": "Tetamu disahkan Ng Chee Ming - 3 malam Sea View Suite, tiba minggu depan"
-      },
-      "profile": {
-        "guest_name": "Ng Chee Ming",
-        "bookings": [
-          {"booking_id": "BK-3021", "room_type": "Sea View Suite", "location": "Langkawi", "check_in": "2026-08-12", "check_out": "2026-08-15", "guests": 2, "total_rm": 1740, "status": "Confirmed"}
-        ]
-      }
-    },
-    {
-      "id": "prospective_guest",
-      "label": {
-        "zh": "潜在客人林佳颖 - 还未预订，正在咨询",
-        "en": "Prospective guest Lim Jia Ying - no booking yet, still inquiring",
-        "ms": "Bakal tetamu Lim Jia Ying - belum tempah, masih bertanya"
-      },
-      "profile": {
-        "guest_name": "Lim Jia Ying",
-        "bookings": []
-      }
-    },
-    {
-      "id": "returning_guest",
-      "label": {
-        "zh": "回头客人拿督阿末 - 曾入住2次，本周入住家庭套房",
-        "en": "Returning guest Dato Ahmad - stayed twice before, Family Suite this week",
-        "ms": "Tetamu berulang Dato Ahmad - pernah menginap 2 kali, Family Suite minggu ini"
-      },
-      "profile": {
-        "guest_name": "Dato Ahmad",
-        "bookings": [
-          {"booking_id": "BK-2890", "room_type": "Family Suite", "location": "Langkawi", "check_in": "2026-08-06", "check_out": "2026-08-09", "guests": 4, "total_rm": 1440, "status": "Confirmed"},
-          {"booking_id": "BK-2210", "room_type": "Deluxe Garden Room", "location": "Langkawi", "check_in": "2025-12-20", "check_out": "2025-12-23", "guests": 2, "total_rm": 960, "status": "Completed"}
-        ]
-      }
-    }
   ]
 }

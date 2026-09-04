@@ -1,8 +1,8 @@
+import json
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.bots.registry import get_bot
 from app.config import settings
 from app.main import app
 from app.routers.whatsapp_webhook import (
@@ -12,7 +12,7 @@ from app.routers.whatsapp_webhook import (
     dispatch_message,
 )
 from app.services import llm, outbox
-from app.session_store import session_store
+from app.services.user_store import user_store
 
 client = TestClient(app)
 
@@ -85,10 +85,10 @@ def _text_message(phone: str, body: str) -> dict:
 
 
 def _in_conversation(phone: str) -> None:
-    """Skip the menu and the identity picker; those have their own tests."""
-    session = session_store.get_or_create(phone)
-    session.bot_id = "retail"
-    session.identity_id = get_bot("retail").identities[0].id
+    """Skip the demo menu; it has its own tests."""
+    profile = user_store.get_or_create(phone)
+    profile.bot_id = "retail"
+    user_store.save(profile)
 
 
 def test_a_file_a_tool_produced_is_sent_after_the_words_explaining_it():
@@ -126,3 +126,124 @@ def test_a_file_does_not_leak_from_one_conversation_into_the_next():
         sent = dispatch_message(_text_message(second, "hello"))
 
     assert [message["type"] for message in sent] == ["text"]
+
+
+# -- the number they write from is who they are (task 32) ---------------------
+#
+# There used to be a second menu between the demo list and the assistant, on
+# which the visitor picked a made-up customer to pretend to be. It is gone: the
+# record now hangs off the number WhatsApp already told us, so the same person
+# writing again next week is the same person.
+
+
+def _list_reply(phone: str, option_id: str, seq: int = 9) -> dict:
+    return {
+        "id": f"wamid.{phone}.{seq}",
+        "from": phone,
+        "type": "interactive",
+        "interactive": {"type": "list_reply", "list_reply": {"id": option_id}},
+    }
+
+
+def test_choosing_a_demo_goes_straight_to_the_greeting():
+    """No "who would you like to be" in between, and no identity list to answer."""
+    phone = "60129991001"
+
+    sent = dispatch_message(_list_reply(phone, "retail"))
+
+    assert [message["type"] for message in sent] == ["text", "interactive"]
+    assert "Who would you like to be" not in json.dumps(sent)
+    assert user_store.get(phone).bot_id == "retail"
+
+
+def test_the_model_is_handed_the_number_that_actually_wrote_in():
+    """The whole point of the swap. Handed a real number the assistant can look
+    them up; handed a fixture's it would look up a stranger."""
+    phone = "60129991002"
+    _in_conversation(phone)
+    seen = {}
+
+    def capture(bot, customer, history):
+        seen["customer"] = customer
+        return "Sure."
+
+    with patch.object(llm, "get_reply", side_effect=capture):
+        dispatch_message(_text_message(phone, "do you have earbuds"))
+
+    assert seen["customer"].phone == phone
+
+
+def test_the_conversation_is_on_file_after_the_reply():
+    """Nothing is remembered across days unless it is written down at the time."""
+    phone = "60129991003"
+    _in_conversation(phone)
+
+    with patch.object(llm, "get_reply", return_value="We have three."):
+        dispatch_message(_text_message(phone, "do you have earbuds"))
+
+    stored = user_store.get(phone)
+    assert [(m.role, m.content) for m in stored.history] == [
+        ("user", "do you have earbuds"),
+        ("assistant", "We have three."),
+    ]
+
+
+def test_writing_in_again_continues_where_they_left_off():
+    """The acceptance criterion, minus the phone: a second conversation must
+    reach the model with the first one already in front of it, and must not send
+    them back to the demo menu."""
+    phone = "60129991004"
+    dispatch_message(_list_reply(phone, "retail"))
+    with patch.object(llm, "get_reply", return_value="We have three."):
+        dispatch_message(_text_message(phone, "do you have earbuds"))
+
+    seen = {}
+
+    def capture(bot, customer, history):
+        seen["bot"] = bot.id
+        seen["history"] = [m.content for m in history]
+        return "Ten in KL."
+
+    with patch.object(llm, "get_reply", side_effect=capture):
+        sent = dispatch_message({**_text_message(phone, "how many left?"), "id": "wamid.later"})
+
+    assert seen["bot"] == "retail"  # not shown the menu again
+    assert seen["history"] == ["do you have earbuds", "We have three.", "how many left?"]
+    assert [message["type"] for message in sent] == ["text"]
+
+
+def test_menu_starts_the_conversation_over_without_forgetting_the_person():
+    phone = "60129991005"
+    _in_conversation(phone)
+    profile = user_store.get(phone)
+    profile.display_name = "Lee Kok Hao"
+    user_store.save(profile)
+    with patch.object(llm, "get_reply", return_value="We have three."):
+        dispatch_message(_text_message(phone, "do you have earbuds"))
+
+    sent = dispatch_message({**_text_message(phone, "menu"), "id": "wamid.menu"})
+
+    assert [message["type"] for message in sent] == ["interactive"]
+    reopened = user_store.get(phone)
+    assert reopened.bot_id is None and reopened.history == []
+    assert reopened.display_name == "Lee Kok Hao"  # still the same customer
+
+
+def test_a_number_that_only_ever_saw_the_menu_leaves_no_record():
+    """A wrong number says one word and goes. Filing it would put a customer on
+    the books who never asked for anything -- and, from task 34, into the CRM."""
+    stranger, browser = "60129991006", "60129991007"
+
+    dispatch_message(_text_message(stranger, "hi"))
+    dispatch_message(_text_message(browser, "menu"))
+
+    assert user_store.get(stranger) is None
+    assert user_store.get(browser) is None
+
+
+def test_however_the_number_is_written_it_is_the_same_customer():
+    """Task 33 leans on this: a number typed on a laptop has to find the history
+    from a phone. WhatsApp sends bare digits, people type spaces and dashes."""
+    _in_conversation("60129991008")
+
+    assert user_store.get("+60 12-999 1008").bot_id == "retail"

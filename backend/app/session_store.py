@@ -20,7 +20,6 @@ class Message:
 class Session:
     session_key: str
     bot_id: str | None = None
-    identity_id: str | None = None
     history: list[Message] = field(default_factory=list)
 
     def add_message(self, role: str, content: str) -> None:
@@ -30,7 +29,6 @@ class Session:
 
     def reset(self) -> None:
         self.bot_id = None
-        self.identity_id = None
         self.history.clear()
 
 

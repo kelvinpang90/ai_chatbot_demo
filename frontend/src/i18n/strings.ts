@@ -21,11 +21,6 @@ interface Strings {
     title: string
     subtitle: string
   }
-  identitySelect: {
-    title: string
-    subtitle: string
-    back: string
-  }
   chat: {
     inputPlaceholder: string
     send: string
@@ -51,11 +46,6 @@ export const STRINGS: Record<Lang, Strings> = {
       title: '选择一个演示场景',
       subtitle: '每个场景都是一个独立的行业 AI 客服',
     },
-    identitySelect: {
-      title: '选择一个演示身份',
-      subtitle: '不同身份会看到不同的模拟数据',
-      back: '返回',
-    },
     chat: {
       inputPlaceholder: '输入消息...',
       send: '发送',
@@ -79,11 +69,6 @@ export const STRINGS: Record<Lang, Strings> = {
       title: 'Choose a demo scenario',
       subtitle: 'Each scenario is an independent industry AI assistant',
     },
-    identitySelect: {
-      title: 'Choose a demo identity',
-      subtitle: 'Different identities see different mock data',
-      back: 'Back',
-    },
     chat: {
       inputPlaceholder: 'Type a message...',
       send: 'Send',
@@ -106,11 +91,6 @@ export const STRINGS: Record<Lang, Strings> = {
     botSelect: {
       title: 'Pilih senario demo',
       subtitle: 'Setiap senario adalah pembantu AI industri yang berasingan',
-    },
-    identitySelect: {
-      title: 'Pilih identiti demo',
-      subtitle: 'Identiti berbeza akan melihat data mock yang berbeza',
-      back: 'Kembali',
     },
     chat: {
       inputPlaceholder: 'Taip mesej...',

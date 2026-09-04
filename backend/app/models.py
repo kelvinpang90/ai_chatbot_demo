@@ -16,22 +16,15 @@ class BotSummary(BaseModel):
     icon: str
 
 
-class IdentitySummary(BaseModel):
-    id: str
-    label: str
-
-
 class BotDetail(BaseModel):
     id: str
     name: str
     description: str
     icon: str
-    identities: list[IdentitySummary]
 
 
 class SelectBotRequest(BaseModel):
     bot_id: str
-    identity_id: str
     lang: str = "en"
 
 
