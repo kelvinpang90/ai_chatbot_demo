@@ -176,7 +176,29 @@ W1 到 W6 全部可以在**没有任何企业微信凭据**的情况下写完并
       连带修正：接待配额不是「累计 100 位」那一档。**已认证 = 每天 100 位**，用完次日重置，对演示完全够用。
 - [ ] **回调地址**：微信客服要求公网可达。现在 `chatbot.acuventech.com` 已经在 VPS 上收 WhatsApp 回调，加一条 `/webhook/wecom` 路径即可，不需要新域名。
 - [x] ~~**新依赖**~~——2026-09-04 已加 `cryptography>=43,<47`（不是原计划的 `pycryptodome`；`cryptography` 维护更活跃、wheel 更全，两者都能做 AES-256-CBC）。
-- [ ] **部署**：`/webhook/wecom` 的 GET 已经能应答，但**必须先部署到 `chatbot.acuventech.com` 才有意义**——企业微信保存回调配置时打的是公网地址。部署前要先在 VPS 的 `/opt/ai_chatbot/backend/.env` 里填好 `WECOM_CORPID` / `WECOM_TOKEN` / `WECOM_ENCODING_AES_KEY`，否则端点一律返回 503。`WECOM_SECRET` 那时还拿不到，留空即可。
+- [ ] 🚨 **域名主体校验（2026-09-04 实测撞上，当前头号阻塞）**
+
+      在自建应用的「Message-receiving server configuration」里填 `https://chatbot.acuventech.com/webhook/wecom`，企业微信当场红字拒绝：
+
+      > Domain entity verification failed. Configure a domain name whose **filing entity** is the same as or related to the current company entity.
+
+      企业微信要求回调域名的 **ICP 备案主体**与企业主体一致或关联。`chatbot.acuventech.com` 属于 Acuven（马来西亚）、跑在境外 VPS 上，**不可能**备案到「广州荔湾…商贸服务店」名下。**这是政策管控，代码层面无解。**
+
+      查证情况：找到两个撞上同一报错的 GitHub issue（`chatgpt-on-wechat#1092`、`wecom-chatgpt#11/12`），**都没有任何回复，无已证实的绕过方法**。「填 IP 代替域名」这条也没找到任何确认可行的记录。
+
+      如果非走回调不可，代价是：域名 + **中国大陆服务器** + ICP 备案（约 10-20 个工作日，需个体户营业执照和法人实名）。而且备案域名必须解析到大陆服务器，意味着还要在大陆放一个中转——虽然只需要中转「收回调」这一跳，`sync_msg` / `send_msg` / LLM 都还能留在境外 VPS 上（`qyapi.weixin.qq.com` 境外可达）。
+
+- [ ] 💡 **逃生路线：改成轮询，可能让上面这条整个消失（未验证，优先试）**
+
+      回调的作用只是通知「有新消息」。而 `sync_msg` 本来就是**我们主动去拉**的，带 `cursor`、消息保留 3 天。**如果不配回调也能调 `sync_msg`，那就根本不需要备案域名。**
+
+      这条**尚未验证**，但验证成本极低：自建应用的 Secret 现在就能拿，在微信客服里授权一下，直接调 `sync_msg` 看返回什么。
+
+      - 成立 → 轮询（3-10 秒一次）代替回调，备案问题消失，`/webhook/wecom` 那个端点先留着不用
+      - 不成立 → 才需要认真评估备案那条路值不值得
+      - 需要留意：回调带的 `token` 会影响 `sync_msg` 的频率限制，不带 token 轮询可能被限流更狠；轮询间隔要和企业微信的接口配额对一下
+
+- [ ] **部署**：`/webhook/wecom` 的 GET 已经能应答，但在域名问题解决前**部署了也没用**——企业微信根本不接受这个域名。部署时要先在 VPS 的 `/opt/ai_chatbot/backend/.env` 里填好 `WECOM_CORPID` / `WECOM_TOKEN` / `WECOM_ENCODING_AES_KEY`，否则端点一律返回 503。
 
 ## 七、还没决定的事
 
