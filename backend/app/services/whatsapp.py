@@ -7,6 +7,7 @@ import re
 import httpx
 
 from app.config import settings
+from app.services import phone
 
 GRAPH_API_BASE = "https://graph.facebook.com/v20.0"
 REQUEST_TIMEOUT_SECONDS = 10
@@ -19,6 +20,22 @@ MAX_INTERACTIVE_BODY_CHARS = 1024
 # How much of Meta's rejection to quote back into the log. Their errors carry a
 # message, a code and a trace id, and all three are worth having.
 MAX_ERROR_CHARS = 500
+
+
+def _recipient(to: str) -> dict:
+    """Address one outgoing message.
+
+    A phone number goes in `to`, the field this API has always had. A customer
+    who has hidden their number behind a username reaches us as a BSUID, and
+    Meta addresses those with `recipient` instead.
+
+    NOT YET VERIFIED AGAINST A LIVE SEND. Meta's own send-message guide still
+    documents `to` alone; `recipient` comes from their SDK reference. Left as a
+    single decision in one place for exactly that reason -- and a wrong guess is
+    now a loud `WhatsAppSendError` from `send_raw` on the first such message,
+    rather than a customer nobody can answer.
+    """
+    return {"recipient": to} if phone.is_bsuid(to) else {"to": to}
 
 
 class UnsendableMessage(ValueError):
@@ -86,7 +103,7 @@ def _body(text: str, limit: int) -> str:
 def build_text_message(to: str, text: str) -> dict:
     return {
         "messaging_product": "whatsapp",
-        "to": to,
+        **_recipient(to),
         "type": "text",
         "text": {"body": _body(text, MAX_TEXT_BODY_CHARS)},
     }
@@ -110,7 +127,7 @@ def build_interactive_list(
 
     return {
         "messaging_product": "whatsapp",
-        "to": to,
+        **_recipient(to),
         "type": "interactive",
         "interactive": interactive,
     }
@@ -128,7 +145,7 @@ def build_document_message(to: str, media_id: str, filename: str, caption: str =
         document["caption"] = caption
     return {
         "messaging_product": "whatsapp",
-        "to": to,
+        **_recipient(to),
         "type": "document",
         "document": document,
     }
@@ -138,7 +155,7 @@ def build_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> d
     """buttons: [{"id": str, "title": str}, ...]. Meta allows at most 3 reply buttons per message."""
     return {
         "messaging_product": "whatsapp",
-        "to": to,
+        **_recipient(to),
         "type": "interactive",
         "interactive": {
             "type": "button",

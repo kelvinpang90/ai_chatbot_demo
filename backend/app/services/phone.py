@@ -23,6 +23,25 @@ MAX_SCAN_PAGES = 5
 _PHONE_SHAPED = re.compile(r"^[\d\s+()\-.]+$")
 
 
+# Meta's business-scoped user id: an ISO 3166 alpha-2 country code, a period,
+# then up to 128 alphanumerics -- "US.13491208655302741918". Since 2026 it rides
+# on every inbound message, and it is all we get from a customer who has hidden
+# their phone number behind a username.
+#
+# The period is what makes the two unmistakable: no phone number, in any of the
+# ways people write one, contains a period followed by letters and digits.
+_BSUID = re.compile(r"^[A-Za-z]{2}\.[A-Za-z0-9]{1,128}$")
+
+
+def is_bsuid(value: str) -> bool:
+    """Is this Meta's user id rather than a phone number?
+
+    Asked wherever an identifier has to be filed, matched or addressed, so that
+    "which of the two is this" is decided in one place and cannot drift.
+    """
+    return bool(_BSUID.match((value or "").strip()))
+
+
 def digits(value: str) -> str:
     return re.sub(r"\D", "", value or "")
 

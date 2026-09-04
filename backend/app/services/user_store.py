@@ -33,14 +33,30 @@ RETRY_AFTER_SECONDS = 30.0
 
 @dataclass
 class UserProfile:
-    """What we remember about one phone number, across conversations.
+    """What we remember about one customer, across conversations.
 
-    The phone number is the identity: WhatsApp gives us one on every inbound
-    message, and from task 33 the web chat asks for one, so both channels reach
-    the same record.
+    The phone number is the identity wherever we are given one: WhatsApp puts it
+    on every inbound message and from task 33 the web chat asks for one, so both
+    channels reach the same record.
+
+    Since 2026 Meta lets a customer hide their number behind a username, and
+    those arrive with no phone number at all. Such a record is filed under the
+    BSUID instead -- which is why what the record is keyed on is its own field
+    rather than something read off `phone`.
     """
 
-    phone: str
+    # What this record is filed under: the phone number where we have one, the
+    # BSUID where we do not.
+    key_id: str
+    # The number itself, and its absence is meaningful: both back offices are
+    # searched by phone, so a record without one cannot be looked up in either.
+    phone: str | None = None
+    # Meta's business-scoped user id. Unique per business portfolio, stable
+    # across a username change, present on every inbound message.
+    user_id: str | None = None
+    # The handle the customer picked. Worth greeting them by, but never an
+    # identity: Meta lets them change it whenever they like.
+    username: str | None = None
     bot_id: str | None = None
     display_name: str | None = None
     # Worth its weight on the second visit alone: the bot can open in the
@@ -71,20 +87,30 @@ class UserProfile:
 _FIELD_NAMES = {f.name for f in fields(UserProfile)}
 
 
-def _key(phone_number: str) -> str:
-    """The Redis key for a number, however it happened to be typed.
+def _identity(identifier: str) -> str:
+    """The filing identity for a phone number or a BSUID.
 
     `+60 17-394 8123` from a CRM record, `60173948123` from a WhatsApp webhook
     and `017-3948123` typed into the web chat are one customer, and the whole
     point of task 33 is that the number typed on a laptop finds the history from
     a phone. Digits only, so those spellings cannot miss each other.
+
+    A BSUID is passed through whole. Reducing it to digits would throw away the
+    country-code prefix that makes it unique, and there is no second spelling of
+    one to reconcile: Meta issues the string, not a person typing it.
     """
-    digits = phone.digits(phone_number)
+    if phone.is_bsuid(identifier):
+        return identifier.strip()
+    digits = phone.digits(identifier)
     if not digits:
         # Blank would file every anonymous visitor into one shared record, i.e.
         # show one customer another customer's conversation. Refuse instead.
-        raise ValueError("a user profile needs a phone number")
-    return f"{KEY_PREFIX}{digits}"
+        raise ValueError("a user profile needs a phone number or a user id")
+    return digits
+
+
+def _key(identifier: str) -> str:
+    return f"{KEY_PREFIX}{_identity(identifier)}"
 
 
 def _serialise(profile: UserProfile) -> str:
@@ -109,7 +135,15 @@ def _deserialise(raw: str) -> UserProfile | None:
         # newer build and read by an older container should cost us a field, not
         # a TypeError in the middle of a demo.
         known = {k: v for k, v in data.items() if k in _FIELD_NAMES}
-        return UserProfile(**{**known, "history": history})
+        # Records written before what a record is filed under became a field of
+        # its own carry a phone number and nothing else. They are live in Redis
+        # for seven days at a time, so reading one has to mean recognising the
+        # customer, not forgetting them and starting the demo over.
+        key_id = known.get("key_id") or known.get("phone")
+        if not key_id:
+            logger.warning("discarding a user profile with nothing to file it under")
+            return None
+        return UserProfile(**{**known, "key_id": key_id, "history": history})
     except (TypeError, ValueError, KeyError):
         logger.warning("discarding an unreadable user profile", exc_info=True)
         return None
@@ -155,27 +189,33 @@ class UserStore:
         self._offline_until = 0.0
         self._memory: dict[str, tuple[float, str]] = {}
 
-    def get(self, phone_number: str) -> UserProfile | None:
-        """The record for this number, or None if we have never seen it."""
-        raw = self._read(_key(phone_number))
+    def get(self, identifier: str) -> UserProfile | None:
+        """The record for this number or user id, or None if it is new to us."""
+        raw = self._read(_key(identifier))
         return _deserialise(raw) if raw else None
 
-    def get_or_create(self, phone_number: str) -> UserProfile:
-        """The record for this number, or a blank one for a first-time caller.
+    def get_or_create(self, identifier: str) -> UserProfile:
+        """The record for this identifier, or a blank one for a first-timer.
 
         Nothing is written until `save`, so a wrong number that says one word
         and leaves does not become a stored customer.
         """
-        existing = self.get(phone_number)
+        existing = self.get(identifier)
         if existing is not None:
             return existing
         now = time.time()
-        return UserProfile(phone=phone.digits(phone_number), first_seen=now, last_seen=now)
+        key_id = _identity(identifier)
+        blank = UserProfile(key_id=key_id, first_seen=now, last_seen=now)
+        if phone.is_bsuid(key_id):
+            blank.user_id = key_id
+        else:
+            blank.phone = key_id
+        return blank
 
     def save(self, profile: UserProfile) -> None:
         """Persist the profile and push its expiry seven days out from now."""
         profile.last_seen = time.time()
-        key = _key(profile.phone)
+        key = _key(profile.key_id)
         raw = _serialise(profile)
         client = self._redis()
         if client is not None:
@@ -186,8 +226,8 @@ class UserStore:
                 self._go_offline("write failed")
         self._memory[key] = (time.time() + self._ttl, raw)
 
-    def delete(self, phone_number: str) -> None:
-        key = _key(phone_number)
+    def delete(self, identifier: str) -> None:
+        key = _key(identifier)
         client = self._redis()
         if client is not None:
             try:

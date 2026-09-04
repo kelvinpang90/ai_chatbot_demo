@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from app.config import settings
+from app.services import phone
 from app.services import user_store as us
 from app.services.user_store import (
     KEY_PREFIX,
@@ -304,3 +305,45 @@ def test_a_record_holding_an_empty_turn_heals_itself_on_read(store, fake):
         "Update me after it ships",
     ]
     assert all(m.content.strip() for m in healed.history)
+
+
+# -- filed under a user id, for a customer with no phone number ----------------
+
+
+def test_a_record_written_before_the_key_became_a_field_still_loads(store, fake):
+    """These live in Redis for seven days at a time, so a deploy always lands on
+    records written by the build before it. Failing to read one is forgetting a
+    customer in the middle of their conversation."""
+    fake.values[f"{KEY_PREFIX}60111222333"] = json.dumps(
+        {"phone": "60111222333", "display_name": "Tan", "history": []}
+    )
+
+    fetched = store.get("+60111222333")
+
+    assert fetched is not None
+    assert fetched.key_id == "60111222333"
+    assert fetched.phone == "60111222333"
+    assert fetched.display_name == "Tan"
+
+
+def test_a_customer_with_no_phone_number_is_filed_under_their_user_id(store, fake):
+    bsuid = "MY.13491208655302741918"
+
+    profile = store.get_or_create(bsuid)
+    profile.username = "kelvin.p"
+    store.save(profile)
+
+    assert profile.key_id == bsuid
+    assert profile.user_id == bsuid
+    assert profile.phone is None
+    # Kept whole rather than reduced to digits: the country prefix is part of
+    # what makes a BSUID unique, and there is no second spelling to reconcile.
+    assert f"{KEY_PREFIX}{bsuid}" in fake.values
+    assert store.get(bsuid).username == "kelvin.p"
+
+
+def test_a_user_id_is_never_mistaken_for_a_phone_number():
+    assert phone.is_bsuid("MY.13491208655302741918")
+    assert not phone.is_bsuid("+60 17-394 8123")
+    assert not phone.is_bsuid("60173948123")
+    assert not phone.is_bsuid("")

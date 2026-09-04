@@ -61,7 +61,17 @@ Disclaimer to keep in mind: {disclaimer}"""
 CUSTOMER_SYSTEM_TEMPLATE = """The person you are speaking with, as we have them on file (JSON):
 {customer_record}
 
-`phone` is the number this message really came from - the channel has already established it, so use it with the lookup tools instead of asking them to type it out. Everything else in the record is what earlier conversations taught us. A field that is missing is one we do not know: ask for it, never fill it in yourself."""
+{addressing} Everything else in the record is what earlier conversations taught us. A field that is missing is one we do not know: ask for it, never fill it in yourself."""
+
+# The ordinary case: WhatsApp told us who wrote in, and the back offices can be
+# searched on it.
+PHONE_ON_FILE = "`phone` is the number this message really came from - the channel has already established it, so use it with the lookup tools instead of asking them to type it out."
+
+# Since 2026 a customer can hide their number behind a username. Saying nothing
+# here would leave the model to reach for the one identifier it can see and pass
+# a handle to a phone lookup, which finds nothing and reads as "you are not a
+# customer" to someone who is.
+NO_PHONE_ON_FILE = "This customer has not given us a phone number - WhatsApp does not pass one on for them, and `username` is a handle they can change at any time, so it is something to greet them by and nothing to search on. Neither back office can be looked up without a number: ask them for one, or for an order reference, before trying."
 
 # The web chat has no phone number to key a record on until task 33 gives it one.
 # Saying so plainly beats an empty record, which reads as "a customer about whom
@@ -71,7 +81,14 @@ ANONYMOUS_CUSTOMER_TEXT = """You do not know who you are speaking with: this vis
 # What we hold that is worth a place in the prompt. `history` is left out because
 # it travels as the messages themselves, and the timestamps because the model has
 # no idea what today's date is and would only guess at how long ago they were.
-RECORD_FIELDS = ("display_name", "language", "erp_customer_id", "crm_contact_id")
+RECORD_FIELDS = (
+    "phone",
+    "username",
+    "display_name",
+    "language",
+    "erp_customer_id",
+    "crm_contact_id",
+)
 
 
 def _customer_record(bot: BotConfig, customer: UserProfile) -> str:
@@ -84,8 +101,7 @@ def _customer_record(bot: BotConfig, customer: UserProfile) -> str:
     Only this bot's slot of the free-form `profile` goes in: what someone told
     the property bot about their budget is not the retail bot's to bring up.
     """
-    record: dict = {"phone": customer.phone}
-    record.update({name: getattr(customer, name) for name in RECORD_FIELDS if getattr(customer, name)})
+    record = {name: getattr(customer, name) for name in RECORD_FIELDS if getattr(customer, name)}
     bot_notes = customer.profile.get(bot.id)
     if bot_notes:
         record["notes"] = bot_notes
@@ -113,7 +129,10 @@ def build_system_blocks(bot: BotConfig, customer: UserProfile | None) -> list[di
             "text": (
                 ANONYMOUS_CUSTOMER_TEXT
                 if customer is None
-                else CUSTOMER_SYSTEM_TEMPLATE.format(customer_record=_customer_record(bot, customer))
+                else CUSTOMER_SYSTEM_TEMPLATE.format(
+                    customer_record=_customer_record(bot, customer),
+                    addressing=PHONE_ON_FILE if customer.phone else NO_PHONE_ON_FILE,
+                )
             ),
         },
     ]

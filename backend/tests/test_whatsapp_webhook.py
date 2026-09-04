@@ -1,3 +1,4 @@
+import itertools
 import json
 from unittest.mock import patch
 
@@ -8,8 +9,11 @@ from app.config import settings
 from app.console import events
 from app.main import app
 from app.routers.whatsapp_webhook import (
+    Sender,
     _extract_messages,
     _handle_incoming_message,
+    _identify,
+    _remember_identity,
     _resolve_quick_question,
     _truncate,
     dispatch_message,
@@ -35,8 +39,8 @@ def test_extract_messages_reads_nested_meta_payload():
     payload = {
         "entry": [{"changes": [{"value": {"messages": [{"id": "wamid.1"}, {"id": "wamid.2"}]}}]}]
     }
-    messages = _extract_messages(payload)
-    assert [m["id"] for m in messages] == ["wamid.1", "wamid.2"]
+    pairs = _extract_messages(payload)
+    assert [message["id"] for message, _contact in pairs] == ["wamid.1", "wamid.2"]
 
 
 def test_extract_messages_handles_missing_messages_key():
@@ -306,3 +310,152 @@ def test_a_message_that_blows_up_is_never_answered_with_silence_in_the_log():
     assert len(failures) == 1
     assert "tool blew up" in failures[0].output
     events.clear()
+
+
+# -- a customer who has hidden their phone number (Meta, 2026) -----------------
+#
+# Meta now lets a WhatsApp user keep their number to themselves and be reached by
+# a username instead. `from` and `wa_id` simply stop appearing. What always
+# appears is the business-scoped user id -- on the message as `from_user_id`, on
+# the contact as `user_id` -- and the username, which lives only in the contact
+# block this router used to throw away.
+
+BSUID = "MY.13491208655302741918"
+
+# Message ids are deduplicated process-wide and for good reason, so every payload
+# a test builds needs its own.
+_hidden_ids = itertools.count(1)
+
+
+def _hidden_number_payload(text: str, username: str = "kelvin.p") -> dict:
+    """One inbound message from someone with no phone number, in Meta's shape."""
+    return {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "contacts": [
+                                {
+                                    "profile": {"name": "Kelvin", "username": username},
+                                    "user_id": BSUID,
+                                }
+                            ],
+                            "messages": [
+                                {
+                                    "id": f"wamid.hidden.{next(_hidden_ids)}",
+                                    "from_user_id": BSUID,
+                                    "type": "text",
+                                    "text": {"body": text},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def _one(payload: dict) -> tuple[dict, dict]:
+    (pair,) = _extract_messages(payload)
+    return pair
+
+
+def test_the_contact_block_is_no_longer_thrown_away():
+    """`username` appears nowhere else in the payload, so dropping the contact
+    left nothing to call a customer with no phone number by."""
+    message, contact = _one(_hidden_number_payload("hi"))
+
+    assert contact["profile"]["username"] == "kelvin.p"
+    assert message["from_user_id"] == BSUID
+
+
+def test_a_message_with_no_phone_number_is_answered_rather_than_dropped():
+    message, contact = _one(_hidden_number_payload("hi"))
+
+    sent = dispatch_message(message, contact)
+
+    assert [m["type"] for m in sent] == ["interactive"]  # the demo menu
+
+
+def test_such_a_customer_is_filed_under_their_user_id_and_called_by_their_handle():
+    message, contact = _one(_hidden_number_payload("hi"))
+    dispatch_message(message, contact)
+
+    picked = {
+        **message,
+        "id": "wamid.hidden.pick",
+        "type": "interactive",
+        "interactive": {"type": "list_reply", "list_reply": {"id": "retail"}},
+    }
+    dispatch_message(picked, contact)
+
+    stored = user_store.get(BSUID)
+    assert stored is not None
+    assert stored.key_id == BSUID
+    assert stored.user_id == BSUID
+    assert stored.username == "kelvin.p"
+    # What this was for: with no number to go on, the handle is what we call them.
+    assert stored.display_name == "kelvin.p"
+    assert stored.phone is None
+
+
+def test_the_reply_is_addressed_by_user_id_not_by_a_to_field():
+    """A BSUID in `to` would be another 400. Meta addresses these with
+    `recipient` -- see the warning on whatsapp._recipient: not yet proved live."""
+    message, contact = _one(_hidden_number_payload("hi"))
+
+    (menu,) = dispatch_message(message, contact)
+
+    assert menu["recipient"] == BSUID
+    assert "to" not in menu
+
+
+def test_a_phone_number_is_still_addressed_the_way_it_always_was():
+    """The ordinary case must not have moved underneath the change."""
+    payload = whatsapp.build_text_message("60123456789", "hello")
+
+    assert payload["to"] == "60123456789"
+    assert "recipient" not in payload
+
+
+def test_a_sender_we_cannot_identify_is_loud_rather_than_dropped():
+    """This used to be a bare `return []` -- the last inbound failure that said
+    nothing at all, which is how the empty-reply outage stayed hidden for a
+    whole conversation."""
+    events.clear()
+    nameless = {"id": "wamid.nameless", "type": "text", "text": {"body": "hello?"}}
+
+    assert dispatch_message(nameless, {}) == []
+
+    failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
+    assert len(failures) == 1
+    assert "could not identify the sender" in failures[0].output
+    events.clear()
+
+
+def test_a_phone_number_wins_over_the_user_id_when_both_arrive():
+    """Both back offices are searched by phone, task 33's web chat asks for a
+    phone, and a BSUID dies with the business portfolio -- which this project has
+    already changed once."""
+    message, contact = _one(_hidden_number_payload("hi"))
+    message = {**message, "from": "60129993001"}
+
+    sender = _identify(message, contact)
+
+    assert sender.key == "60129993001"
+    assert sender.phone == "60129993001"
+    assert sender.user_id == BSUID  # still recorded, just not what we file under
+
+
+def test_the_username_does_not_overwrite_a_name_we_were_given():
+    """A handle Meta lets them change tomorrow does not outrank what they told us
+    they are called."""
+    profile = user_store.get_or_create(BSUID)
+    profile.display_name = "Kelvin Pang"
+
+    _remember_identity(profile, Sender(key=BSUID, phone=None, user_id=BSUID, username="kelvin.p"))
+
+    assert profile.display_name == "Kelvin Pang"
+    assert profile.username == "kelvin.p"

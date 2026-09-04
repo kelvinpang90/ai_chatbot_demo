@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import anthropic
@@ -15,7 +16,8 @@ PHONE = "60173948123"
 
 def _customer(**fields) -> UserProfile:
     """A record of the shape the WhatsApp webhook now hands the model."""
-    return UserProfile(phone=PHONE, **fields)
+    fields.setdefault("phone", PHONE)
+    return UserProfile(key_id=fields["phone"] or "US.1349120865", **fields)
 
 
 def _assistant_message(content: list, stop_reason: str) -> BetaMessage:
@@ -101,7 +103,7 @@ def test_the_customer_never_leaks_into_the_cached_prefix():
     bot = get_bot("retail")
 
     stable_first = llm.build_system_blocks(bot, _customer(display_name="Tan Wei Ling"))[0]
-    stable_second = llm.build_system_blocks(bot, UserProfile(phone="60198704432"))[0]
+    stable_second = llm.build_system_blocks(bot, UserProfile(key_id="60198704432", phone="60198704432"))[0]
     stable_anonymous = llm.build_system_blocks(bot, None)[0]
 
     # Byte-identical across customers, which is the whole point: one real number
@@ -360,3 +362,34 @@ def test_the_token_ceiling_leaves_room_for_a_reply_and_a_tool_call():
     """512 was the ceiling a turn hit while writing tool arguments, leaving no
     tokens for any text. The number is not sacred; being clear of that is."""
     assert llm.MAX_REPLY_TOKENS >= 1024
+
+
+# -- a customer who has hidden their phone number ------------------------------
+
+
+def test_a_customer_with_no_number_is_not_told_they_have_one():
+    """Meta lets a customer hide their number behind a username. Left to guess,
+    the model reaches for the one identifier it can see and passes a handle to a
+    phone lookup, which finds nothing -- and reads back as "you are not a
+    customer" to somebody who is."""
+    hidden = UserProfile(key_id="US.1349120865", user_id="US.1349120865", username="kelvin.p")
+
+    volatile = llm.build_system_blocks(get_bot("retail"), hidden)[1]
+
+    assert "kelvin.p" in volatile["text"]
+    assert "phone" not in json.loads(volatile["text"].split("\n")[1])
+    assert volatile["text"].count(llm.NO_PHONE_ON_FILE) == 1
+    assert llm.PHONE_ON_FILE not in volatile["text"]
+
+
+def test_a_customer_with_a_number_still_gets_the_lookup_instruction():
+    volatile = llm.build_system_blocks(get_bot("retail"), _customer())[1]
+
+    assert llm.PHONE_ON_FILE in volatile["text"]
+    assert llm.NO_PHONE_ON_FILE not in volatile["text"]
+
+
+def test_a_username_travels_with_the_record():
+    volatile = llm.build_system_blocks(get_bot("retail"), _customer(username="kelvin.p"))[1]
+
+    assert "kelvin.p" in volatile["text"]
