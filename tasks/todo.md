@@ -913,6 +913,25 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   **暂不做（已知取舍）**：同一个人先带号码出现、后来隐藏号码，会变成两条记录。修法是加一条 `chat:bsuid:{id}` → 手机号 key 的别名。没做是因为**现在一个这样的用户都还不存在**，做了也验不了；触发条件还要求他在 7 天 TTL 内回来。要做时是个小改动
   验证：348 passed（334 → **348**），**九处变异全部被捕获**（丢掉 contacts / 无号码又被丢弃 / 认不出时恢复静默 / BSUID 压过手机号 / username 覆盖真名 / BSUID 塞进 `to` / BSUID 被压成纯数字 / 老档案读不出来 / prompt 谎称有号码）
 
+- 2026-09-04（`erp_create_customer`：把任务 32 弄断的旗舰戏接回去）：真机演示时 bot 对客户说「an account has to be set up first」——**下不了单**。查下来这不是 bug，是任务 32 的连带后果：
+  - 以前「选身份」里那个 `trade_sunrise` 是**既有 ERP 账号**，所以能当场演「真的建单 + 真的发 e-Invoice PDF」，那是整场演示最亮的两下
+  - 手机号即身份之后，**真实号码在 ERP 里必然查无此人 → 永远走 CRM 兜底分支 → `erp_create_sales_order` 和 `erp_generate_einvoice` 从真机上再也触发不到**
+  **动手前先把「ERP 里有身份是不是就够了」这条链路查穿了**（用户的问题，答案是「够」，但不是想当然）：
+  - `erp_create_sales_order`：**全 `erp_os` 后端没有任何 `credit_limit` 检查**（grep 全空），所以新客户默认 `credit_limit=0` 不挡单
+  - 发票：`einvoice.create` 只要求 SO 处于 `PARTIAL_SHIPPED` / `FULLY_SHIPPED`，而 `_worth_invoicing` 本来就会先发货
+  - MyInvois 提交：`submit_to_myinvois` **只断言发票状态是 DRAFT，不跑 precheck**。`einvoice_precheck.py` 是独立的建议性接口（还带 LLM），**不在我们的调用路径上，拦不住提交**
+  - ⚠️ **但 precheck 那条规则本身值得当真**：`BUYER_TIN_PRESENT_OR_B2C` —— **B2B 买家必须有合法 TIN，B2C 买家没有也算通过**。而 `CustomerCreate.customer_type` **默认就是 B2B**。照默认建客户，演示时谁点开发票预检那一页就是一片红
+  落地：
+  - `erp_client.create_customer()` + `erp_create_customer` 工具，接 `POST /api/customers`（写权限 `[ADMIN, MANAGER, SALES]`，我们用的 `admin@demo.my` 是 ADMIN，够）
+  - **有公司名 → B2B 并问 TIN；没公司名 → B2C**。这一条是上面那个 precheck 规则的直接产物，不是随手选的
+  - **`code` 从手机号推导**（`WA-60173948123`）。`erp_os` 对重复 code 直接 `ConflictError`，而 `ApiClientError` **不带状态码字段**（只在消息字符串里），靠解析字符串判重太脆——所以工具**先 `find_customers` 查一遍，查到就返回既有账号**。这不只是幂等：一个号码开两个账号 = 订单裂成两半，销售看到的是半部历史
+  - **必须写 `phone`**：`find_customers` 的手机号匹配是扫 `phone` 列的，不写这个字段等于开了一个下次对话找不回来的账号
+  - 写失败区分 `ACCOUNT_FAILED` / `ACCOUNT_UNKNOWN`，沿用 `ORDER_UNKNOWN` 那套理由——告诉模型「失败了」它会重试，而重试会开出第二个账号
+  - persona 改成按**意图**分流：还在问、在比较、没想好 → 照旧 `crm_create_lead` 留线索；**现在就要下单 → 当场开户，直接往下走建单和发票**
+  验证：355 passed（348 → **355**），**七处变异全部被捕获**（重复开户 / 不写手机号 / 一律 B2B / 空号码也开户 / 把未知当失败 / code 不再唯一 / retail 掉了这个工具）
+  ⚠️ **没验的**：**从没对线上 ERP 真的建过一个客户**。按记忆里那条，带凭据「写」外部系统会被 Claude Code 的权限分类器拦（只读放行），所以这一步只能由用户真机验收：拿一个 ERP 里没有的号码走完「问价 → 下单 → 开户 → 建单 → 发票 PDF」，然后去 `erp.kelvinpeng.com` 后台核对客户和单据都在
+  ⚠️ 另一件事：**开出来的客户在 `erp_os` 的 demo reset 里是活的**——`RESET_TABLES` 不含 `customers`，所以演示攒出来的账号不会被凌晨那次重置清掉，会越攒越多。任务 34 做 CRM 清理时应当一并考虑要不要按 `WA-` 前缀清 ERP 客户
+
 - 2026-08-30（轻量档）：`hotel` + `saas` 原本 30 个任务一个都碰不到，会保持静态 JSON 形态，和工具驱动的 `retail` 并列在菜单里落差太大。新增任务 11.2 给它们套同样的工具外壳，读 JSON / 写内存。剩下的差别（retail 后台真的长出东西）反而可以坦白讲成卖点：「接你们自己的系统是同样的工具接口」。
 - 2026-08-30（RAG 的定位）：用户问怎么做 RAG。结论是**现在不需要**——六个 bot 全部素材 31 KB 约一万多 token，上下文有 100 万，prompt caching 一开重复读取几乎免费；RAG 解决的是装不下，差三个数量级。但「读客户自己的文档」值得做，**不是为了性能，是为了那句话：把你们的手册丢进来，五分钟变客服**。落成任务 15.1，用 Claude 原生的 `document` block + citations，零检索基础设施。真到装不下那天，下一步是关键词检索工具（`search_docs` 接 MySQL 全文索引），**不是向量库**：Anthropic 无 embedding 接口，上向量要引入新供应商 + 切块调参，且召回不准时极难 debug；结构化业务数据用关键词天然更合适。
 - 2026-08-30（说服力五条）：盘完 33 个任务发现它们**全在教 bot「能做什么」，没有一个针对客户心里的异议**。补五条：**会说「我不知道」**（任务 11.3，抗砸场——客户一定会试着问倒它，而「乱答」是老板最怕的）、**成本以马币显示**（任务 12，「会不会很贵」是中小企业主真正的拦路问题，一行乘法就能终结）、**rojak 混语开场**（剧本 1 + 任务 11 验收，不是新功能是把已有能力演出来，本地化说服力极强）、**「正在输入」从可选项提为任务 12.1**（工具调用变慢后，没有它会让真实调用显得像性能差）、**演示收尾总结**（任务 19.1，利用「对话留在他手机里」这个 WhatsApp 独有优势——唯一一条你不在场时还能继续说服人的功能）。

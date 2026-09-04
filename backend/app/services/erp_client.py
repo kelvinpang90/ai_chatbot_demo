@@ -132,6 +132,50 @@ class ErpClient(JsonApiClient):
                 break
         return matches
 
+    def create_customer(
+        self,
+        *,
+        code: str,
+        name: str,
+        phone: str,
+        contact_person: str | None = None,
+        is_business: bool = False,
+        tin: str | None = None,
+        address_line1: str | None = None,
+        city: str | None = None,
+        postcode: str | None = None,
+    ) -> dict:
+        """Open a trade account, so a walk-in can be sold to like anyone else.
+
+        Only `code` and `name` are required by erp_os, but a record with nothing
+        else on it is one a salesperson cannot act on and `find_customers` cannot
+        find: its phone scan reads the `phone` column, so an account created
+        without a number is invisible to the next conversation from that number.
+
+        `customer_type` is not cosmetic. erp_os pre-validates an e-Invoice
+        against LHDN's rules, and a B2B buyer with no TIN fails them where a B2C
+        buyer without one passes. Someone who gave no company name is an
+        individual, and saying so keeps their invoice clean.
+        """
+        payload: dict = {
+            "code": code,
+            "name": name,
+            "phone": phone,
+            "customer_type": "B2B" if is_business else "B2C",
+        }
+        # Sent only where the conversation actually produced one: an empty string
+        # in the ERP reads as a field someone cleared, not one never filled in.
+        for field, value in (
+            ("contact_person", contact_person),
+            ("tin", tin),
+            ("address_line1", address_line1),
+            ("city", city),
+            ("postcode", postcode),
+        ):
+            if value:
+                payload[field] = value
+        return self.post("/api/customers", json=payload)
+
     def create_sales_order(
         self,
         *,

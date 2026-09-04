@@ -56,6 +56,7 @@ def test_retail_is_wired_to_the_erp_and_crm_it_demonstrates():
         "erp_search_sku",
         "erp_get_inventory",
         "erp_find_customer",
+        "erp_create_customer",
         "erp_list_orders",
         "erp_create_sales_order",
         "erp_generate_einvoice",

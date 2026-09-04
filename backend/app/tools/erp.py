@@ -7,6 +7,7 @@ from typing import TypedDict
 from anthropic import beta_tool
 
 from app.services import erp_client, invoice_pdf, outbox, whatsapp_media
+from app.services import phone as phone_service
 from app.services.api_client import ApiClientError
 from app.services.whatsapp_media import MediaError
 
@@ -44,6 +45,24 @@ NO_CUSTOMER = (
     "ERP customer -- do not invent a customer_id, ask the customer for the name "
     "or company the account is under."
 )
+ACCOUNT_FAILED = (
+    "The account could not be opened in the ERP system. Nothing was created -- "
+    "tell the customer a colleague will set them up and follow up shortly."
+)
+# Same reasoning as ORDER_UNKNOWN: a write whose answer never came back may well
+# have landed, and a second attempt would open a duplicate account under a
+# second code, which is worse than waiting.
+ACCOUNT_UNKNOWN = (
+    "The ERP system stopped responding while the account was being opened, so it "
+    "is NOT known whether it exists. Do not try again. Tell the customer their "
+    "account is being set up and a colleague will confirm shortly."
+)
+NEEDS_A_PHONE_NUMBER = (
+    "An ERP account needs a phone number, and this conversation has not given "
+    "one. Ask the customer for the number the account should be under."
+)
+
+
 # An address is acted on: somebody drives to it. Cutting one to fit would produce
 # a real-looking address that is not where the customer lives, and unlike the
 # invoice PDF -- which is drawn long after anyone can be asked -- the person who
@@ -219,6 +238,98 @@ def erp_find_customer(name_or_phone: str) -> str:
             for customer in customers
         ]
     )
+
+
+# erp_os caps a customer code at 32 characters. A number is well inside that.
+CUSTOMER_CODE_PREFIX = "WA-"
+
+
+def _customer_code(digits: str) -> str:
+    """A code derived from the number, so one number cannot open two accounts.
+
+    erp_os rejects a duplicate code outright, which turns a repeated call into a
+    refusal rather than a second account -- but the tool looks the customer up
+    before creating one anyway, so that refusal should never be reached.
+    """
+    return f"{CUSTOMER_CODE_PREFIX}{digits}"
+
+
+def _customer_summary(customer: dict) -> dict:
+    return {
+        "customer_id": customer.get("id"),
+        "code": customer.get("code"),
+        "name": customer.get("name"),
+        "phone": customer.get("phone"),
+        "currency": customer.get("currency"),
+    }
+
+
+@beta_tool
+def erp_create_customer(
+    name: str,
+    phone: str,
+    company: str = "",
+    tin: str = "",
+    address: str = "",
+    city: str = "",
+    postcode: str = "",
+) -> str:
+    """Open an ERP trade account for a customer who does not have one yet.
+
+    Use this when erp_find_customer finds nobody and the customer wants to place
+    an order rather than leave an enquiry. It returns a customer_id that
+    erp_create_sales_order and erp_generate_einvoice accept, so the order and the
+    e-Invoice can be completed in this conversation instead of waiting on a
+    salesperson.
+
+    Confirm the details with the customer before calling: this creates a real
+    account a salesperson will work from. Ask for a delivery address if you do
+    not have one. If they gave a company name, ask for their TIN as well --
+    Malaysian e-Invoicing requires a valid TIN on a business invoice, and an
+    account opened without one produces an invoice LHDN flags.
+
+    Safe to call again: an account already on file is returned rather than
+    duplicated.
+
+    Args:
+        name: The person's name.
+        phone: Their phone number, in any format.
+        company: Their company name, if they are buying as a business. Leave
+            empty for an individual.
+        tin: Their LHDN tax identification number, if they gave one.
+        address: The delivery address, street and unit.
+        city: The city or town.
+        postcode: The postcode.
+    """
+    digits = phone_service.digits(phone)
+    if not digits:
+        return NEEDS_A_PHONE_NUMBER
+
+    client = erp_client.client()
+    try:
+        # Not merely idempotence: somebody who already has an account must not be
+        # given a second one, which would split their orders across two records
+        # and leave a salesperson looking at half a history.
+        existing = client.find_customers(phone)
+        if existing:
+            return _as_json({"already_had_an_account": True, **_customer_summary(existing[0])})
+
+        customer = client.create_customer(
+            code=_customer_code(digits),
+            name=company or name,
+            phone=phone,
+            contact_person=name if company else None,
+            is_business=bool(company),
+            tin=tin or None,
+            address_line1=address or None,
+            city=city or None,
+            postcode=postcode or None,
+        )
+    except ApiClientError as exc:
+        logger.exception("erp_create_customer failed for %r", phone)
+        return ACCOUNT_UNKNOWN if exc.may_have_landed else ACCOUNT_FAILED
+
+    return _as_json({"created": True, **_customer_summary(customer)})
 
 
 NO_ORDERS = "This customer has no orders in the ERP system."
@@ -566,6 +677,7 @@ TOOLS = [
     erp_search_sku,
     erp_get_inventory,
     erp_find_customer,
+    erp_create_customer,
     erp_list_orders,
     erp_create_sales_order,
     erp_generate_einvoice,

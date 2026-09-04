@@ -157,6 +157,7 @@ def test_every_tool_is_declared_with_a_schema_the_model_can_read():
         "erp_search_sku",
         "erp_get_inventory",
         "erp_find_customer",
+        "erp_create_customer",
         "erp_list_orders",
         "erp_create_sales_order",
         "erp_generate_einvoice",
@@ -1159,3 +1160,102 @@ def test_the_invoice_tool_is_declared_with_a_schema_the_model_can_read():
     # where it comes from rather than left to produce one.
     assert "erp_find_customer" in schema["properties"]["customer_id"]["description"]
     assert "erp_create_sales_order" in schema["properties"]["order_no"]["description"]
+
+
+# -- opening an account for a walk-in ------------------------------------------
+#
+# Until task 32 the demo's customers were picked off a menu, and the flagship one
+# was an existing ERP trade account, so the order and the e-Invoice always had a
+# customer_id to hang on. A real phone number never does: it belongs to somebody
+# the ERP has never heard of, which left the two most convincing tools in the set
+# unreachable from a real phone. This is the tool that closes that gap.
+
+WALK_IN_ROW = {
+    "id": 77,
+    "code": "WA-60173948123",
+    "name": "Kelvin Pang",
+    "phone": "+60 17-394 8123",
+    "currency": "MYR",
+}
+
+
+def test_opening_an_account_returns_an_id_the_order_tool_can_use():
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
+        with patch.object(erp_client.ErpClient, "post", return_value=WALK_IN_ROW) as post:
+            payload = json.loads(erp.erp_create_customer("Kelvin Pang", "+60 17-394 8123"))
+
+    assert post.call_args.args[0] == "/api/customers"
+    assert payload["created"] is True
+    assert payload["customer_id"] == 77
+
+
+def test_the_account_carries_the_number_that_will_have_to_find_it_again():
+    """`find_customers` scans the phone column. An account opened without one is
+    invisible to the next conversation from that number."""
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
+        with patch.object(erp_client.ErpClient, "post", return_value=WALK_IN_ROW) as post:
+            erp.erp_create_customer("Kelvin Pang", "+60 17-394 8123", address="Unit 140, Reed")
+
+    body = post.call_args.kwargs["json"]
+    assert body["phone"] == "+60 17-394 8123"
+    assert body["code"] == "WA-60173948123"  # derived from the number, so it is unique
+    assert body["address_line1"] == "Unit 140, Reed"
+
+
+def test_an_individual_is_opened_as_b2c_so_their_invoice_passes_lhdn():
+    """erp_os pre-validates against LHDN's rules, where a B2B buyer with no TIN
+    fails and a B2C buyer without one passes. Someone who named no company is an
+    individual, and saying so keeps their e-Invoice clean."""
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
+        with patch.object(erp_client.ErpClient, "post", return_value=WALK_IN_ROW) as post:
+            erp.erp_create_customer("Kelvin Pang", "60173948123")
+
+    body = post.call_args.kwargs["json"]
+    assert body["customer_type"] == "B2C"
+    assert body["name"] == "Kelvin Pang"
+    assert "tin" not in body
+
+
+def test_a_company_is_opened_as_b2b_with_the_person_as_the_contact():
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
+        with patch.object(erp_client.ErpClient, "post", return_value=WALK_IN_ROW) as post:
+            erp.erp_create_customer(
+                "Kelvin Pang", "60173948123", company="Acuven Technology", tin="C1234567890"
+            )
+
+    body = post.call_args.kwargs["json"]
+    assert body["customer_type"] == "B2B"
+    assert body["name"] == "Acuven Technology"
+    assert body["contact_person"] == "Kelvin Pang"
+    assert body["tin"] == "C1234567890"
+
+
+def test_somebody_who_already_has_an_account_is_not_given_a_second_one():
+    """Two accounts for one number splits their orders across two records and
+    leaves a salesperson looking at half a history."""
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[WALK_IN_ROW]):
+        with patch.object(erp_client.ErpClient, "post") as post:
+            payload = json.loads(erp.erp_create_customer("Kelvin Pang", "017-3948123"))
+
+    post.assert_not_called()
+    assert payload["already_had_an_account"] is True
+    assert payload["customer_id"] == 77
+
+
+def test_no_phone_number_means_asking_rather_than_opening_a_findable_nothing():
+    with patch.object(erp_client.ErpClient, "post") as post:
+        assert erp.erp_create_customer("Kelvin Pang", "") == erp.NEEDS_A_PHONE_NUMBER
+
+    post.assert_not_called()
+
+
+def test_a_refused_write_and_an_unanswered_one_are_told_apart():
+    """The same distinction the order tool makes: told "it failed", the model
+    tries again, and a second attempt opens a duplicate account."""
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
+        with patch.object(erp_client.ErpClient, "post", side_effect=ApiClientError("refused")):
+            assert erp.erp_create_customer("K", "60173948123") == erp.ACCOUNT_FAILED
+
+        unanswered = ApiClientError("timed out", may_have_landed=True)
+        with patch.object(erp_client.ErpClient, "post", side_effect=unanswered):
+            assert erp.erp_create_customer("K", "60173948123") == erp.ACCOUNT_UNKNOWN
