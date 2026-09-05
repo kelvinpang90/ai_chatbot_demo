@@ -114,9 +114,21 @@ BAD_LEAD = (
     "estimated value of zero or more."
 )
 
+# Written into `notes` on every contact this bot opens, and the only thing the
+# cleanup goes by. It reads as an explanation to the salesperson who opens the
+# record, because that is what it is: this person arrived through the WhatsApp
+# demo rather than off the phone.
+NEW_CONTACT_NOTES = crm_client.marked("Opened by the WhatsApp demo assistant.")
+
 
 class _Lead(NamedTuple):
-    """A lead in the shape crm_os will take it. `title` is `requirement`, trimmed."""
+    """A lead in the shape crm_os will take it.
+
+    `title` is `requirement` with the demo mark in front, trimmed to the column.
+    Marked here rather than at the write so the trimming happens afterwards: a
+    mark added to an already full-length title would push it over the column and
+    turn a lead into a 500.
+    """
 
     name: str
     phone: str
@@ -158,7 +170,7 @@ def _usable(
     return _Lead(
         name=name[: crm_client.MAX_NAME_CHARS],
         phone=phone,
-        title=requirement[: crm_client.MAX_TITLE_CHARS],
+        title=crm_client.marked(requirement)[: crm_client.MAX_TITLE_CHARS],
         requirement=requirement,
         amount=amount,
         delivery_address=str(delivery_address or "").strip(),
@@ -209,7 +221,11 @@ def _card(client: crm_client.CrmClient, lead: _Lead) -> tuple[dict, dict | None]
         return contact, deal
 
     contact = client.create_contact(
-        name=lead.name, phone=lead.phone, title=lead.title, amount=lead.amount
+        name=lead.name,
+        phone=lead.phone,
+        title=lead.title,
+        amount=lead.amount,
+        notes=NEW_CONTACT_NOTES,
     )
     return contact, _auto_created_card(client, contact.get("id"))
 

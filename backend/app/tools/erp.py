@@ -366,11 +366,6 @@ def erp_find_customer(name_or_phone: str) -> str:
     )
 
 
-# erp_os caps a customer code at 32 characters. A number and a stamp fit inside
-# it with room to spare: "WA-60173948123-2609051423" is 25.
-CUSTOMER_CODE_PREFIX = "WA-"
-
-
 def _customer_code(digits: str) -> str:
     """A code that carries the number but is not only the number.
 
@@ -387,7 +382,7 @@ def _customer_code(digits: str) -> str:
     account, rather than whether this exact code was ever issued.
     """
     stamp = datetime.now(erp_client.MALAYSIA_TIME).strftime("%y%m%d%H%M")
-    return f"{CUSTOMER_CODE_PREFIX}{digits}-{stamp}"
+    return f"{erp_client.CUSTOMER_CODE_PREFIX}{digits}-{stamp}"
 
 
 def _customer_summary(customer: dict) -> dict:

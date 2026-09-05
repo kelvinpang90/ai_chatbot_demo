@@ -24,6 +24,30 @@ MAX_PHONE_CHARS = 30
 # `deals.amount` is DECIMAL(15, 2), so this is the first value it cannot hold.
 MAX_AMOUNT = 10**13
 
+# Every row this bot writes to crm_os carries this, and the cleanup deletes
+# nothing without it. crm_os has no demo reset of its own and its seed data is
+# what the demo is shown against, so the mark is the only thing standing between
+# "clear out last week's leads" and "delete the customers the demo is made of".
+DEMO_MARK = "[DEMO]"
+
+
+def marked(text: str) -> str:
+    """`text` with the mark in front, so the cleanup can recognise it later.
+
+    In front rather than behind because both fields it goes in are truncated
+    from the right -- a mark at the end is the part a long enquiry loses.
+    """
+    return f"{DEMO_MARK} {text}"
+
+
+def is_marked(text: str | None) -> bool:
+    """Did this bot write this row?
+
+    Deliberately anchored: a customer who types "[DEMO]" in the middle of an
+    enquiry must not get a seed contact deleted on their behalf.
+    """
+    return str(text or "").startswith(DEMO_MARK)
+
 
 class CrmClient(JsonApiClient):
     """crm_os over its REST routes."""
@@ -76,7 +100,9 @@ class CrmClient(JsonApiClient):
 
     # -- writes --------------------------------------------------------------
 
-    def create_contact(self, *, name: str, phone: str, title: str, amount: float) -> dict:
+    def create_contact(
+        self, *, name: str, phone: str, title: str, amount: float, notes: str
+    ) -> dict:
         """A new person on the books, plus the lead card crm_os makes alongside them.
 
         `POST /api/contacts` always auto-creates one Deal out of the `initial_*`
@@ -88,12 +114,17 @@ class CrmClient(JsonApiClient):
         Nothing sets `is_gateway` -- the route does not accept it and the column
         defaults to false. That is the point: `utils/demo_scope.py` filters
         flagged contacts out of the pipeline, which would hide the card.
+
+        `notes` is required rather than optional because it carries the mark the
+        cleanup deletes by. A contact written without one is a contact nobody
+        can ever clear out.
         """
         return self.post(
             "/api/contacts",
             json={
                 "name": name,
                 "phone": phone,
+                "notes": notes,
                 "initial_status": "lead",
                 "initial_title": title,
                 "initial_amount": amount,
@@ -133,6 +164,49 @@ class CrmClient(JsonApiClient):
             f"/api/deals/{deal_id}/activities",
             json={"deal_id": deal_id, "type": activity_type, "content": content},
         )
+
+    # -- cleanup -------------------------------------------------------------
+
+    def all_contacts(self) -> list[dict]:
+        """Everyone on the books, so the marked ones can be picked out.
+
+        There is no server-side filter to ask for -- `search` covers name and
+        company, and the mark lives in `notes` -- so the book is paged through
+        and sifted here. The page cap is the phone scan's, and hitting it is not
+        a failure: a run that cleared 500 rows leaves a shorter book for the next
+        one.
+        """
+        contacts: list[dict] = []
+        for page in range(1, MAX_SCAN_PAGES + 1):
+            rows = self._contacts_page(page=page)
+            contacts.extend(rows)
+            if len(rows) < PAGE_SIZE:
+                break
+        return contacts
+
+    def all_deals(self) -> list[dict]:
+        """Every card on the pipeline.
+
+        `GET /api/deals` without a contact answers with the lot, unpaginated
+        (`services/deal_service.py:42`). The cards worth finding here are the
+        ones this bot added to somebody who was already on the books: deleting
+        their contact would take a seed customer with it, so they are deleted
+        one card at a time instead.
+        """
+        return self.get("/api/deals")
+
+    def delete_contact(self, contact_id: str) -> None:
+        """Remove a contact and, by cascade, every card hanging off it.
+
+        `contact_service.soft_delete_contact` marks the contact deleted and calls
+        `cascade_delete_by_contact`, so the cards do not have to be chased down
+        separately -- and cannot be left behind pointing at somebody who is gone.
+        """
+        self.delete(f"/api/contacts/{contact_id}")
+
+    def delete_deal(self, deal_id: str) -> None:
+        """Remove one card, leaving the customer it was filed against alone."""
+        self.delete(f"/api/deals/{deal_id}")
 
 
 _client: CrmClient | None = None

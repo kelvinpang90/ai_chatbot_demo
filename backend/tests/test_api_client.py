@@ -499,3 +499,35 @@ def test_a_read_that_got_a_server_error_claims_nothing_either(status):
                 client.get("/api/skus/12")
 
     assert raised.value.may_have_landed is False
+
+
+def _no_content() -> Mock:
+    """A 204: erp_os answers every DELETE this way, with nothing to decode."""
+    response = Mock(spec=httpx.Response)
+    response.status_code = 204
+    response.content = b""
+    response.json.side_effect = ValueError("no body")
+    response.headers = {}
+    return response
+
+
+def test_a_delete_goes_out_as_a_delete_and_carries_the_token():
+    """The cleanup deletes contacts and trade accounts; nothing else uses the verb."""
+    client = _client()
+
+    with patch.object(api_client.httpx, "post", return_value=_tokens("acc-1", "ref-1")):
+        with patch.object(api_client.httpx, "delete", return_value=_no_content()) as delete:
+            client.delete("/api/customers/41")
+
+    assert delete.call_args.args[0] == f"{BASE_URL}/api/customers/41"
+    assert delete.call_args.kwargs["headers"]["Authorization"] == "Bearer acc-1"
+
+
+def test_an_empty_body_is_not_read_as_a_failure():
+    """A 204 has nothing to decode, and asking anyway turns a deletion that
+    worked into an error the cleanup reports as a row it could not remove."""
+    client = _client()
+
+    with patch.object(api_client.httpx, "post", return_value=_tokens("acc-1", "ref-1")):
+        with patch.object(api_client.httpx, "delete", return_value=_no_content()):
+            assert client.delete("/api/customers/41") is None

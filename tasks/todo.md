@@ -819,7 +819,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 >   ⚠️ **两个坑，任务 34 必须知道**：
 >   - **`POST /api/admin/demo-reset` 是入队就返回**（`erp_os/backend/app/routers/admin.py:102`），响应固定是 `status:"queued"` + `demo_reset_log_id:0`。**worker 没起的话它照样回成功、什么都不会发生**——教科书级的假绿。所以验收**不能看这个返回值**，要去 `GET /api/admin/demo-reset/history` 核对有没有新行
 >   - **每晚 3 点那个自动重置多半没注册**。`demo-reset-nightly` 是在 `_build_app()` 里按 `settings.DEMO_MODE` 决定加不加的（`erp_os/backend/app/tasks/celery_app.py:67-76`），**进程启动时算一次**。beat 容器已经 4 周没重启，而 worker 2 小时前才重启（看着就是刚改完 env 只重启了 worker）——所以 beat 进程里大概率没有这条 schedule。**手动触发不受影响**（走 worker），但想要它每晚自己跑，得重启 beat 容器。⚠️ 这一条是从「beat 4 周没重启」推的，DEMO_MODE 到底什么时候打开的我不知道，**没实测**
-> - [ ] **G. `OPENAI_API_KEY`**，任务 36 用。VPS 的 `/opt/ai_chatbot/backend/.env` 和本地都要有
+> - [x] ~~**G. `OPENAI_API_KEY`**，任务 36 用。~~——**2026-09-06 用户已设置**。本地 `backend/.env` 实测有值。⚠️ **加上它当场把 app 弄挂了**：pydantic-settings 对**有值的**未声明 key 是 `extra_forbidden`，import `app.config` 直接 ValidationError。任务 34 顺手在 `config.py` 声明了 `openai_api_key`。**VPS 上如果已经加了这一行，容器一重启就起不来，直到这次改动部署上去。**
 
 - [x] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）——**2026-09-04 完成**。22 个新 pytest（全套 254 → **276 passed**），另外拿**真的 redis:7-alpine + 真的 redis-py** 跑了一遍活体验证（不是打桩）：写入/读回全字段含中文、`ttl=600s`、把 TTL 手动压到 30s 后再 save 又回到 600s、delete 生效、指向不存在的主机时降级到内存仍能读回。两个 compose 都过了 `docker compose config`。**已推 master 并部署，线上也验了**：`/api/bots` 401、`/webhook/whatsapp` 带错 token 403（加了 `data_net` 之后容器正常起来了）；`ai_chatbot_backend` 确实挂在 `data_net` 上、容器内 `REDIS_URL=redis://infra_redis:6379/16`；最关键的一步——**拿刚部署的那个镜像本身**在 `data_net` 上跑了一次真实存取：写入含中文的档案、读回一致、`ttl=60s`、探针 key 已删除。所以 db 16 和 `databases 256` 这两条假设是在线上被证实的，不是推断的。
   落地与计划的差异 / 需要知道的几件事：
@@ -879,7 +879,31 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   **VPS 的 `/opt/ai_chatbot/backend/.env` 里那行 `DEMO_ACCESS_PASSWORD` 不用删**：实测多传一个环境变量不会让 app 起不来（pydantic-settings 忽略多余的 key），留着无害。
   验证：374 passed（数量不变，一条「在口令门后面」的测试改成了「接口是开放的 + login 路由已 404」）；前端镜像构建过；真镜像跑真 HTTP，无任何 header 时 `/api/bots` 200、`/api/chat/identify` 200、`/api/auth/login` 404；另外单独验了「VPS 那行旧变量还在」时 app 照常启动
 
-- [ ] **任务 34：7 天清理**
+- [x] **任务 34：7 天清理**——**2026-09-06 完成，代码侧全绿；线上那一次真跑没做（destructive，等你拍板）**。后端 **408 passed**（393 → 408，净增 15），另做一轮**变异测试：12 处逐个改坏，12 处全部有测试变红**（标记匹配放宽成子串 / 不打标记 / 卡片全删 / 联系人全删 / ERP 只信 search / 拿 queued 当成功 / 旧的 reset 记录当成这一次 / FAILURE 当成功 / 单行删不掉就中断 / 建联系人不写 notes / 先截断再打标记 / 空 body 照样解析）。
+  入口：`docker exec ai_chatbot_backend python -m app.tasks.cleanup`（新增 `backend/app/tasks/cleanup.py`）。四个阶段各自独立 try，一个挂了不拖累后面；**任何一处出问题退出码非 0**，屏幕上打出「删了几张卡 / 几个联系人 / 几个账号 + 单据重置状态 + 问题清单」。
+  ⚠️ **动手前必须知道的三件事**：
+  1. **线上现在一条带标记的 CRM 行都没有**（实测：29 个联系人、26 张卡，marked = 0）。标记是这个任务才加的，**之前 bot 写进 CRM 的行永远清不掉**，只能你手工删或者留着。这不是 bug，是「只删带标记的」这条规矩的必然代价
+  2. **第一次跑会删掉 ERP 里那个 `WA-60168623902`（Kelvin Peng）**——线上只有这一个 `WA-` 账号（实测）。它是旧格式（没有时间戳后缀），删掉之后同一个号码还能重新开户，因为 code 现在带时间戳
+  3. **`demo-reset` 不是「清空」，是「回到 seed 状态」**：`_reseed_initial_stock` 会把 `seed_initial_stock` **和 `seed_transactional`** 一起重跑，所以重置完 ERP 里会**重新长出种子订单**，`document_sequences` 归零之后又被这些种子单推上去。todo 早先写的「重置后第一张单又是 SO-2026-00001」**大概率不成立**——这一条是读 `erp_os/backend/app/services/demo_reset.py:171` 推的，**没实测**
+  落地与计划的差异：
+  - **CRM 的卡也带 `[DEMO]` 前缀，不只是联系人的 `notes`**。计划只说了 notes，但 `deals` 表**根本没有 notes 字段**（只有 `title`），而「往种子联系人身上加的那张卡」正是必须单独删的那种——不给卡打标记就永远认不出它。所以标记写在 `title` 前面，销售看板上会显示 `[DEMO] 3 units earbuds`
+  - **标记打在截断之前**（`crm_client.marked(requirement)[:200]`）。反过来写的话，一条正好 200 字符的需求加上前缀就是 207，MySQL 严格模式直接 500，一条线索就没了。有测试专门守这一处
+  - **`is_marked` 是前缀匹配不是包含**：客户在需求里打了「[DEMO]」不该让一个种子联系人被删
+  - **`api_client` 加了 `delete()`**，并且**空 body 不再解析 JSON**——erp_os 的 DELETE 回 204 无 body，照旧解析会把一次成功的删除报成失败
+  - **`CUSTOMER_CODE_PREFIX` 从 `tools/erp.py` 搬到 `services/erp_client.py`**：现在按它查、按它删的都在 client 这一层
+  - **ERP 的 `?search=WA-` 只用来缩小范围，删不删由 `code.startswith("WA-")` 决定**。search 是四列 ILIKE，一个叫「WA-Trading」的种子客户也会被它搜出来
+  - **等 reset 真的跑完才算数**：先记下 history 里已有的 id → POST → 轮询 `GET /api/admin/demo-reset/history`，直到出现一条**没见过的、已结束的**记录。todo 记的那个「假绿」（没 worker 也回 queued）就是这么堵掉的，超时 180 秒，超了报「queued, never confirmed」并给非 0 退出码
+  - **Redis 一行都没动**（计划就是这么定的）。将来哪个工具开始往档案里回写 `erp_customer_id` / `crm_contact_id`，清理就得连它一起清——现在全程无人写入，所以不存在悬空 id
+  ⚠️ **顺手修了一个会让线上起不来的雷（不属于本任务，单独说明）**：`OPENAI_API_KEY` 一进 `backend/.env`，**整个 app 直接起不来**——pydantic-settings 对**有值的**未声明 key 是 `extra_forbidden`，import `app.config` 当场 ValidationError。（todo 早先记的「多传一个环境变量不会让 app 起不来」只对**空值**成立，`DEMO_ACCESS_PASSWORD=` 恰好是空的，所以那条验证没覆盖到这个情况。）已在 `config.py` 声明 `openai_api_key: str = ""`。**VPS 的 `.env` 如果已经加了这一行，那台机器上的容器一重启就会挂，直到这次改动部署上去。**
+  **验证到什么程度**：
+  | 验了 | 怎么验的 |
+  |---|---|
+  | 代码侧全部逻辑 | 408 passed + 12 处变异全红 |
+  | ERP 那两条路真的通、凭据够用 | **线上只读探针**：`demo_customers()` 回 1 个 `WA-` 账号、`demo_reset_history()` 回 116/SUCCESS（说明 admin 路由我们的账号进得去、worker 是活的） |
+  | CRM 两条读路径 | 同一次探针：29 个联系人、26 张卡都读回来了 |
+  | **没验：真跑一次清理** | 删 ERP 账号 + 触发全库单据重置是破坏性写操作，按 CLAUDE.md 的高风险规则没有自己跑 |
+  | **没验：清理后同一号码能重新开户** | 依赖上一条 |
+  **验收怎么做**（你来跑，一条命令）：`docker exec ai_chatbot_backend python -m app.tasks.cleanup`，然后核对：① ERP 后台 `WA-60168623902` 不见了、Sunrise Hypermart 这些还在；② 单据被重置（history 里多一条 SUCCESS）；③ 拿那个号码在 WhatsApp 上再下一单，能重新开户；④ CRM 这一轮预期是「0 删 0」——真机再演一次之后新写的行才会带标记，那时再跑一次才看得到 ② 的效果
   文件：`backend/app/tasks/`（新增）、`backend/app/tools/crm.py`、`backend/app/tools/erp.py`、测试
   目标：**四**件事。① Redis 靠 TTL 自动过期，**不用写任务**；② CRM：bot 建的联系人 `notes` 写 `[DEMO]` 前缀，清理时只删带标记的；③ ERP 单据：调 `POST /api/admin/demo-reset`，不自己写删除；④ **ERP 客户：按 `WA-` 前缀删**（2026-09-05 用户拍板要清）
   ⚠️ **CRM 有个坑**：bot 有时是往**种子联系人**（如 David Park）身上加一张新卡。这种情况**只能删那张卡，不能删人**——删人会把种子数据搞没

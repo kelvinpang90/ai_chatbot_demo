@@ -234,16 +234,25 @@ class JsonApiClient:
         """
         return self._request("POST", path, json=json)
 
+    def delete(self, path: str) -> Any:
+        """DELETE an authenticated endpoint.
+
+        Both back offices delete by marking a row deleted rather than removing
+        it, and both answer differently: crm_os with its usual envelope, erp_os
+        with 204 and no body at all. `_request` returns None for the empty one.
+        """
+        return self._request("DELETE", path)
+
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         """One authenticated call, re-authenticating once if the token is stale.
 
         The expiry check in `_access_token` is a clock comparison; the 401 retry
         covers what a clock cannot see -- a revoked session, a restarted back end.
         """
-        # Call httpx by attribute rather than holding a reference: the two verbs
-        # stay independently patchable, which is how the tests raise real
+        # Call httpx by attribute rather than holding a reference: each verb
+        # stays independently patchable, which is how the tests raise real
         # transport failures at exactly one of them.
-        send = httpx.get if method == "GET" else httpx.post
+        send = getattr(httpx, method.lower())
         for force_login in (False, True):
             token = self._access_token(force_login=force_login)
             try:
@@ -288,6 +297,11 @@ class JsonApiClient:
                         and not _the_service_answered_for_itself(response)
                     ),
                 )
+            # A 204 has no body to unwrap, and asking for one is a decode error
+            # on a call that in fact succeeded. erp_os answers every DELETE that
+            # way.
+            if not response.content:
+                return None
             return self._unwrap(response.json())
 
         raise ApiClientError(f"{self.name} api: {method} {path} stayed unauthorized after re-login")

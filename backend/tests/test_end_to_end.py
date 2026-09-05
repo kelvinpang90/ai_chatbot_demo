@@ -227,8 +227,11 @@ def test_a_customer_message_becomes_a_card_in_the_crm_and_a_reply_on_whatsapp(cu
 
     # 1. The CRM got the lead, as one card rather than two.
     assert crm_os.paths() == ["/api/contacts", "/api/deals/d-e2e/activities"]
-    assert crm_os.body_for("/api/contacts")["initial_title"] == LEAD_TITLE
+    assert crm_os.body_for("/api/contacts")["initial_title"] == f"[DEMO] {LEAD_TITLE}"
     assert crm_os.body_for("/api/contacts")["initial_amount"] == LEAD_AMOUNT
+    # Both marks, on the two fields the cleanup reads. A card written without
+    # them is one nobody can ever clear off the board.
+    assert crm_os.body_for("/api/contacts")["notes"].startswith("[DEMO]")
 
     # 2. The note the salesperson reads is on the card, marked WhatsApp.
     note = crm_os.body_for("/activities")

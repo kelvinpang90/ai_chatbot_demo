@@ -224,10 +224,14 @@ def test_both_tools_are_declared_with_a_schema_the_model_can_read():
 # -- crm_create_lead ---------------------------------------------------------
 
 ENQUIRY = "3 units Sony WF-C710N earbuds, COD to Cheras"
+# What lands on the card: every row this bot writes carries the mark the cleanup
+# in app/tasks/cleanup.py deletes by.
+MARKED_ENQUIRY = f"[DEMO] {ENQUIRY}"
 VALUE = 986.70
 
 NEW_CONTACT = {"id": "c-9", "name": "Ahmad Faizal", "phone": "+60 12-333 4444"}
-NEW_DEAL = {"id": "d-9", "title": ENQUIRY, "amount": 986.70, "status": "lead"}
+# Marked, because that is what crm_os would have stored and would hand back.
+NEW_DEAL = {"id": "d-9", "title": MARKED_ENQUIRY, "amount": 986.70, "status": "lead"}
 
 
 class FakeCrm:
@@ -302,12 +306,13 @@ def test_a_new_customer_leaves_one_card_on_the_board_not_two():
     assert fake.body("/api/contacts") == {
         "name": "Ahmad Faizal",
         "phone": "+60 12-333 4444",
+        "notes": crm.NEW_CONTACT_NOTES,
         "initial_status": "lead",
-        "initial_title": ENQUIRY,
+        "initial_title": MARKED_ENQUIRY,
         "initial_amount": VALUE,
     }
     assert payload["deal_id"] == "d-9"
-    assert payload["title"] == ENQUIRY
+    assert payload["title"] == MARKED_ENQUIRY
     assert payload["amount"] == VALUE
     assert payload["activity_logged"] is True
 
@@ -329,7 +334,7 @@ def test_a_returning_customer_gets_another_card_not_another_copy_of_themselves()
     assert fake.body("/api/deals") == {
         "contact_id": "c-1",
         "status": "lead",
-        "title": ENQUIRY,
+        "title": MARKED_ENQUIRY,
         "amount": VALUE,
     }
     assert payload["contact_id"] == "c-1"
@@ -387,7 +392,11 @@ def test_the_note_keeps_the_whole_enquiry_the_card_title_had_to_cut():
     with fake_crm(existing=[]) as fake:
         crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", long_enquiry, VALUE)
 
-    assert fake.body("/api/contacts")["initial_title"] == long_enquiry[:200]
+    title = fake.body("/api/contacts")["initial_title"]
+    # The mark rides in front and the column limit is still 200: a title marked
+    # after trimming would be 207 characters and a 500 from MySQL.
+    assert len(title) == 200
+    assert title == crm_client.marked(long_enquiry)[:200]
     assert long_enquiry in fake.body("/api/deals/d-9/activities")["content"]
 
 

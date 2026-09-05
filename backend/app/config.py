@@ -7,6 +7,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
 
+    # Transcription (task 36). Declared ahead of the code that reads it because
+    # an undeclared key with a value in `.env` is not ignored -- it fails
+    # validation and the process does not start. (An undeclared key with an
+    # empty value is dropped, which is why the leftover DEMO_ACCESS_PASSWORD on
+    # the VPS is harmless and this one would not have been.)
+    openai_api_key: str = ""
+
     whatsapp_access_token: str = ""
     whatsapp_phone_number_id: str = ""
     whatsapp_verify_token: str = ""

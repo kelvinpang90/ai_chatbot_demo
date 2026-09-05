@@ -28,6 +28,13 @@ DEFAULT_WAREHOUSE_ID = 1
 # is being shown.
 WHATSAPP_SHIPPING_METHOD = "WhatsApp order"
 
+# Every trade account this bot opens is coded with it, and the cleanup deletes
+# by it. erp_os caps a customer code at 32 characters; a number and a stamp fit
+# inside that with room to spare -- "WA-60173948123-2609051423" is 25. The seed
+# customers the demo is shown against are coded otherwise, which is what keeps
+# them out of the cleanup's way.
+CUSTOMER_CODE_PREFIX = "WA-"
+
 # erp_os caps the sales order's shipping address at 500 characters
 # (`schemas/sales_order.py:68`). Longer is a 422 that loses the whole order, so
 # the length is checked before the write rather than discovered after it.
@@ -373,6 +380,60 @@ class ErpClient(JsonApiClient):
         thing Malaysian businesses have to file from August 2024 onwards.
         """
         return self.post(f"/api/invoices/{invoice_id}/submit")
+
+    # -- cleanup -------------------------------------------------------------
+
+    def demo_customers(self) -> list[dict]:
+        """The trade accounts this bot opened, and nobody else's.
+
+        `?search=` is an ILIKE across code, name, contact_person and email
+        (`repositories/customer.py:55-64`), so it narrows the pages but cannot
+        be trusted on its own: a customer named "Warehouse-9" answers it too.
+        The code prefix is checked here, and that check is what decides a
+        deletion.
+        """
+        found: list[dict] = []
+        for page in range(1, phone.MAX_SCAN_PAGES + 1):
+            rows = self._customers_page(search=CUSTOMER_CODE_PREFIX, page=page)
+            found.extend(
+                row
+                for row in rows
+                if str(row.get("code", "")).startswith(CUSTOMER_CODE_PREFIX)
+            )
+            if len(rows) < phone.PAGE_SIZE:
+                break
+        return found
+
+    def delete_customer(self, customer_id: int) -> None:
+        """Retire a trade account.
+
+        A soft delete: erp_os sets `deleted_at` and clears `is_active`
+        (`repositories/base.py`), which is what makes this safe to run against
+        an account with orders behind it -- the documents are not orphaned, and
+        both the customer list and `find_customers` filter on `deleted_at IS
+        NULL`, so the account really does leave the screen.
+        """
+        self.delete(f"/api/customers/{customer_id}")
+
+    def start_demo_reset(self) -> dict:
+        """Ask erp_os to wipe its transactional data and reseed stock.
+
+        The answer means "enqueued", nothing more: the route hands off to Celery
+        and replies `status: queued` with `demo_reset_log_id: 0` whether or not
+        a worker is alive to pick the job up (`routers/admin.py:102`). Whether
+        anything happened is only visible in `demo_reset_history`, which is why
+        the caller checks there rather than here.
+        """
+        return self.post("/api/admin/demo-reset", json={})
+
+    def demo_reset_history(self, *, limit: int = 5) -> list[dict]:
+        """Recent reset runs, newest first.
+
+        Short by default because the table is itself in `RESET_TABLES`: a run
+        truncates the log and then writes its own row back, so a successful
+        reset leaves a history one row long.
+        """
+        return self.get("/api/admin/demo-reset/history", params={"limit": limit})
 
 
 _client: ErpClient | None = None
