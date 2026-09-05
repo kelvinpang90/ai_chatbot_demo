@@ -813,7 +813,14 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 >
 > ### 阻塞项（需要用户处理）
 >
-> - [ ] **F. `erp_os` 要开 `DEMO_MODE=true`，并且 Celery worker + beat 要真的在跑。** 不开的话 `/api/admin/demo-reset` 直接返回 `DEMO_MODE_REQUIRED`，任务 34 的 ERP 那一半无从谈起。这是 `erp_os` 的部署改动，不在本仓库
+> - [x] ~~**F. `erp_os` 要开 `DEMO_MODE=true`，并且 Celery worker + beat 要真的在跑。**~~——**2026-09-05 已解除，但原因和当初写的不一样**：
+>   - `DEMO_MODE` **早就是 `true`**（`GET https://erp.kelvinpeng.com/health` 返回 `"demo_mode": true`），beat 也一直在排 `demo-reset-nightly`，08-28/29/30 三天都 `status=SUCCESS`。所以“要开”这个前提本来就成立
+>   - 真正卡住的是：**`erp_celery_worker` 从 2026-08-30 19:27 起就不消费队列了**——容器状态一直是 `Up`，过去 24 小时却 **received 0 个任务**，而 beat 每 10 秒发一次。典型的 Celery worker 掉了 broker 连接后没恢复
+>   - 这也解释了当初那句观察“earbuds SKU 是 09-01 建的、`SO-2026-00001` 是 09-02 建的，今天都还在”——方向对，原因猜错了：不是没开，是开了之后卡死
+>   - 修法：`cd /opt/erp_os && docker compose up -d --force-recreate erp_celery_worker`。↠ **`docker compose restart` 没用**，它复用旧容器；而且这条命令**必须在 VPS 上跑**，本机仓库没有 `.env`，`${GHCR_OWNER}` 会空掉报 `invalid reference format`
+>   - ⚠️ **重建后积压的任务会立刻跑完**，包括 09-03/04/05 三次 `demo-reset-nightly`。当天 21:15:47 就把 ERP 单据全清了（`log_id=111`）——**当天验收用的那张销售单和发票跟着没了**，SKU 和客户还在（`RESET_TABLES` 不含这两张表）
+>   - **从现在起每天凌晨 3:00（吉隆坡）会自动重置一次**。演示前攼下的数据不要指望过夜还在
+>   - 遗留问题（属 `erp_os`，不在本仓库）：**`erp_celery_worker` 没有 healthcheck**，“容器活着但不消费队列”这种状态完全无人可见，这次是靠翻日志才发现的
 > - [ ] **G. `OPENAI_API_KEY`**，任务 36 用。VPS 的 `/opt/ai_chatbot/backend/.env` 和本地都要有
 
 - [x] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）——**2026-09-04 完成**。22 个新 pytest（全套 254 → **276 passed**），另外拿**真的 redis:7-alpine + 真的 redis-py** 跑了一遍活体验证（不是打桩）：写入/读回全字段含中文、`ttl=600s`、把 TTL 手动压到 30s 后再 save 又回到 600s、delete 生效、指向不存在的主机时降级到内存仍能读回。两个 compose 都过了 `docker compose config`。**已推 master 并部署，线上也验了**：`/api/bots` 401、`/webhook/whatsapp` 带错 token 403（加了 `data_net` 之后容器正常起来了）；`ai_chatbot_backend` 确实挂在 `data_net` 上、容器内 `REDIS_URL=redis://infra_redis:6379/16`；最关键的一步——**拿刚部署的那个镜像本身**在 `data_net` 上跑了一次真实存取：写入含中文的档案、读回一致、`ttl=60s`、探针 key 已删除。所以 db 16 和 `databases 256` 这两条假设是在线上被证实的，不是推断的。
