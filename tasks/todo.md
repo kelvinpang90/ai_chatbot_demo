@@ -889,7 +889,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   依赖阻塞项 F
   验收：跑一次清理，CRM 上带标记的卡没了、种子联系人还在；ERP 单据清空且库存重灌；**`WA-` 客户从后台消失、种子客户还在，且清理后同一个号码还能重新开户**（这一条最容易漏，专门验）
 
-- [x] **任务 35：商品列表用 List Message**（不依赖前面，可插队）——**2026-09-05 完成，代码侧全绿；真机那一半没做（要用户拿手机 + 线上部署）**。后端 **388 passed**（374 → 388：新增 16 条，删掉 2 条搬走的 `_truncate` 测试）。另做了一轮**变异测试**——手工把 8 处行为逐个改坏，8 处全部有测试变红：单条结果也发列表 / 网页也发列表 / 库存挂了连商品一起不发 / 行上报不含税价 / 第 11 行照发 / 行 id 不再指向那个商品 / 点击被吞掉 / 行标题超长不裁。
+- [x] **任务 35：商品列表用 List Message**（不依赖前面，可插队）——**2026-09-05 完成并真机验收（用户拿手机点过，列表出得来、点得动）**。后端 **388 passed**（374 → 388：新增 16 条，删掉 2 条搬走的 `_truncate` 测试）。另做了一轮**变异测试**——手工把 8 处行为逐个改坏，8 处全部有测试变红：单条结果也发列表 / 网页也发列表 / 库存挂了连商品一起不发 / 行上报不含税价 / 第 11 行照发 / 行 id 不再指向那个商品 / 点击被吞掉 / 行标题超长不裁。
   链路：`erp_search_sku` 搜到 **2 个及以上**商品 → 往 outbox 塞一条 `Choices` → `_handle_text_message` 在文字回复后面把它发出去 → 客户点一下，`list_reply` 带着 `sku:{id}` 回来 → `_resolve_product_choice` 把它翻译成一句「I'd like to order the product with ERP sku_id 12 (TWS Earbuds Pro).」，**走的是和打字一模一样的那条路**，所以下单流程一行都不用改。
   行标题 = 商品名，描述 = **含税价 + 全仓可售库存**（`MYR 94.34 · 22 in stock` / `· out of stock`）。
   四点偏离 + 三条踩坑：
@@ -900,7 +900,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - ⚠️ **Meta 的列表上限是「所有 section 加起来 10 行」，不是每个 section 10 行**，超了是 400、**整条消息都不发**——客户看到的是一片空白。所以裁剪放进了 `build_interactive_list`（`_within_row_cap`），和 `_body` 同一个道理：渠道规矩守在唯一那道门上。行空了的 section 会被整个丢掉，Meta 也不收空 section
   - ⚠️ **行标题为空同样是 400**。`_row_title` 兜底到 `code`，两个都没有就把这条商品从列表里剔掉——不能让一条烂数据把另外九个商品一起带走
   - **`whatsapp_webhook.py` 里的 `_truncate` 删掉了**，裁剪合并进 `whatsapp.list_row()` / `build_quick_reply_buttons()`。原来是「渠道上限写在路由里」，再加一份商品行的裁剪就是第三份拷贝了
-  验收：真机问「有什么 rice cooker」，出来一条可点列表，点一下能直接下单
+  - ⚠️ **真正卡住商品条数的是 5，不是 10**（验收后追查出来的）：`erp_client.DEFAULT_RESULT_LIMIT = 5` 让 `/api/skus?page_size=5` 最多只回 5 条，所以 Meta 那个 10 行上限永远够不着，我写的「Showing X of Y，告诉我品牌或类别」那句**今天是够不到的分支**，它是防以后调大 limit 的护栏。更该注意的是 `search_skus` 只取 `payload["items"]`、**把 `total` 扔了**（erp_os 的分页确实带 `total` / `total_pages`，见 `erp_os/backend/app/schemas/common.py:43`）——所以 ERP 里有 8 个 rice cooker 时，模型手上只有 5 条**而且不知道自己只拿到 5 条**，会当成「全部就这些」讲给客户听
+  验收：真机问「有什么 rice cooker」，出来一条可点列表，点一下能直接下单 ✅ **2026-09-05 用户拿手机验过**
 
 - [ ] **任务 36：语音输入**（原任务 15，口径改为抽象层；不依赖前面，可插队）
   文件：`backend/app/services/transcribe.py`（新增）、`backend/app/routers/whatsapp_webhook.py`、`backend/app/config.py`、测试
