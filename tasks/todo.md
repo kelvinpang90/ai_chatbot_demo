@@ -903,6 +903,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   | CRM 两条读路径 | 同一次探针：29 个联系人、26 张卡都读回来了 |
   | **没验：真跑一次清理** | 删 ERP 账号 + 触发全库单据重置是破坏性写操作，按 CLAUDE.md 的高风险规则没有自己跑 |
   | **没验：清理后同一号码能重新开户** | 依赖上一条 |
+  **2026-09-06 已推 master**（`c9ba291`）触发部署。推后 6.5 分钟内每 20 秒探一次 `chatbot.acuventech.com/health`，**20 次全 200、没看到重启的空档**。⚠️ **这只证明服务是活的，不证明新镜像已经上**——本次改动没有任何对外可见的行为变化，黑盒探不出版本；`gh run list` 被权限分类器拦了，Actions 的绿灯也没看到（那个 workflow 本来就会把失败报成绿灯）。要确认镜像：VPS 上 `docker inspect ai_chatbot_backend --format '{{.Image}} {{.Created}}'`。
   **验收怎么做**（你来跑，一条命令）：`docker exec ai_chatbot_backend python -m app.tasks.cleanup`，然后核对：① ERP 后台 `WA-60168623902` 不见了、Sunrise Hypermart 这些还在；② 单据被重置（history 里多一条 SUCCESS）；③ 拿那个号码在 WhatsApp 上再下一单，能重新开户；④ CRM 这一轮预期是「0 删 0」——真机再演一次之后新写的行才会带标记，那时再跑一次才看得到 ② 的效果
   文件：`backend/app/tasks/`（新增）、`backend/app/tools/crm.py`、`backend/app/tools/erp.py`、测试
   目标：**四**件事。① Redis 靠 TTL 自动过期，**不用写任务**；② CRM：bot 建的联系人 `notes` 写 `[DEMO]` 前缀，清理时只删带标记的；③ ERP 单据：调 `POST /api/admin/demo-reset`，不自己写删除；④ **ERP 客户：按 `WA-` 前缀删**（2026-09-05 用户拍板要清）
