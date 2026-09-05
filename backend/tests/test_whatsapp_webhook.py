@@ -14,8 +14,8 @@ from app.routers.whatsapp_webhook import (
     _handle_incoming_message,
     _identify,
     _remember_identity,
+    _resolve_product_choice,
     _resolve_quick_question,
-    _truncate,
     dispatch_message,
 )
 from app.services import llm, outbox, whatsapp
@@ -24,15 +24,9 @@ from app.services.user_store import user_store
 client = TestClient(app)
 
 
-def test_truncate_leaves_short_text_untouched():
-    assert _truncate("hello", 24) == "hello"
-
-
-def test_truncate_shortens_long_text_with_ellipsis():
-    text = "a" * 30
-    result = _truncate(text, 24)
-    assert len(result) == 24
-    assert result.endswith("…")
+# Row and button lengths used to be cut here, by a local `_truncate`. They are
+# cut in `whatsapp.list_row` and `build_quick_reply_buttons` now, where the rest
+# of Meta's limits already live -- see test_whatsapp.py.
 
 
 def test_extract_messages_reads_nested_meta_payload():
@@ -56,6 +50,23 @@ def test_resolve_quick_question_returns_none_for_bad_id():
     assert _resolve_quick_question("retail", "not-a-qq-id") is None
     assert _resolve_quick_question("retail", "qq:999") is None
     assert _resolve_quick_question("does-not-exist", "qq:0") is None
+
+
+def test_a_tapped_product_carries_both_the_id_and_the_name():
+    """The id is what makes it that product and not the one below it; the name
+    is what makes the sentence read like something a person said."""
+    said = _resolve_product_choice("sku:12", "TWS Earbuds Pro")
+
+    assert "12" in said and "TWS Earbuds Pro" in said
+
+
+def test_a_tapped_product_survives_a_row_meta_echoes_back_without_its_title():
+    assert "12" in _resolve_product_choice("sku:12", "")
+
+
+def test_a_row_that_is_not_a_product_is_left_to_whoever_owns_it():
+    assert _resolve_product_choice("retail", "Retail") is None
+    assert _resolve_product_choice("qq:0", "Do you deliver?") is None
 
 
 def test_verify_webhook_get_returns_challenge_when_token_matches():
@@ -143,13 +154,34 @@ def test_a_file_does_not_leak_from_one_conversation_into_the_next():
 # writing again next week is the same person.
 
 
-def _list_reply(phone: str, option_id: str, seq: int = 9) -> dict:
+def _list_reply(phone: str, option_id: str, seq: int = 9, title: str = "") -> dict:
+    reply = {"id": option_id, **({"title": title} if title else {})}
     return {
         "id": f"wamid.{phone}.{seq}",
         "from": phone,
         "type": "interactive",
-        "interactive": {"type": "list_reply", "list_reply": {"id": option_id}},
+        "interactive": {"type": "list_reply", "list_reply": reply},
     }
+
+
+def test_tapping_a_product_reaches_the_model_as_the_order_it_is():
+    """The acceptance criterion for the list: a tap has to start the ordering
+    conversation, not sit there as an interactive message nobody handles."""
+    phone = "60129991010"
+    _in_conversation(phone)
+    seen = {}
+
+    def capture(bot, customer, history):
+        seen["said"] = history[-1].content
+        return "How many would you like?"
+
+    with patch.object(llm, "get_reply", side_effect=capture):
+        sent = dispatch_message(_list_reply(phone, "sku:12", title="TWS Earbuds Pro"))
+
+    assert "12" in seen["said"] and "TWS Earbuds Pro" in seen["said"]
+    assert [message["type"] for message in sent] == ["text"]
+    # And it is in the record, so the next message is answered in its light.
+    assert [m.role for m in user_store.get(phone).history] == ["user", "assistant"]
 
 
 def test_choosing_a_demo_goes_straight_to_the_greeting():

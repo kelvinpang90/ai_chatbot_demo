@@ -16,11 +16,45 @@ class Attachment(NamedTuple):
     filename: str
     caption: str
 
+    def build(self, to: str) -> dict:
+        return whatsapp.build_document_message(
+            to, self.media_id, filename=self.filename, caption=self.caption
+        )
+
+
+class Choices(NamedTuple):
+    """A set of options the customer taps instead of typing them back.
+
+    Rows come from `whatsapp.list_row`, so they are already inside the channel's
+    lengths by the time they get here. The tap arrives as an inbound interactive
+    message carrying the row's id, which is what the sender of the list uses to
+    tell one option from another -- see `_resolve_product_choice`.
+    """
+
+    body: str
+    button: str
+    section_title: str
+    rows: list[dict]
+
+    def build(self, to: str) -> dict:
+        return whatsapp.build_interactive_list(
+            to,
+            body_text=self.body,
+            button_text=self.button,
+            sections=[{"title": self.section_title, "rows": self.rows}],
+        )
+
+
+# Anything a tool can leave behind for the reply to carry. Each knows how to
+# address itself, so this module never grows a branch per message type: the
+# outbox's job is when things go out, not what they are.
+Outgoing = Attachment | Choices
+
 
 # Per conversation, not per process: replies run in FastAPI's sync threadpool and
 # two customers can be mid-answer at the same moment. The default is None rather
 # than an empty list, and that distinction is load-bearing -- see `available`.
-_pending: ContextVar[list[Attachment] | None] = ContextVar("outbox_pending", default=None)
+_pending: ContextVar[list[Outgoing] | None] = ContextVar("outbox_pending", default=None)
 
 
 def begin() -> None:
@@ -51,25 +85,20 @@ def available() -> bool:
     return _pending.get() is not None
 
 
-def add(attachment: Attachment) -> bool:
-    """Queue a file to go out with the reply. False if nothing will send it."""
+def add(item: Outgoing) -> bool:
+    """Queue something to go out with the reply. False if nothing will send it."""
     pending = _pending.get()
     if pending is None:
-        logger.warning("no outbox open, dropping attachment %s", attachment.filename)
+        logger.warning("no outbox open, dropping %s", type(item).__name__)
         return False
-    pending.append(attachment)
+    pending.append(item)
     return True
 
 
 def drain(to: str) -> list[dict]:
-    """The queued files as messages for `to`, emptying the queue."""
+    """The queued items as messages for `to`, emptying the queue."""
     pending = _pending.get()
     if not pending:
         return []
     _pending.set([])
-    return [
-        whatsapp.build_document_message(
-            to, item.media_id, filename=item.filename, caption=item.caption
-        )
-        for item in pending
-    ]
+    return [item.build(to) for item in pending]

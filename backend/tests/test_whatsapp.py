@@ -145,3 +145,65 @@ def test_the_interactive_builders_hold_to_the_same_contract():
 
     long_list = whatsapp.build_interactive_list("60123456789", "b" * 4000, "Select", [])
     assert len(long_list["interactive"]["body"]["text"]) == whatsapp.MAX_INTERACTIVE_BODY_CHARS
+
+
+# -- and the same for the parts of a list that are not the body text ----------
+#
+# Every one of these is a 400 that takes the whole message with it, so the
+# customer sees nothing at all -- the same failure shape as the empty reply
+# above, arriving from a different direction now that products are rows too.
+
+
+def test_a_row_is_cut_to_the_lengths_meta_accepts():
+    row = whatsapp.list_row("sku:12", "T" * 40, "d" * 100)
+
+    assert len(row["title"]) == whatsapp.MAX_ROW_TITLE_CHARS
+    assert len(row["description"]) == whatsapp.MAX_ROW_DESCRIPTION_CHARS
+    assert row["title"].endswith("…") and row["description"].endswith("…")
+    # The id is the contract with whoever handles the tap; it is never trimmed.
+    assert row["id"] == "sku:12"
+
+
+def test_a_row_that_fits_is_left_alone_and_an_empty_description_is_left_out():
+    """An empty string is not the same as no description: Meta renders it as a
+    blank second line under the title."""
+    assert whatsapp.list_row("retail", "Retail", "Shop assistant") == {
+        "id": "retail",
+        "title": "Retail",
+        "description": "Shop assistant",
+    }
+    assert whatsapp.list_row("retail", "Retail") == {"id": "retail", "title": "Retail"}
+
+
+def test_a_list_carries_no_more_rows_than_meta_will_take():
+    """Ten across every section, not ten per section."""
+    rows = [whatsapp.list_row(f"sku:{i}", f"Product {i}") for i in range(14)]
+    sections = [{"title": "A", "rows": rows[:6]}, {"title": "B", "rows": rows[6:]}]
+
+    built = whatsapp.build_interactive_list("60123456789", "Pick one", "Select", sections)
+    sent = built["interactive"]["action"]["sections"]
+
+    assert [row["id"] for section in sent for row in section["rows"]] == [
+        f"sku:{i}" for i in range(whatsapp.MAX_LIST_ROWS)
+    ]
+    assert [len(section["rows"]) for section in sent] == [6, 4]
+
+
+def test_a_section_with_nothing_left_to_show_is_dropped_rather_than_sent_empty():
+    """Meta refuses a section with no rows, which would lose the nine above it."""
+    rows = [whatsapp.list_row(f"sku:{i}", f"Product {i}") for i in range(12)]
+    sections = [{"title": "A", "rows": rows}, {"title": "B", "rows": rows}]
+
+    built = whatsapp.build_interactive_list("60123456789", "Pick one", "Select", sections)
+
+    assert [s["title"] for s in built["interactive"]["action"]["sections"]] == ["A"]
+
+
+def test_a_button_title_is_cut_to_what_meta_accepts():
+    long_title = "Do you deliver to Johor Bahru on Sundays?"
+
+    buttons = whatsapp.build_quick_reply_buttons(
+        "60123456789", "Quick questions", [{"id": "qq:0", "title": long_title}]
+    )["interactive"]["action"]["buttons"]
+
+    assert len(buttons[0]["reply"]["title"]) == whatsapp.MAX_BUTTON_TITLE_CHARS

@@ -11,6 +11,7 @@ from app.console import events
 from app.services import llm, outbox, whatsapp
 from app.services.user_store import user_store
 from app.session_store import session_store
+from app.tools import erp
 
 router = APIRouter(prefix="/webhook/whatsapp")
 logger = logging.getLogger(__name__)
@@ -271,11 +272,12 @@ def _handle_text_message(sender: Sender, text: str) -> list[dict]:
 def _handle_interactive_reply(sender: Sender, interactive: dict) -> list[dict]:
     reply_type = interactive.get("type")
     if reply_type == "list_reply":
-        selected_id = interactive.get("list_reply", {}).get("id")
+        selected = interactive.get("list_reply", {})
     elif reply_type == "button_reply":
-        selected_id = interactive.get("button_reply", {}).get("id")
+        selected = interactive.get("button_reply", {})
     else:
         return []
+    selected_id = selected.get("id")
     if not selected_id:
         return []
 
@@ -293,8 +295,29 @@ def _handle_interactive_reply(sender: Sender, interactive: dict) -> list[dict]:
         logger.info("%s selected bot %s", sender.key, bot.id)
         return _start_conversation(sender.key, bot)
 
-    question = _resolve_quick_question(profile.bot_id, selected_id)
-    return _handle_text_message(sender, question) if question else []
+    said = _resolve_quick_question(profile.bot_id, selected_id) or _resolve_product_choice(
+        selected_id, str(selected.get("title") or "")
+    )
+    return _handle_text_message(sender, said) if said else []
+
+
+def _resolve_product_choice(row_id: str, title: str) -> str | None:
+    """A tapped product, as the sentence the customer would have typed.
+
+    Taking the same path as a typed message is the point: the model reads it in
+    the conversation it is already having, so a tap can be answered with "how
+    many?" or "what's the address?" like any other way of asking for something.
+
+    The sku_id comes along because it is the one thing the tap knows and the
+    words do not -- it saves a second search, and more importantly it names the
+    exact row, where two products can easily share the first 24 characters of
+    their name. The title is echoed back to us by WhatsApp from the row we sent.
+    """
+    if not row_id.startswith(erp.PRODUCT_ROW_PREFIX):
+        return None
+    sku_id = row_id.removeprefix(erp.PRODUCT_ROW_PREFIX)
+    named = f" ({title})" if title else ""
+    return f"I'd like to order the product with ERP sku_id {sku_id}{named}."
 
 
 def _resolve_quick_question(bot_id: str, button_id: str) -> str | None:
@@ -314,10 +337,7 @@ def _start_conversation(to: str, bot: BotConfig) -> list[dict]:
     greeting = f"{bot.disclaimer.en}\n\n{GREETING_SUFFIX_EN}"
     payloads = [whatsapp.build_text_message(to, greeting)]
     if bot.quick_questions:
-        buttons = [
-            {"id": f"qq:{i}", "title": _truncate(q.en, 20)}
-            for i, q in enumerate(bot.quick_questions[:3])
-        ]
+        buttons = [{"id": f"qq:{i}", "title": q.en} for i, q in enumerate(bot.quick_questions[:3])]
         payloads.append(
             whatsapp.build_quick_reply_buttons(to, "Quick questions to get you started:", buttons)
         )
@@ -325,10 +345,7 @@ def _start_conversation(to: str, bot: BotConfig) -> list[dict]:
 
 
 def _send_bot_list(to: str) -> list[dict]:
-    rows = [
-        {"id": bot.id, "title": _truncate(bot.name.en, 24), "description": _truncate(bot.description.en, 72)}
-        for bot in list_bots()
-    ]
+    rows = [whatsapp.list_row(bot.id, bot.name.en, bot.description.en) for bot in list_bots()]
     return [
         whatsapp.build_interactive_list(
             to,
@@ -338,9 +355,3 @@ def _send_bot_list(to: str) -> list[dict]:
             header_text="AI Chatbot Demo",
         )
     ]
-
-
-def _truncate(text: str, max_len: int) -> str:
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 1].rstrip() + "…"

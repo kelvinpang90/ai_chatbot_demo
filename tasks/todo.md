@@ -889,11 +889,17 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   依赖阻塞项 F
   验收：跑一次清理，CRM 上带标记的卡没了、种子联系人还在；ERP 单据清空且库存重灌；**`WA-` 客户从后台消失、种子客户还在，且清理后同一个号码还能重新开户**（这一条最容易漏，专门验）
 
-- [ ] **任务 35：商品列表用 List Message**（不依赖前面，可插队）
-  文件：`backend/app/services/outbox.py`、`backend/app/tools/erp.py`、`backend/app/routers/whatsapp_webhook.py`、测试
-  目标：搜到多个商品时，在文字回复后面跟一条**可点选**的原生 List Message：行标题 = 商品名（24 字符），描述 = 价格 + 库存（72 字符），点一下直接进下单流程
-  **走 `outbox`，不是工具返回值**——工具照常返回 JSON 给模型，后端往 outbox 塞列表。这套机制任务 10 发 PDF 时已经建好，`outbox.available()` 也已经能自动区分「WhatsApp 有、网页没有」
-  超过 10 行就说「还有更多，告诉我品牌或类别」
+- [x] **任务 35：商品列表用 List Message**（不依赖前面，可插队）——**2026-09-05 完成，代码侧全绿；真机那一半没做（要用户拿手机 + 线上部署）**。后端 **388 passed**（374 → 388：新增 16 条，删掉 2 条搬走的 `_truncate` 测试）。另做了一轮**变异测试**——手工把 8 处行为逐个改坏，8 处全部有测试变红：单条结果也发列表 / 网页也发列表 / 库存挂了连商品一起不发 / 行上报不含税价 / 第 11 行照发 / 行 id 不再指向那个商品 / 点击被吞掉 / 行标题超长不裁。
+  链路：`erp_search_sku` 搜到 **2 个及以上**商品 → 往 outbox 塞一条 `Choices` → `_handle_text_message` 在文字回复后面把它发出去 → 客户点一下，`list_reply` 带着 `sku:{id}` 回来 → `_resolve_product_choice` 把它翻译成一句「I'd like to order the product with ERP sku_id 12 (TWS Earbuds Pro).」，**走的是和打字一模一样的那条路**，所以下单流程一行都不用改。
+  行标题 = 商品名，描述 = **含税价 + 全仓可售库存**（`MYR 94.34 · 22 in stock` / `· out of stock`）。
+  四点偏离 + 三条踩坑：
+  - **`outbox` 从「装文件」变成「装待发消息」**。`Attachment` 长出 `build(to)`，新增 `Choices`，`drain` 变成 `[item.build(to) for item in pending]`——不是为了通用而通用：任务 19 的主动推送、36 的转录都会往这里塞东西，每加一种就在 `drain` 里加一个 `if` 是明显的死路
+  - **库存要多打一次 ERP**（`/api/inventory/branch-matrix`，同一个 keyword）。`/api/skus` 根本不带库存，而「只剩 2 件」正是让人现在就点的那句话。挂了就只显示价格，**不连累列表**——这条有测试专门守着。注意**导演台上看不到这次调用**：`events` 是按工具发的，不是按 HTTP 请求发的
+  - **一条结果不发列表**。单行列表比模型正在写的那句话更差
+  - **网页零变化**：`outbox.available()` 是 False，连库存那次调用都省了（也有测试守着）
+  - ⚠️ **Meta 的列表上限是「所有 section 加起来 10 行」，不是每个 section 10 行**，超了是 400、**整条消息都不发**——客户看到的是一片空白。所以裁剪放进了 `build_interactive_list`（`_within_row_cap`），和 `_body` 同一个道理：渠道规矩守在唯一那道门上。行空了的 section 会被整个丢掉，Meta 也不收空 section
+  - ⚠️ **行标题为空同样是 400**。`_row_title` 兜底到 `code`，两个都没有就把这条商品从列表里剔掉——不能让一条烂数据把另外九个商品一起带走
+  - **`whatsapp_webhook.py` 里的 `_truncate` 删掉了**，裁剪合并进 `whatsapp.list_row()` / `build_quick_reply_buttons()`。原来是「渠道上限写在路由里」，再加一份商品行的裁剪就是第三份拷贝了
   验收：真机问「有什么 rice cooker」，出来一条可点列表，点一下能直接下单
 
 - [ ] **任务 36：语音输入**（原任务 15，口径改为抽象层；不依赖前面，可插队）

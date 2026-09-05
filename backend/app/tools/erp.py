@@ -7,7 +7,7 @@ from typing import TypedDict
 
 from anthropic import beta_tool
 
-from app.services import erp_client, invoice_pdf, outbox, whatsapp_media
+from app.services import erp_client, invoice_pdf, outbox, whatsapp, whatsapp_media
 from app.services import phone as phone_service
 from app.services.api_client import ApiClientError
 from app.services.whatsapp_media import MediaError
@@ -122,6 +122,110 @@ def _prices(sku: dict) -> dict:
     }
 
 
+# The row id a tapped product comes back on, and the words around the list. The
+# id is the whole contract with `_resolve_product_choice` in the webhook: it is
+# what turns a tap into the order the customer would otherwise have to type out.
+PRODUCT_ROW_PREFIX = "sku:"
+PRODUCT_LIST_BUTTON = "View products"
+PRODUCT_LIST_SECTION = "Products"
+PRODUCT_LIST_BODY = "Tap the one you want and I'll take it from there."
+
+
+def _stock_by_sku(keyword: str) -> dict[int, float]:
+    """How many of each matching product can actually be sold, across branches.
+
+    A second call to the ERP, for a line of text on a list nobody has tapped
+    yet -- worth it because "2 left" is the difference between a product the
+    customer reads about and one they order now. It is also the only number on
+    that row they cannot get from the reply.
+
+    Failure is not the caller's problem: the list is still worth sending with
+    prices alone, so an unreachable inventory route returns nothing rather than
+    taking the products down with it.
+    """
+    try:
+        rows = erp_client.client().branch_inventory(keyword)
+    except ApiClientError:
+        logger.warning("no stock line on the product list for %r", keyword, exc_info=True)
+        return {}
+    return {
+        row["sku_id"]: sum(float(cell.get("available") or 0) for cell in row.get("warehouses", []))
+        for row in rows
+        if row.get("sku_id") is not None
+    }
+
+
+def _row_title(sku: dict) -> str:
+    """What to call the product on its row. Empty if it cannot be called anything.
+
+    Meta refuses a row with no title, and refuses the whole message with it, so
+    a catalogue entry with neither name nor code takes the other nine products
+    down unless it is left out here.
+    """
+    return str(sku.get("name") or sku.get("code") or "").strip()
+
+
+def _row_description(sku: dict, available: float | None) -> str:
+    """The second line of a product row: what it costs and whether it is there.
+
+    The tax-inclusive price, the same one the tool tells the model to quote --
+    a row that says RM 89.00 next to a reply that says RM 94.34 is the sort of
+    thing the customer notices on the screen the demo is trying to sell.
+    """
+    price = " ".join(
+        str(part) for part in (sku.get("currency"), sku.get("unit_price_incl_tax")) if part
+    )
+    if available is None:
+        return price
+    if available <= 0:
+        return f"{price} · out of stock" if price else "out of stock"
+    return f"{price} · {available:g} in stock" if price else f"{available:g} in stock"
+
+
+def _offer_products(keyword: str, skus: list[dict]) -> None:
+    """Put the matches behind the reply as rows the customer can tap.
+
+    Deliberately not part of what the tool returns: the model gets the same JSON
+    it always did and writes its own answer, and the list rides out behind that
+    answer through the outbox. Which means the model cannot forget to offer it,
+    and cannot describe it wrongly either.
+
+    Nothing is queued for a single match -- a one-row list is a worse way of
+    saying "we have it" than the sentence the model is already writing -- or on
+    the web demo, which has no channel to put an interactive message on.
+    """
+    orderable = [sku for sku in skus if sku.get("id") is not None and _row_title(sku)]
+    if len(orderable) < 2 or not outbox.available():
+        return
+
+    stock = _stock_by_sku(keyword)
+    shown = orderable[: whatsapp.MAX_LIST_ROWS]
+    rows = [
+        whatsapp.list_row(
+            f"{PRODUCT_ROW_PREFIX}{sku['id']}",
+            _row_title(sku),
+            _row_description(sku, stock.get(sku["id"])),
+        )
+        for sku in shown
+    ]
+    body = PRODUCT_LIST_BODY
+    if len(orderable) > len(shown):
+        # Meta will not carry the rest, so say so rather than let the customer
+        # believe the catalogue is this small.
+        body = (
+            f"Showing {len(shown)} of {len(orderable)} matches -- tap one to order it, "
+            "or tell me the brand or category and I'll narrow it down."
+        )
+    outbox.add(
+        outbox.Choices(
+            body=body,
+            button=PRODUCT_LIST_BUTTON,
+            section_title=PRODUCT_LIST_SECTION,
+            rows=rows,
+        )
+    )
+
+
 @beta_tool
 def erp_search_sku(keyword: str) -> str:
     """Search the ERP product catalogue by name or product code.
@@ -144,6 +248,8 @@ def erp_search_sku(keyword: str) -> str:
 
     if not skus:
         return NOT_FOUND
+
+    _offer_products(keyword, skus)
 
     # The catalogue row carries ~30 columns; the model needs the handful a customer
     # would ask about, and the console screen has to stay readable.

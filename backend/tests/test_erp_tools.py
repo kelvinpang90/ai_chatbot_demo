@@ -100,6 +100,132 @@ def test_an_empty_result_says_so_rather_than_returning_nothing():
         assert erp.erp_get_inventory("no-such-thing") == erp.NOT_FOUND
 
 
+# -- the tappable product list --------------------------------------------------
+#
+# A search that finds several things ends with the customer typing a product name
+# back at us, which on a phone is where orders go to die. The list rides out
+# behind the reply through the outbox, so the model writes its answer as it
+# always did and cannot forget to offer it or describe it wrongly.
+
+LITE_SKU_ROW = {
+    **SKU_ROW,
+    "id": 13,
+    "code": "SKU-00013",
+    "name": "TWS Earbuds Lite",
+    "unit_price_incl_tax": "63.60",
+}
+
+SOLD_OUT_MATRIX_ROW = {
+    "sku_id": 13,
+    "sku_code": "SKU-00013",
+    "warehouses": [{"warehouse_id": 1, "warehouse_name": "KL Main", "available": "0"}],
+}
+
+
+def _catalogue(skus: list[dict], stock: list[dict] | Exception = ()):
+    """The ERP answering the two routes a search now touches, by route.
+
+    The stock call is a second request for one line of text on a row, so it gets
+    its own knob: passing an exception is how the tests below cover an inventory
+    route that is down while the catalogue is up.
+    """
+
+    def get(path: str, **_kwargs):
+        if path.startswith("/api/inventory"):
+            if isinstance(stock, Exception):
+                raise stock
+            return {"rows": list(stock)}
+        return {"items": skus}
+
+    return patch.object(erp_client.ErpClient, "get", side_effect=get)
+
+
+def test_several_matches_come_with_a_list_the_customer_can_tap(_outbox):
+    with _catalogue([SKU_ROW, LITE_SKU_ROW], stock=[MATRIX_ROW, SOLD_OUT_MATRIX_ROW]):
+        payload = json.loads(erp.erp_search_sku("earbuds"))
+
+    # What the model gets is untouched -- it still writes the words itself.
+    assert [row["sku_id"] for row in payload] == [12, 13]
+
+    (message,) = outbox.drain(A_PHONE)
+    assert message["type"] == "interactive"
+    assert message["interactive"]["type"] == "list"
+    (section,) = message["interactive"]["action"]["sections"]
+    assert [row["id"] for row in section["rows"]] == ["sku:12", "sku:13"]
+    assert section["rows"][0]["title"] == "TWS Earbuds Pro"
+    # Price and stock: the tax-inclusive price, the same one the tool tells the
+    # model to quote, and what is actually left across the branches (18 + 4).
+    assert section["rows"][0]["description"] == "MYR 94.34 · 22 in stock"
+    assert section["rows"][1]["description"] == "MYR 63.60 · out of stock"
+
+
+def test_one_match_is_left_to_the_reply_and_costs_no_second_call(_outbox):
+    """A one-row list is a worse way of saying "we have it" than the sentence
+    the model is already writing."""
+    with _catalogue([SKU_ROW]) as get:
+        erp.erp_search_sku("earbuds")
+
+    assert outbox.drain(A_PHONE) == []
+    assert [call.args[0] for call in get.call_args_list] == ["/api/skus"]
+
+
+def test_the_web_demo_is_not_charged_for_a_list_it_cannot_send():
+    """No outbox fixture: `routers/chat.py` has no channel for an interactive
+    message, so neither the list nor the stock call it needs happens at all."""
+    with _catalogue([SKU_ROW, LITE_SKU_ROW]) as get:
+        payload = json.loads(erp.erp_search_sku("earbuds"))
+
+    assert len(payload) == 2  # the model is answered exactly as before
+    assert outbox.drain(A_PHONE) == []
+    assert [call.args[0] for call in get.call_args_list] == ["/api/skus"]
+
+
+def test_a_dead_inventory_route_still_leaves_the_products_tappable(_outbox):
+    """The stock line is worth a second call; it is not worth the list."""
+    with _catalogue([SKU_ROW, LITE_SKU_ROW], stock=ApiClientError("boom")):
+        erp.erp_search_sku("earbuds")
+
+    (message,) = outbox.drain(A_PHONE)
+    (section,) = message["interactive"]["action"]["sections"]
+    assert [row["description"] for row in section["rows"]] == ["MYR 94.34", "MYR 63.60"]
+
+
+def test_a_product_that_cannot_be_named_or_ordered_is_left_off_the_list(_outbox):
+    """The id is what the tap comes back on and the title is what Meta insists
+    on. Either missing is a row that would take the whole list down with it."""
+    unusable = [{**SKU_ROW, "id": None}, {**LITE_SKU_ROW, "name": "", "code": ""}]
+
+    with _catalogue([SKU_ROW, *unusable], stock=[MATRIX_ROW]):
+        erp.erp_search_sku("earbuds")
+
+    assert outbox.drain(A_PHONE) == []  # one usable match left, so no list
+
+
+def test_the_products_around_an_unusable_one_are_still_offered(_outbox):
+    """The point of leaving it out rather than refusing: the other two are fine."""
+    with _catalogue([SKU_ROW, {**SKU_ROW, "id": None}, LITE_SKU_ROW], stock=[MATRIX_ROW]):
+        erp.erp_search_sku("earbuds")
+
+    (message,) = outbox.drain(A_PHONE)
+    (section,) = message["interactive"]["action"]["sections"]
+    assert [row["id"] for row in section["rows"]] == ["sku:12", "sku:13"]
+
+
+def test_more_matches_than_meta_will_carry_says_so_instead_of_hiding_it(_outbox):
+    """Ten is the channel's limit, not the size of the catalogue, and a customer
+    who cannot see that will believe the shop only stocks these ten."""
+    many = [{**SKU_ROW, "id": 100 + i, "name": f"Earbuds {i}"} for i in range(12)]
+
+    with _catalogue(many):
+        erp.erp_search_sku("earbuds")
+
+    (message,) = outbox.drain(A_PHONE)
+    (section,) = message["interactive"]["action"]["sections"]
+    assert len(section["rows"]) == 10
+    body = message["interactive"]["body"]["text"]
+    assert "10 of 12" in body and "brand or category" in body
+
+
 def test_an_unreachable_erp_becomes_an_answer_the_bot_can_relay():
     with patch.object(erp_client.ErpClient, "get", side_effect=ApiClientError("boom")):
         assert erp.erp_search_sku("earbuds") == erp.UNAVAILABLE

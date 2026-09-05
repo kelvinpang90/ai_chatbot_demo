@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import re
 
 import httpx
 
 from app.config import settings
 from app.services import phone
+
+logger = logging.getLogger(__name__)
 
 GRAPH_API_BASE = "https://graph.facebook.com/v20.0"
 REQUEST_TIMEOUT_SECONDS = 10
@@ -16,6 +19,14 @@ REQUEST_TIMEOUT_SECONDS = 10
 # indistinguishable from every other 400 unless we keep inside them ourselves.
 MAX_TEXT_BODY_CHARS = 4096
 MAX_INTERACTIVE_BODY_CHARS = 1024
+
+# And its caps on a selectable list: ten rows across every section, and these
+# lengths per row. The same reasoning -- over any of them is a 400 that takes the
+# whole message with it, so the customer gets nothing rather than a long list.
+MAX_LIST_ROWS = 10
+MAX_ROW_TITLE_CHARS = 24
+MAX_ROW_DESCRIPTION_CHARS = 72
+MAX_BUTTON_TITLE_CHARS = 20
 
 # How much of Meta's rejection to quote back into the log. Their errors carry a
 # message, a code and a trace id, and all three are worth having.
@@ -79,6 +90,13 @@ def markdown_to_whatsapp(text: str) -> str:
     return text
 
 
+def _clip(text: str, limit: int) -> str:
+    """The text as far as it fits, with a mark where it was cut."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 def _body(text: str, limit: int) -> str:
     """The text as WhatsApp will actually accept it.
 
@@ -95,9 +113,7 @@ def _body(text: str, limit: int) -> str:
     text = markdown_to_whatsapp(text or "").strip()
     if not text:
         raise UnsendableMessage("refusing to send a message with no text in it")
-    if len(text) > limit:
-        return text[: limit - 1].rstrip() + "…"
-    return text
+    return _clip(text, limit)
 
 
 def build_text_message(to: str, text: str) -> dict:
@@ -107,6 +123,41 @@ def build_text_message(to: str, text: str) -> dict:
         "type": "text",
         "text": {"body": _body(text, MAX_TEXT_BODY_CHARS)},
     }
+
+
+def list_row(row_id: str, title: str, description: str = "") -> dict:
+    """One selectable row, cut to the lengths Meta accepts.
+
+    Callers pass whatever the row is really called -- a product name, a demo
+    name -- and the channel's limits are applied at this one door rather than at
+    each of the places that build a row. An empty description is left out
+    entirely: sent as an empty string it becomes a blank second line.
+    """
+    row = {"id": row_id, "title": _clip(title, MAX_ROW_TITLE_CHARS)}
+    if description:
+        row["description"] = _clip(description, MAX_ROW_DESCRIPTION_CHARS)
+    return row
+
+
+def _within_row_cap(sections: list[dict]) -> list[dict]:
+    """The sections, holding no more rows than one list message can carry.
+
+    The tail is dropped rather than the message refused: an eleventh product
+    that nobody can tap costs the customer nothing, while a 400 costs them the
+    ten they could have. Whoever built the rows knows what was cut and is the
+    one that should say so in the body text.
+    """
+    kept: list[dict] = []
+    room = MAX_LIST_ROWS
+    for section in sections:
+        rows = section.get("rows", [])[:room]
+        room -= len(rows)
+        if rows:
+            kept.append({**section, "rows": rows})
+    dropped = sum(len(section.get("rows", [])) for section in sections) - MAX_LIST_ROWS
+    if dropped > 0:
+        logger.warning("dropping %d list rows over WhatsApp's cap of %d", dropped, MAX_LIST_ROWS)
+    return kept
 
 
 def build_interactive_list(
@@ -120,7 +171,7 @@ def build_interactive_list(
     interactive: dict = {
         "type": "list",
         "body": {"text": _body(body_text, MAX_INTERACTIVE_BODY_CHARS)},
-        "action": {"button": button_text, "sections": sections},
+        "action": {"button": button_text, "sections": _within_row_cap(sections)},
     }
     if header_text:
         interactive["header"] = {"type": "text", "text": header_text}
@@ -162,7 +213,10 @@ def build_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> d
             "body": {"text": _body(body_text, MAX_INTERACTIVE_BODY_CHARS)},
             "action": {
                 "buttons": [
-                    {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
+                    {
+                        "type": "reply",
+                        "reply": {"id": b["id"], "title": _clip(b["title"], MAX_BUTTON_TITLE_CHARS)},
+                    }
                     for b in buttons[:3]
                 ]
             },
