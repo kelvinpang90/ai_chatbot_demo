@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 
 from app.config import settings
@@ -16,48 +16,24 @@ class Message:
     content: str
 
 
-@dataclass
-class Session:
-    session_key: str
-    bot_id: str | None = None
-    history: list[Message] = field(default_factory=list)
-
-    def add_message(self, role: str, content: str) -> None:
-        self.history.append(Message(role=role, content=content))
-        if len(self.history) > MAX_HISTORY_MESSAGES:
-            del self.history[: len(self.history) - MAX_HISTORY_MESSAGES]
-
-    def reset(self) -> None:
-        self.bot_id = None
-        self.history.clear()
-
-
 class SessionStore:
-    """In-memory session store, keyed by web session_id or WhatsApp phone number.
+    """Per-message and per-day bookkeeping for one running process.
+
+    What a customer said and which demo they are in moved to `user_store` --
+    task 32 for WhatsApp, task 33 for the web chat -- so both channels remember
+    the same person for seven days instead of until the next restart. What is
+    left here is the state that is genuinely about this process's lifetime: which
+    message ids have already been handled, and how many messages a number has
+    sent today.
 
     Demo-scale only: no persistence, no eviction. Must run as a single process
-    (see docker-compose.yml) since state isn't shared across workers.
+    (see docker-compose.yml) since neither counter is shared across workers.
     """
 
     def __init__(self, daily_msg_limit: int) -> None:
-        self._sessions: dict[str, Session] = {}
         self._daily_msg_limit = daily_msg_limit
         self._daily_counts: dict[tuple[str, date], int] = {}
         self._seen_message_ids: dict[str, float] = {}
-
-    def get_or_create(self, session_key: str) -> Session:
-        return self._sessions.setdefault(session_key, Session(session_key=session_key))
-
-    def get(self, session_key: str) -> Session | None:
-        return self._sessions.get(session_key)
-
-    def reset(self, session_key: str) -> None:
-        session = self._sessions.get(session_key)
-        if session:
-            session.reset()
-
-    def delete(self, session_key: str) -> None:
-        self._sessions.pop(session_key, None)
 
     def check_and_increment_daily_count(self, phone_number: str) -> bool:
         """Returns True if this message is within today's limit for the number, False if it should be blocked."""

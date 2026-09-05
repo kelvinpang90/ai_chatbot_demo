@@ -1,45 +1,4 @@
-from app.session_store import MAX_HISTORY_MESSAGES, SessionStore
-
-
-def test_get_or_create_then_read_back():
-    store = SessionStore(daily_msg_limit=100)
-    session = store.get_or_create("session-1")
-    session.bot_id = "retail"
-    session.add_message("user", "hello")
-
-    fetched = store.get("session-1")
-    assert fetched is session
-    assert fetched.bot_id == "retail"
-    assert fetched.history[0].role == "user"
-    assert fetched.history[0].content == "hello"
-
-
-def test_get_returns_none_for_unknown_key():
-    store = SessionStore(daily_msg_limit=100)
-    assert store.get("nope") is None
-
-
-def test_history_truncates_to_max_messages():
-    store = SessionStore(daily_msg_limit=100)
-    session = store.get_or_create("session-2")
-    for i in range(MAX_HISTORY_MESSAGES + 10):
-        session.add_message("user", f"msg-{i}")
-
-    assert len(session.history) == MAX_HISTORY_MESSAGES
-    assert session.history[-1].content == f"msg-{MAX_HISTORY_MESSAGES + 9}"
-    assert session.history[0].content == "msg-10"
-
-
-def test_reset_clears_bot_and_history():
-    store = SessionStore(daily_msg_limit=100)
-    session = store.get_or_create("session-3")
-    session.bot_id = "hotel"
-    session.add_message("user", "hi")
-
-    store.reset("session-3")
-
-    assert session.bot_id is None
-    assert session.history == []
+from app.session_store import SessionStore
 
 
 def test_daily_rate_limit_blocks_after_threshold():

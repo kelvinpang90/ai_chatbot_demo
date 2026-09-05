@@ -4,11 +4,14 @@ import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from app.bots.registry import LocalizedText, get_bot, list_bots
+from app.bots.registry import BotConfig, LocalizedText, get_bot, list_bots
 from app.config import settings
 from app.models import (
     BotDetail,
     BotSummary,
+    ChatTurn,
+    IdentifyRequest,
+    IdentifyResponse,
     LoginRequest,
     LoginResponse,
     ResetResponse,
@@ -17,12 +20,13 @@ from app.models import (
     SendMessageRequest,
     SendMessageResponse,
 )
-from app.services import llm
-from app.session_store import session_store
+from app.services import llm, phone
+from app.services.user_store import UserProfile, identity, user_store
 
 router = APIRouter(prefix="/api")
 
-# Demo-scale: valid tokens live in memory, same single-process constraint as session_store.
+# Demo-scale: valid tokens live in memory, same single-process constraint the
+# rest of this service runs under.
 _valid_tokens: set[str] = set()
 
 GREETING_SUFFIX = {
@@ -36,9 +40,31 @@ def _localize(text: LocalizedText, lang: str) -> str:
     return getattr(text, lang, None) or text.en
 
 
+def _detail(bot: BotConfig, lang: str) -> BotDetail:
+    return BotDetail(
+        id=bot.id,
+        name=_localize(bot.name, lang),
+        description=_localize(bot.description, lang),
+        icon=bot.icon,
+    )
+
+
 def require_auth(x_access_token: str | None = Header(default=None)) -> None:
     if not x_access_token or x_access_token not in _valid_tokens:
         raise HTTPException(status_code=401, detail="Invalid or missing access token")
+
+
+def _identity_or_400(key: str) -> str:
+    """The key this request is about, refusing anything unfilable.
+
+    The key comes back to us from /identify, which already normalised it, but it
+    arrives in a URL and so is checked again rather than trusted: a key nothing
+    can be filed under is the one case that would put two visitors in one record.
+    """
+    try:
+        return identity(key)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Not a usable phone number") from None
 
 
 @router.post("/auth/login", response_model=LoginResponse)
@@ -68,27 +94,61 @@ def get_bot_endpoint(bot_id: str, lang: str = "en") -> BotDetail:
     bot = get_bot(bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
-    return BotDetail(
-        id=bot.id,
-        name=_localize(bot.name, lang),
-        description=_localize(bot.description, lang),
-        icon=bot.icon,
+    return _detail(bot, lang)
+
+
+@router.post("/chat/identify", response_model=IdentifyResponse, dependencies=[Depends(require_auth)])
+def identify(body: IdentifyRequest) -> IdentifyResponse:
+    """Open the web chat as a phone number, the way WhatsApp opens as one.
+
+    This is the whole of task 33: the visitor types the number their customer
+    uses on WhatsApp and lands in that customer's record -- same key, same
+    Redis, same conversation -- rather than in an anonymous session that knows
+    nobody.
+
+    Nothing is written here. Typing a number to look it up must not be the thing
+    that creates a customer; only saying something is.
+    """
+    if not phone.is_bsuid(body.phone) and not phone.looks_like_a_phone(body.phone):
+        # `identity` alone would take "call me at 7" and file someone under "7".
+        # A number short enough to be a house number is a typo, not a customer.
+        raise HTTPException(status_code=400, detail="Not a usable phone number")
+    key = identity(body.phone)
+
+    profile = user_store.get(key)
+    if profile is None or profile.bot_id is None:
+        return IdentifyResponse(key=key)
+
+    bot = get_bot(profile.bot_id)
+    if not bot:
+        # A demo retired since they last wrote in. Same as WhatsApp: back to the
+        # menu, rather than resuming a conversation nothing can answer.
+        _start_over(profile)
+        return IdentifyResponse(key=key)
+
+    return IdentifyResponse(
+        key=key,
+        bot=_detail(bot, body.lang),
+        history=[ChatTurn(role=m.role, content=m.content) for m in profile.history],
     )
 
 
 @router.post(
-    "/chat/{session_id}/select",
+    "/chat/{key}/select",
     response_model=SelectBotResponse,
     dependencies=[Depends(require_auth)],
 )
-def select_bot(session_id: str, body: SelectBotRequest) -> SelectBotResponse:
+def select_bot(key: str, body: SelectBotRequest) -> SelectBotResponse:
     bot = get_bot(body.bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
 
-    session = session_store.get_or_create(session_id)
-    session.reset()
-    session.bot_id = bot.id
+    profile = user_store.get_or_create(_identity_or_400(key))
+    # Picking a demo starts that demo's conversation, exactly as choosing one off
+    # the WhatsApp list does. The customer stays on file; only the talk is new.
+    profile.bot_id = bot.id
+    profile.history.clear()
+    user_store.save(profile)
 
     disclaimer = _localize(bot.disclaimer, body.lang)
     suffix = GREETING_SUFFIX.get(body.lang, GREETING_SUFFIX["en"])
@@ -98,33 +158,47 @@ def select_bot(session_id: str, body: SelectBotRequest) -> SelectBotResponse:
 
 
 @router.post(
-    "/chat/{session_id}/message",
+    "/chat/{key}/message",
     response_model=SendMessageResponse,
     dependencies=[Depends(require_auth)],
 )
-def send_message(session_id: str, body: SendMessageRequest) -> SendMessageResponse:
-    session = session_store.get(session_id)
-    if not session or not session.bot_id:
-        raise HTTPException(status_code=409, detail="Session has no bot selected yet")
+def send_message(key: str, body: SendMessageRequest) -> SendMessageResponse:
+    profile = user_store.get_or_create(_identity_or_400(key))
+    if not profile.bot_id:
+        raise HTTPException(status_code=409, detail="No bot selected yet")
 
-    bot = get_bot(session.bot_id)
+    bot = get_bot(profile.bot_id)
     if not bot:
-        raise HTTPException(status_code=409, detail="Session's bot no longer exists")
+        raise HTTPException(status_code=409, detail="This demo no longer exists")
 
-    session.add_message("user", body.message)
-    # No customer record: a web visitor has no phone number to key one on until
-    # task 33 asks them for it. WhatsApp is where identity lives today.
-    reply = llm.get_reply(bot, None, session.history)
-    session.add_message("assistant", reply)
+    profile.add_message("user", body.message)
+    # The customer record goes to the model, which is what makes this the same
+    # path as WhatsApp rather than a parallel one: the real phone number is in
+    # the system prompt, so the retail bot looks the caller up in the CRM
+    # instead of asking whoever is sitting at the laptop who they are.
+    reply = llm.get_reply(bot, profile, profile.history)
+    profile.add_message("assistant", reply)
+    # Saved after the turn is complete, so the conversation is on file for the
+    # phone to pick up next -- the same trade in the other direction.
+    user_store.save(profile)
 
     return SendMessageResponse(reply=reply)
 
 
 @router.post(
-    "/chat/{session_id}/reset",
+    "/chat/{key}/reset",
     response_model=ResetResponse,
     dependencies=[Depends(require_auth)],
 )
-def reset_session(session_id: str) -> ResetResponse:
-    session_store.reset(session_id)
+def reset_session(key: str) -> ResetResponse:
+    """Back to the demo menu, without forgetting who this is -- WhatsApp "menu"."""
+    profile = user_store.get(_identity_or_400(key))
+    if profile is not None:
+        _start_over(profile)
     return ResetResponse(status="ok")
+
+
+def _start_over(profile: UserProfile) -> None:
+    profile.bot_id = None
+    profile.history.clear()
+    user_store.save(profile)

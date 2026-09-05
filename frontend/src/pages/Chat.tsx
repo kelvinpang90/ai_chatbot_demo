@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { ApiError, resetSession, selectBot, sendMessage, type BotSummary } from '../api'
+import { ApiError, sendMessage, type BotSummary, type ChatTurn } from '../api'
 import { STRINGS, type Lang } from '../i18n/strings'
 
 interface ChatMessage {
@@ -12,41 +12,32 @@ interface ChatMessage {
 interface Props {
   lang: Lang
   bot: BotSummary
-  sessionId: string
+  chatKey: string
+  history: ChatTurn[]
+  quickQuestions: string[]
+  onReset: () => void
   onAuthError: () => void
 }
 
-export default function Chat({ lang, bot, sessionId, onAuthError }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [quickQuestions, setQuickQuestions] = useState<string[]>([])
+export default function Chat({
+  lang,
+  bot,
+  chatKey,
+  history,
+  quickQuestions: initialQuickQuestions,
+  onReset,
+  onAuthError,
+}: Props) {
+  // Seeded once, from whatever the customer already had on file - a greeting for
+  // a demo just picked, or the conversation they were having on their phone.
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    history.map((turn) => ({ id: crypto.randomUUID(), role: turn.role, content: turn.content })),
+  )
+  const [quickQuestions, setQuickQuestions] = useState<string[]>(initialQuickQuestions)
   const [input, setInput] = useState('')
-  const [starting, setStarting] = useState(true)
   const [sending, setSending] = useState(false)
   const t = STRINGS[lang].chat
   const bottomRef = useRef<HTMLDivElement>(null)
-
-  function startConversation() {
-    setStarting(true)
-    setMessages([])
-    setQuickQuestions([])
-    return selectBot(sessionId, bot.id, lang)
-      .then((res) => {
-        setMessages([{ id: crypto.randomUUID(), role: 'assistant', content: res.greeting }])
-        setQuickQuestions(res.quick_questions)
-      })
-      .catch((err: unknown) => {
-        if (err instanceof ApiError && err.status === 401) onAuthError()
-      })
-      .finally(() => setStarting(false))
-  }
-
-  useEffect(() => {
-    startConversation()
-    // Switching the UI language mid-chat shouldn't wipe the conversation - only a new
-    // session or bot should. Claude replies in whatever language the user types in,
-    // independent of the UI toggle.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, bot.id])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -62,7 +53,7 @@ export default function Chat({ lang, bot, sessionId, onAuthError }: Props) {
     setQuickQuestions([])
     setSending(true)
     try {
-      const res = await sendMessage(sessionId, text)
+      const res = await sendMessage(chatKey, text)
       setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: res.reply }])
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -88,14 +79,9 @@ export default function Chat({ lang, bot, sessionId, onAuthError }: Props) {
     if (message) doSend(message.content, id)
   }
 
-  async function handleReset() {
+  function handleReset() {
     if (!window.confirm(t.resetConfirm)) return
-    try {
-      await resetSession(sessionId)
-    } catch {
-      // best-effort - starting a new conversation resets server-side state anyway
-    }
-    startConversation()
+    onReset()
   }
 
   return (
@@ -103,25 +89,21 @@ export default function Chat({ lang, bot, sessionId, onAuthError }: Props) {
       <div className="chat-header">
         <span>{bot.icon}</span>
         <span className="chat-header-title">{bot.name}</span>
-        <button type="button" className="reset-button" onClick={handleReset} disabled={starting}>
+        <button type="button" className="reset-button" onClick={handleReset}>
           {t.reset}
         </button>
       </div>
       <div className="chat-messages">
-        {starting ? (
-          <p className="chat-status">{t.connecting}</p>
-        ) : (
-          messages.map((message) => (
-            <div key={message.id} className={`bubble-row bubble-row-${message.role}`}>
-              <div className={`bubble bubble-${message.role}`}>{message.content}</div>
-              {message.failed && (
-                <button type="button" className="retry-link" onClick={() => handleRetry(message.id)}>
-                  {t.sendFailed} · {t.retry}
-                </button>
-              )}
-            </div>
-          ))
-        )}
+        {messages.map((message) => (
+          <div key={message.id} className={`bubble-row bubble-row-${message.role}`}>
+            <div className={`bubble bubble-${message.role}`}>{message.content}</div>
+            {message.failed && (
+              <button type="button" className="retry-link" onClick={() => handleRetry(message.id)}>
+                {t.sendFailed} · {t.retry}
+              </button>
+            )}
+          </div>
+        ))}
         {sending && (
           <div className="bubble-row bubble-row-assistant">
             <div className="bubble bubble-assistant bubble-typing">
@@ -131,7 +113,7 @@ export default function Chat({ lang, bot, sessionId, onAuthError }: Props) {
             </div>
           </div>
         )}
-        {!starting && quickQuestions.length > 0 && (
+        {quickQuestions.length > 0 && (
           <div className="quick-questions">
             {quickQuestions.map((question) => (
               <button
@@ -153,9 +135,8 @@ export default function Chat({ lang, bot, sessionId, onAuthError }: Props) {
           value={input}
           onChange={(event) => setInput(event.target.value)}
           placeholder={t.inputPlaceholder}
-          disabled={starting}
         />
-        <button type="submit" disabled={starting || sending || !input.trim()}>
+        <button type="submit" disabled={sending || !input.trim()}>
           {t.send}
         </button>
       </form>

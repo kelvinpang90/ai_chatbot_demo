@@ -93,14 +93,22 @@ def test_get_or_create_writes_nothing_until_save(store, fake):
     assert store.get("+60111222333") is None
 
 
-def test_one_number_written_three_ways_is_one_record(store, fake):
-    """The web chat types what a person would; WhatsApp sends bare digits."""
+def test_one_number_written_four_ways_is_one_record(store, fake):
+    """The web chat types what a person would; WhatsApp sends bare digits.
+
+    The national form is the one that matters and the one that used to miss:
+    "017-3948123" is how a Malaysian writes their own number, and filing it on
+    its digits alone put it in a record of its own -- so the laptop found no
+    conversation for the customer sitting there on their phone.
+    """
     profile = store.get_or_create("60173948123")
     profile.display_name = "Tan"
     store.save(profile)
 
     assert store.get("+60 17-394 8123").display_name == "Tan"
     assert store.get("(60) 173-948123").display_name == "Tan"
+    assert store.get("017-3948123").display_name == "Tan"
+    assert store.get("0060173948123").display_name == "Tan"
     assert list(fake.values) == [f"{KEY_PREFIX}60173948123"]
 
 

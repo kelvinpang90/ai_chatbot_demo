@@ -17,6 +17,13 @@ interface Strings {
     button: string
     error: string
   }
+  phoneEntry: {
+    title: string
+    subtitle: string
+    placeholder: string
+    button: string
+    error: string
+  }
   botSelect: {
     title: string
     subtitle: string
@@ -26,7 +33,6 @@ interface Strings {
     send: string
     reset: string
     resetConfirm: string
-    connecting: string
     sendFailed: string
     retry: string
   }
@@ -42,6 +48,13 @@ export const STRINGS: Record<Lang, Strings> = {
       button: '进入',
       error: '密码不正确',
     },
+    phoneEntry: {
+      title: '请输入手机号',
+      subtitle: '用你在 WhatsApp 上的那个号码，手机上的对话会接着往下聊',
+      placeholder: '例如 60123456789',
+      button: '进入',
+      error: '请输入一个有效的手机号',
+    },
     botSelect: {
       title: '选择一个演示场景',
       subtitle: '每个场景都是一个独立的行业 AI 客服',
@@ -51,7 +64,6 @@ export const STRINGS: Record<Lang, Strings> = {
       send: '发送',
       reset: '重新开始',
       resetConfirm: '确定要清空当前对话吗？',
-      connecting: '连接中...',
       sendFailed: '发送失败，点击重试',
       retry: '重试',
     },
@@ -65,6 +77,13 @@ export const STRINGS: Record<Lang, Strings> = {
       button: 'Enter',
       error: 'Incorrect password',
     },
+    phoneEntry: {
+      title: 'Enter your phone number',
+      subtitle: 'The same number you use on WhatsApp - your conversation carries on from there',
+      placeholder: 'e.g. 60123456789',
+      button: 'Continue',
+      error: 'Please enter a valid phone number',
+    },
     botSelect: {
       title: 'Choose a demo scenario',
       subtitle: 'Each scenario is an independent industry AI assistant',
@@ -74,7 +93,6 @@ export const STRINGS: Record<Lang, Strings> = {
       send: 'Send',
       reset: 'Restart',
       resetConfirm: 'Clear the current conversation?',
-      connecting: 'Connecting...',
       sendFailed: 'Failed to send, tap to retry',
       retry: 'Retry',
     },
@@ -88,6 +106,13 @@ export const STRINGS: Record<Lang, Strings> = {
       button: 'Masuk',
       error: 'Kata laluan salah',
     },
+    phoneEntry: {
+      title: 'Masukkan nombor telefon anda',
+      subtitle: 'Nombor yang sama seperti di WhatsApp - perbualan anda diteruskan dari situ',
+      placeholder: 'cth. 60123456789',
+      button: 'Teruskan',
+      error: 'Sila masukkan nombor telefon yang sah',
+    },
     botSelect: {
       title: 'Pilih senario demo',
       subtitle: 'Setiap senario adalah pembantu AI industri yang berasingan',
@@ -97,7 +122,6 @@ export const STRINGS: Record<Lang, Strings> = {
       send: 'Hantar',
       reset: 'Mula Semula',
       resetConfirm: 'Kosongkan perbualan semasa?',
-      connecting: 'Menyambung...',
       sendFailed: 'Gagal menghantar, ketik untuk cuba lagi',
       retry: 'Cuba lagi',
     },

@@ -46,6 +46,36 @@ def digits(value: str) -> str:
     return re.sub(r"\D", "", value or "")
 
 
+# Where a number with no country code is taken to be from. Malaysia, because
+# every customer this demo is shown to is.
+DEFAULT_COUNTRY_CODE = "60"
+
+
+def to_e164_digits(value: str) -> str:
+    """One spelling of a number, so the two channels file it in one place.
+
+    A person types their number the national way -- "017-394 8123" -- and
+    WhatsApp hands us E.164 without the plus -- "60173948123". Stripping the
+    punctuation is not enough to make those one customer: the trunk "0" stands
+    in for the country code rather than being part of the number, so digits
+    alone put the same person in two records, and task 33's "type the number and
+    the conversation from the phone is there" quietly failed for the way a
+    Malaysian actually writes their number.
+
+    Only typed input is affected -- no E.164 number begins with a trunk zero --
+    which is also the limit of what this can do: a foreign number typed
+    nationally is assumed to be Malaysian, because nothing in the digits says
+    otherwise. Before this it simply matched nothing at all.
+    """
+    number = digits(value)
+    if number.startswith("00"):
+        # How a Malaysian dials abroad: the country code follows the prefix.
+        return number[2:]
+    if number.startswith("0"):
+        return DEFAULT_COUNTRY_CODE + number[1:]
+    return number
+
+
 def looks_like_a_phone(term: str) -> bool:
     term = term.strip()
     return bool(_PHONE_SHAPED.match(term)) and len(digits(term)) >= MIN_PHONE_DIGITS

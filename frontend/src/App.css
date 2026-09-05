@@ -177,12 +177,6 @@
   gap: 10px;
 }
 
-.chat-status {
-  text-align: center;
-  color: var(--text);
-  font-size: 14px;
-}
-
 .bubble-row {
   display: flex;
   flex-direction: column;

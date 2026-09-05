@@ -819,6 +819,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - [x] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）——**2026-09-04 完成**。22 个新 pytest（全套 254 → **276 passed**），另外拿**真的 redis:7-alpine + 真的 redis-py** 跑了一遍活体验证（不是打桩）：写入/读回全字段含中文、`ttl=600s`、把 TTL 手动压到 30s 后再 save 又回到 600s、delete 生效、指向不存在的主机时降级到内存仍能读回。两个 compose 都过了 `docker compose config`。**已推 master 并部署，线上也验了**：`/api/bots` 401、`/webhook/whatsapp` 带错 token 403（加了 `data_net` 之后容器正常起来了）；`ai_chatbot_backend` 确实挂在 `data_net` 上、容器内 `REDIS_URL=redis://infra_redis:6379/16`；最关键的一步——**拿刚部署的那个镜像本身**在 `data_net` 上跑了一次真实存取：写入含中文的档案、读回一致、`ttl=60s`、探针 key 已删除。所以 db 16 和 `databases 256` 这两条假设是在线上被证实的，不是推断的。
   落地与计划的差异 / 需要知道的几件事：
   - **key 用「只留数字」的手机号**（`chat:user:60173948123`）。`+60 17-394 8123` / `017-3948123` / `60173948123` 落到同一个 key——**任务 33「网页输号码调出手机上的历史」直接依赖这一条**，否则两条渠道各存各的
+    ⚠️ **这句话当时是错的，`017-3948123` 并没有落到同一个 key**（只留数字 = `0173948123`）。2026-09-05 任务 33 活体验证时踩到并已修，见任务 33 的记录
   - **空号码抛 `ValueError`，不是存进 `chat:user:`**。否则所有匿名访客共用一条记录 = 把甲的对话给乙看
   - **TTL 没做成配置项**，`DEFAULT_TTL_SECONDS = 7 天` 写在模块里，构造函数可传（测试用）。只新增了一个配置 `REDIS_URL`，**留空 = 纯内存**，所以测试和裸 `uvicorn` 不会去连任何东西
   - **降级带熔断**：连不上后 30 秒内不再重试。没有这一条，Redis 挂掉时每条消息都要等一次连接超时（已把 connect/socket 超时压到 1 秒）——演示时客户正盯着「正在输入」
@@ -848,8 +849,20 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ⚠️ **代价：另外五个 bot 丢了它们唯一的「客户数据」**。`hotel` 的 bookings、`saas` 的 tickets、`food` 的 orders、`realestate` 的 appointments、`banking` 的账户，全都只活在 `identities[].profile` 里，删身份就一起没了。它们现在只剩 `context_data`（行业通用资料），谈不了「你那张订单」。这是「不演假身份」的必然代价，补回来的地方是**任务 11.2**（hotel/saas 套工具外壳）和**批次 04**（food/realestate 自建后端），届时写进 `profile[bot_id]` 这一格。`banking` 反正任务 30 要下架
   **验收：2026-09-05 真机通过**。用户拿真实号码走完全程——**没有选身份这一步**，直接进对话；问价、下单、收到 e-Invoice PDF 都成立。历史续接也在 09-04 那次容器重启后当场证实了（重启是比「换一次对话」更强的条件：以前必失忆，这次接上了）。**仍未验**：把手机号隐藏、只有 username 的那条路——线上还不存在这样的用户，见下面 BSUID 那条
 
-- [ ] **任务 33：网页侧改成输手机号**
-  文件：`frontend/src/pages/`、`backend/app/routers/chat.py`、`backend/app/services/api.ts`、测试
+- [x] **任务 33：网页侧改成输手机号**——**2026-09-05 完成，代码侧全绿 + 带真 Redis 的活体验证通过；真机那一半没做（要用户拿手机 + 线上部署）**。后端 **374 passed**（359 → 374：新增 19 条，删掉 4 条已死的 `Session` 测试），前端 `tsc -b && vite build` 在 `frontend/Dockerfile` 里过了（本地没有 node_modules，构建走镜像）。
+  **网页现在没有匿名会话了**：`session_id` 这个概念整个删除（`createSessionId` 也删了），三个聊天端点的 key 改成手机号，直接读写任务 31 的 `user_store`。`llm.get_reply(bot, None, ...)` 那条匿名分支在网页侧不再存在——网页现在也把真实档案交给模型，**零售 bot 在网页上也能 `crm_lookup_customer` 查人了**，以前它手上什么都没有。
+  流程：口令 → **输手机号** → 有 bot 就**直接进聊天并带回历史**，没有才进选场景。新增 `POST /api/chat/identify`，**它不写盘**——打错号码查一下不该变成一条客户记录（到任务 34 会顺着进 CRM）。
+  **⚠️ 顺手修了一个真 bug，就是验收那条**：活体验证时网页输 `017-3948123` **查不到**手机上的对话。任务 31 记的「`+60 17-394 8123` / `017-3948123` / `60173948123` 落到同一个 key」**只对前两种成立**——`identity()` 只留数字，国内写法的前导 `0` 顶替的是国家码，`0173948123 ≠ 60173948123`。而 `017-` 恰恰是马来西亚人写自己号码最常见的写法，演示时站在电脑前的人多半就这么输。已在 `phone.py` 加 `to_e164_digits()`：`00` 开头当国际前缀剥掉、`0` 开头换成 `DEFAULT_COUNTRY_CODE = "60"`。**只影响人手输入**（E.164 号码不会以 trunk 0 开头），代价是外国号码用国内写法输进来会被当成马来西亚号——但它原来是**完全匹配不上**，不是匹配对了。
+  其他与计划不同的几处：
+  - **`reset` 的语义对齐 WhatsApp 的 `menu`**：清 bot + 清 history，**人还在**（`display_name`、两个后台 id、per-bot 备注都留着），然后回到选场景页。原来的 `reset` 是清进程内存里的 session
+  - **`Chat.tsx` 不再自己调 `selectBot`**。原来它一挂载就调，那在新流程里等于**每次进聊天都把手机上那段历史清空**——验收当场作废。现在 select 由 `App.tsx` 在点卡片时调，`Chat` 只接收已经准备好的开场消息
+  - **`session_store` 的 `Session` 整个删了**（含 `get_or_create` / `get` / `reset` / `delete` 和 4 条测试）。网页是它最后一个使用者，剩下的只有**消息去重 + 每日限流**两件进程内的事，docstring 已改。`Message` 和 `MAX_HISTORY_MESSAGES` 留着，`user_store` 在用
+  - **key 到了 URL 里还会再校验一遍**（`identity` 抛 ValueError → 400）。`/identify` 已经归一化过，但 URL 是客户端传回来的，不能信——一个归不了档的 key 正好是「把两个访客塞进同一条记录」那个洞
+  - `identify` 用 `looks_like_a_phone`（≥7 位数字）挡住 `call me at 7` 这种：光靠 `identity()` 会把人归档到 key `7`
+  **验证到什么程度**（活体，不是打桩）：起真 `redis:7-alpine` + 用 `backend/Dockerfile` 构建的镜像，走真 HTTP——① 查一个没见过的号码后 `DBSIZE=0`，确认查号不建档；② select 之后 Redis 里出现 `chat:user:60173948123`、`TTL≈604767s`；③ 用容器内的 `user_store` 本身写进两轮对话，**然后换一个新构建的容器**，输 `017-3948123` 拿回 `bot=hotel` + 完整两轮——跨容器、跨号码写法都成立；④ `call me at 7` 返回 400；⑤ reset 之后 `bot=null` 但 key 还在。
+  **没验的**：① 真机（用户拿手机聊完，再在电脑上输那个号码看历史）；② 线上部署后的行为；③ **网页发消息这条路没走过真模型**——本地 `backend/.env` 里的 `ANTHROPIC_API_KEY` 是空的（长度 1，真 key 只在 VPS 上），按高风险规则没有再试别的凭据。所以 `send_message` 只有单测覆盖（打桩 `llm.get_reply`），线上第一次跑要留意
+  **顺带发现、没修**：`ANTHROPIC_API_KEY` 为空时 `llm.get_reply` 抛的是 `TypeError` 不是 `anthropic.APIError`，绕过了那个 `except`，网页侧直接 500。WhatsApp 侧因为 `_handle_incoming_message` 兜底 catch 所以只是静默失败。这是既有行为，不属于本任务
+  文件：`backend/app/routers/chat.py`、`backend/app/models.py`、`backend/app/services/phone.py`、`backend/app/services/user_store.py`、`backend/app/session_store.py`、`frontend/src/pages/PhoneEntry.tsx`（新增）、`frontend/src/pages/Chat.tsx`、`frontend/src/App.tsx`、`frontend/src/api.ts`、`frontend/src/i18n/strings.ts`、`frontend/src/App.css`、`backend/tests/test_chat_api.py`（新增）、`backend/tests/test_user_store.py`、`backend/tests/test_session_store.py`
   目标：网页开场输一个手机号，之后与 WhatsApp 走同一条路径、同一个 Redis 档案
   验收：网页输入手机上那个真实号码，**能看到手机上那段对话的历史**——这一条本身就是很强的演示素材
 

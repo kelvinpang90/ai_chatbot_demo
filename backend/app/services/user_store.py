@@ -87,13 +87,15 @@ class UserProfile:
 _FIELD_NAMES = {f.name for f in fields(UserProfile)}
 
 
-def _identity(identifier: str) -> str:
+def identity(identifier: str) -> str:
     """The filing identity for a phone number or a BSUID.
 
     `+60 17-394 8123` from a CRM record, `60173948123` from a WhatsApp webhook
     and `017-3948123` typed into the web chat are one customer, and the whole
     point of task 33 is that the number typed on a laptop finds the history from
-    a phone. Digits only, so those spellings cannot miss each other.
+    a phone. `phone.to_e164_digits` is what makes those three agree -- dropping
+    the punctuation alone leaves the national form filed under a key of its own,
+    which is the form a Malaysian is most likely to type.
 
     A BSUID is passed through whole. Reducing it to digits would throw away the
     country-code prefix that makes it unique, and there is no second spelling of
@@ -101,7 +103,7 @@ def _identity(identifier: str) -> str:
     """
     if phone.is_bsuid(identifier):
         return identifier.strip()
-    digits = phone.digits(identifier)
+    digits = phone.to_e164_digits(identifier)
     if not digits:
         # Blank would file every anonymous visitor into one shared record, i.e.
         # show one customer another customer's conversation. Refuse instead.
@@ -110,7 +112,7 @@ def _identity(identifier: str) -> str:
 
 
 def _key(identifier: str) -> str:
-    return f"{KEY_PREFIX}{_identity(identifier)}"
+    return f"{KEY_PREFIX}{identity(identifier)}"
 
 
 def _serialise(profile: UserProfile) -> str:
@@ -204,7 +206,7 @@ class UserStore:
         if existing is not None:
             return existing
         now = time.time()
-        key_id = _identity(identifier)
+        key_id = identity(identifier)
         blank = UserProfile(key_id=key_id, first_seen=now, last_seen=now)
         if phone.is_bsuid(key_id):
             blank.user_id = key_id
