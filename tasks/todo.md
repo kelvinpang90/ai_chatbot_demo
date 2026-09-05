@@ -903,6 +903,17 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - ⚠️ **真正卡住商品条数的是 5，不是 10**（验收后追查出来的）：`erp_client.DEFAULT_RESULT_LIMIT = 5` 让 `/api/skus?page_size=5` 最多只回 5 条，所以 Meta 那个 10 行上限永远够不着，我写的「Showing X of Y，告诉我品牌或类别」那句**今天是够不到的分支**，它是防以后调大 limit 的护栏。更该注意的是 `search_skus` 只取 `payload["items"]`、**把 `total` 扔了**（erp_os 的分页确实带 `total` / `total_pages`，见 `erp_os/backend/app/schemas/common.py:43`）——所以 ERP 里有 8 个 rice cooker 时，模型手上只有 5 条**而且不知道自己只拿到 5 条**，会当成「全部就这些」讲给客户听
   验收：真机问「有什么 rice cooker」，出来一条可点列表，点一下能直接下单 ✅ **2026-09-05 用户拿手机验过**
 
+- [x] **任务 35.1：商品搜索抬到 10 条 + 把 `total` 交给模型**（任务 35 真机验收后追加，用户 2026-09-05 拍板要做）
+  文件：`backend/app/services/erp_client.py`、`backend/app/tools/erp.py`、测试
+  起因：真机问 rice cooker 只出 3 个。**3 是对的**——`erp_os/backend/scripts/seed_skus.py:254-256` 里就只有 3 款电饭锅，没被截断。但顺着查出**风扇正好是 5 款**（同文件 249-253），而 `DEFAULT_RESULT_LIMIT = 5` 正卡在那儿：ERP 再进一款风扇，客户就只能看到 5 个，而 bot 会说「我们有这 5 款」，自己不知道漏了。
+  **2026-09-05 完成，代码侧全绿；真机没验（要用户拿手机）**。后端 **393 passed**（388 → 393）。变异测试 7 处全红——其中一处**第一轮还是绿的**，见下面第 4 条。
+  - `search_skus` 返回值从 `list[dict]` 变成 `SkuMatches(items, total)`。`total` 来自 erp_os 分页信封里的 `total`（`erp_os/backend/app/schemas/common.py:43`），原来被 `payload.get("items")` 一起扔了
+  - **`erp_search_sku` 的返回结构改了**：从一个数组变成 `{"total_matches": N, "products": [...]}`。docstring 明说「`products` 只是第一页，`total_matches` 更大时要讲出来并提议缩小范围，不许拿一页当全部、更不许凭一页说某商品不存在」
+  - 搜索上限 `PRODUCT_SEARCH_LIMIT = whatsapp.MAX_LIST_ROWS`（10）。**只动商品搜索**——`find_customers` / `recent_orders` 那几个 5 是别的语境，没跟着改
+  - ⚠️ **库存那次调用也必须一起抬到 10**，否则第 6-10 行会是唯一没有库存那一行的商品，而且屏幕上没有任何东西说明为什么。**这一条第一轮变异测试没抓住**：`_catalogue` stub 当时忽略 `page_size`，问 5 条和问 10 条返回一模一样。已把 stub 改成真的按 `page_size` 分页，再补 `test_every_row_on_a_full_list_carries_its_stock_line`。**教训：打桩打得比真服务宽松，变异测试就会一起放水**
+  - 列表那句「Showing X of Y」现在用 ERP 的 `total`，不是本页条数——本页正好是能装下的那 10 条，用它算等于永远说「10 of 10」。装得下就不说这句（有测试守着「3 of 3」不许出现）
+  验收：真机问「有什么风扇」，5 款全出来；ERP 里手工加第 6 款后再问，出 6 款
+
 - [ ] **任务 36：语音输入**（原任务 15，口径改为抽象层；不依赖前面，可插队）
   文件：`backend/app/services/transcribe.py`（新增）、`backend/app/routers/whatsapp_webhook.py`、`backend/app/config.py`、测试
   目标：收到 `type: "audio"` → 用**任务 1 已经做好的** `whatsapp_media.fetch_media` 下载 → 转录 → 拿到文字后走现有文字路径，**下游一行都不用改**

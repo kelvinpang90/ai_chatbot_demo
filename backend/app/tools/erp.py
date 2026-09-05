@@ -103,8 +103,8 @@ def _confirmation_unknown(document_no: str) -> str:
     )
 
 
-def _as_json(rows: list) -> str:
-    return json.dumps(rows, ensure_ascii=False, default=str)
+def _as_json(payload: list | dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _prices(sku: dict) -> dict:
@@ -130,6 +130,13 @@ PRODUCT_LIST_BUTTON = "View products"
 PRODUCT_LIST_SECTION = "Products"
 PRODUCT_LIST_BODY = "Tap the one you want and I'll take it from there."
 
+# How many products one search brings back. The ERP's own default is five, which
+# is the right size for most of what it is asked, but a search is now the thing
+# that fills a tappable list -- so it asks for as many as that list can carry.
+# The seed catalogue has exactly five fans, which is to say the old default was
+# one new fan away from silently hiding one on the demo screen.
+PRODUCT_SEARCH_LIMIT = whatsapp.MAX_LIST_ROWS
+
 
 def _stock_by_sku(keyword: str) -> dict[int, float]:
     """How many of each matching product can actually be sold, across branches.
@@ -144,7 +151,9 @@ def _stock_by_sku(keyword: str) -> dict[int, float]:
     taking the products down with it.
     """
     try:
-        rows = erp_client.client().branch_inventory(keyword)
+        # The same reach as the search itself: asked for fewer, the products at
+        # the bottom of the list would be the only ones with no stock line.
+        rows = erp_client.client().branch_inventory(keyword, limit=PRODUCT_SEARCH_LIMIT)
     except ApiClientError:
         logger.warning("no stock line on the product list for %r", keyword, exc_info=True)
         return {}
@@ -182,7 +191,7 @@ def _row_description(sku: dict, available: float | None) -> str:
     return f"{price} · {available:g} in stock" if price else f"{available:g} in stock"
 
 
-def _offer_products(keyword: str, skus: list[dict]) -> None:
+def _offer_products(keyword: str, matches: erp_client.SkuMatches) -> None:
     """Put the matches behind the reply as rows the customer can tap.
 
     Deliberately not part of what the tool returns: the model gets the same JSON
@@ -194,7 +203,7 @@ def _offer_products(keyword: str, skus: list[dict]) -> None:
     saying "we have it" than the sentence the model is already writing -- or on
     the web demo, which has no channel to put an interactive message on.
     """
-    orderable = [sku for sku in skus if sku.get("id") is not None and _row_title(sku)]
+    orderable = [sku for sku in matches.items if sku.get("id") is not None and _row_title(sku)]
     if len(orderable) < 2 or not outbox.available():
         return
 
@@ -209,11 +218,12 @@ def _offer_products(keyword: str, skus: list[dict]) -> None:
         for sku in shown
     ]
     body = PRODUCT_LIST_BODY
-    if len(orderable) > len(shown):
-        # Meta will not carry the rest, so say so rather than let the customer
-        # believe the catalogue is this small.
+    if matches.total > len(shown):
+        # The ERP's count, not the size of the page it sent us: the customer is
+        # owed the difference between "we stock these ten" and "here are ten of
+        # fourteen", and only one of those is true.
         body = (
-            f"Showing {len(shown)} of {len(orderable)} matches -- tap one to order it, "
+            f"Showing {len(shown)} of {matches.total} matches -- tap one to order it, "
             "or tell me the brand or category and I'll narrow it down."
         )
     outbox.add(
@@ -237,34 +247,43 @@ def erp_search_sku(keyword: str) -> str:
     e-Invoice will carry, so quoting the other one means the bill arrives higher
     than the price the customer agreed to.
 
+    `total_matches` is how many products matched in the whole catalogue, and
+    `products` is only the first page of them. When it is the larger number, say
+    so and offer to narrow the search -- never present the page as the full
+    range, and never tell the customer a product does not exist on the strength
+    of one page.
+
     Args:
         keyword: Part of a product name or code, e.g. "earbuds" or "SKU-00012".
     """
     try:
-        skus = erp_client.client().search_skus(keyword)
+        matches = erp_client.client().search_skus(keyword, limit=PRODUCT_SEARCH_LIMIT)
     except ApiClientError:
         logger.exception("erp_search_sku failed for %r", keyword)
         return UNAVAILABLE
 
-    if not skus:
+    if not matches.items:
         return NOT_FOUND
 
-    _offer_products(keyword, skus)
+    _offer_products(keyword, matches)
 
     # The catalogue row carries ~30 columns; the model needs the handful a customer
     # would ask about, and the console screen has to stay readable.
     return _as_json(
-        [
-            {
-                "sku_id": sku.get("id"),
-                "code": sku.get("code"),
-                "name": sku.get("name"),
-                "name_zh": sku.get("name_zh"),
-                **_prices(sku),
-                "currency": sku.get("currency"),
-            }
-            for sku in skus
-        ]
+        {
+            "total_matches": matches.total,
+            "products": [
+                {
+                    "sku_id": sku.get("id"),
+                    "code": sku.get("code"),
+                    "name": sku.get("name"),
+                    "name_zh": sku.get("name_zh"),
+                    **_prices(sku),
+                    "currency": sku.get("currency"),
+                }
+                for sku in matches.items
+            ],
+        }
     )
 
 

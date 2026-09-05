@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from typing import NamedTuple
 
 from app.config import settings
 from app.services import phone
@@ -31,6 +32,18 @@ WHATSAPP_SHIPPING_METHOD = "WhatsApp order"
 # (`schemas/sales_order.py:68`). Longer is a 422 that loses the whole order, so
 # the length is checked before the write rather than discovered after it.
 MAX_SHIPPING_ADDRESS_CHARS = 500
+
+
+class SkuMatches(NamedTuple):
+    """One page of matching products, and how many the ERP found in all.
+
+    `total` is the ERP's own count over the whole catalogue, so it can be
+    larger than `items` -- that gap is the thing worth carrying: it is the
+    difference between "we stock these five" and "here are five of eight".
+    """
+
+    items: list[dict]
+    total: int
 
 
 def _is_the_same_document(found: str, wanted: str) -> bool:
@@ -73,10 +86,24 @@ class ErpClient(JsonApiClient):
             password=settings.erp_password,
         )
 
-    def search_skus(self, keyword: str, *, limit: int = DEFAULT_RESULT_LIMIT) -> list[dict]:
-        """Products matching a name or code fragment."""
+    def search_skus(self, keyword: str, *, limit: int = DEFAULT_RESULT_LIMIT) -> SkuMatches:
+        """Products matching a name or code fragment, and how many matched in all.
+
+        The count used to be thrown away with the rest of the envelope, and that
+        is the whole reason for this shape: a page of five out of eight looks
+        exactly like a shop that stocks five, so the bot told customers it had
+        shown them everything.
+        """
         payload = self.get("/api/skus", params={"search": keyword, "page_size": limit})
-        return payload.get("items", [])
+        items = payload.get("items", [])
+        # A missing count falls back to what did arrive rather than to zero:
+        # claiming "0 matches" while holding five of them is the one answer that
+        # is certainly wrong.
+        try:
+            total = int(payload.get("total"))
+        except (TypeError, ValueError):
+            total = len(items)
+        return SkuMatches(items=items, total=max(total, len(items)))
 
     def branch_inventory(self, sku_query: str, *, limit: int = DEFAULT_RESULT_LIMIT) -> list[dict]:
         """Stock for the matching SKUs, one row per SKU, broken down by warehouse.

@@ -8,7 +8,7 @@ import httpx
 import pytest
 from pypdf import PdfReader
 
-from app.services import api_client, erp_client, outbox, whatsapp_media
+from app.services import api_client, erp_client, outbox, whatsapp, whatsapp_media
 from app.services.api_client import ApiClientError
 from app.services.whatsapp_media import MediaError
 from app.tools import erp
@@ -46,12 +46,14 @@ def _fresh_client():
 
 
 def test_search_hits_the_sku_route_and_returns_only_what_a_customer_would_ask():
-    with patch.object(erp_client.ErpClient, "get", return_value={"items": [SKU_ROW]}) as get:
+    catalogue = {"items": [SKU_ROW], "total": 1}
+    with patch.object(erp_client.ErpClient, "get", return_value=catalogue) as get:
         payload = json.loads(erp.erp_search_sku("earbuds"))
 
     assert get.call_args.args[0] == "/api/skus"
     assert get.call_args.kwargs["params"]["search"] == "earbuds"
-    assert payload == [
+    assert payload["total_matches"] == 1
+    assert payload["products"] == [
         {
             "sku_id": 12,
             "code": "SKU-00012",
@@ -64,6 +66,38 @@ def test_search_hits_the_sku_route_and_returns_only_what_a_customer_would_ask():
     ]
 
 
+def test_the_search_asks_for_as_many_products_as_the_list_can_carry():
+    """Five was the ERP's default and it very nearly cost the demo a fan: the
+    seed catalogue holds exactly five of them, so the sixth would have gone
+    missing with nothing on screen to say it had."""
+    with patch.object(erp_client.ErpClient, "get", return_value={"items": [SKU_ROW]}) as get:
+        erp.erp_search_sku("fan")
+
+    assert get.call_args.kwargs["params"]["page_size"] == whatsapp.MAX_LIST_ROWS
+
+
+def test_a_page_of_matches_is_never_passed_off_as_the_whole_catalogue():
+    """What the model is told, and the only thing standing between it and
+    telling a customer the shop stocks ten fans when it stocks fourteen."""
+    page = [{**SKU_ROW, "id": 100 + i, "name": f"Fan {i}"} for i in range(10)]
+
+    with patch.object(erp_client.ErpClient, "get", return_value={"items": page, "total": 14}):
+        payload = json.loads(erp.erp_search_sku("fan"))
+
+    assert payload["total_matches"] == 14
+    assert len(payload["products"]) == 10
+
+
+def test_a_count_the_erp_left_out_never_reads_as_fewer_than_arrived():
+    """A missing `total` is unknown, not zero -- and certainly not fewer than
+    the products sitting in the same response."""
+    with patch.object(erp_client.ErpClient, "get", return_value={"items": [SKU_ROW, LITE_SKU_ROW]}):
+        assert json.loads(erp.erp_search_sku("earbuds"))["total_matches"] == 2
+
+    with patch.object(erp_client.ErpClient, "get", return_value={"items": [SKU_ROW], "total": 0}):
+        assert json.loads(erp.erp_search_sku("earbuds"))["total_matches"] == 1
+
+
 def test_search_hands_over_both_tax_bases_so_the_quote_matches_the_invoice():
     """The order total and the PDF are tax-inclusive; a lone ex-tax price lies.
 
@@ -72,12 +106,12 @@ def test_search_hands_over_both_tax_bases_so_the_quote_matches_the_invoice():
     read out the one the customer will actually be charged.
     """
     with patch.object(erp_client.ErpClient, "get", return_value={"items": [SKU_ROW]}):
-        payload = json.loads(erp.erp_search_sku("earbuds"))
+        product = json.loads(erp.erp_search_sku("earbuds"))["products"][0]
 
-    assert payload[0]["unit_price_excl_tax"] == "89.00"
-    assert payload[0]["unit_price_incl_tax"] == "94.34"
+    assert product["unit_price_excl_tax"] == "89.00"
+    assert product["unit_price_incl_tax"] == "94.34"
     # The ambiguous single field is gone: nothing can read it and get it wrong.
-    assert "unit_price" not in payload[0]
+    assert "unit_price" not in product
 
 
 def test_inventory_asks_across_every_warehouse_and_totals_what_can_be_sold():
@@ -122,20 +156,27 @@ SOLD_OUT_MATRIX_ROW = {
 }
 
 
-def _catalogue(skus: list[dict], stock: list[dict] | Exception = ()):
+def _catalogue(skus: list[dict], stock: list[dict] | Exception = (), total: int | None = None):
     """The ERP answering the two routes a search now touches, by route.
 
     The stock call is a second request for one line of text on a row, so it gets
     its own knob: passing an exception is how the tests below cover an inventory
-    route that is down while the catalogue is up.
+    route that is down while the catalogue is up. `total` is the catalogue-wide
+    count, which is larger than the page whenever there is more to be had.
+
+    Both routes honour the page size they are asked for, as erp_os does. A stub
+    that ignored it read the same for a call that asks for five and one that
+    asks for ten, and a mutation that quietly halved the stock call's reach sat
+    green underneath it.
     """
 
-    def get(path: str, **_kwargs):
+    def get(path: str, params: dict | None = None, **_kwargs):
+        page_size = (params or {}).get("page_size")
         if path.startswith("/api/inventory"):
             if isinstance(stock, Exception):
                 raise stock
-            return {"rows": list(stock)}
-        return {"items": skus}
+            return {"rows": list(stock)[:page_size]}
+        return {"items": skus[:page_size], "total": len(skus) if total is None else total}
 
     return patch.object(erp_client.ErpClient, "get", side_effect=get)
 
@@ -145,7 +186,7 @@ def test_several_matches_come_with_a_list_the_customer_can_tap(_outbox):
         payload = json.loads(erp.erp_search_sku("earbuds"))
 
     # What the model gets is untouched -- it still writes the words itself.
-    assert [row["sku_id"] for row in payload] == [12, 13]
+    assert [row["sku_id"] for row in payload["products"]] == [12, 13]
 
     (message,) = outbox.drain(A_PHONE)
     assert message["type"] == "interactive"
@@ -175,7 +216,7 @@ def test_the_web_demo_is_not_charged_for_a_list_it_cannot_send():
     with _catalogue([SKU_ROW, LITE_SKU_ROW]) as get:
         payload = json.loads(erp.erp_search_sku("earbuds"))
 
-    assert len(payload) == 2  # the model is answered exactly as before
+    assert len(payload["products"]) == 2  # the model is answered exactly as before
     assert outbox.drain(A_PHONE) == []
     assert [call.args[0] for call in get.call_args_list] == ["/api/skus"]
 
@@ -213,17 +254,45 @@ def test_the_products_around_an_unusable_one_are_still_offered(_outbox):
 
 def test_more_matches_than_meta_will_carry_says_so_instead_of_hiding_it(_outbox):
     """Ten is the channel's limit, not the size of the catalogue, and a customer
-    who cannot see that will believe the shop only stocks these ten."""
-    many = [{**SKU_ROW, "id": 100 + i, "name": f"Earbuds {i}"} for i in range(12)]
+    who cannot see that will believe the shop only stocks these ten.
 
-    with _catalogue(many):
+    The count is the ERP's, not a tally of what arrived -- which is the whole
+    point, since what arrived is exactly the ten that fit."""
+    page = [{**SKU_ROW, "id": 100 + i, "name": f"Earbuds {i}"} for i in range(10)]
+
+    with _catalogue(page, total=14):
         erp.erp_search_sku("earbuds")
 
     (message,) = outbox.drain(A_PHONE)
     (section,) = message["interactive"]["action"]["sections"]
     assert len(section["rows"]) == 10
     body = message["interactive"]["body"]["text"]
-    assert "10 of 12" in body and "brand or category" in body
+    assert "10 of 14" in body and "brand or category" in body
+
+
+def test_every_row_on_a_full_list_carries_its_stock_line(_outbox):
+    """The stock call has to reach as far as the search does. Left at the ERP's
+    default of five while the search asks for ten, the bottom half of the list
+    would be the only rows with no stock on them -- and nothing would say why."""
+    page = [{**SKU_ROW, "id": 100 + i, "name": f"Earbuds {i}"} for i in range(8)]
+    matrix = [{"sku_id": 100 + i, "warehouses": [{"available": "7"}]} for i in range(8)]
+
+    with _catalogue(page, stock=matrix):
+        erp.erp_search_sku("earbuds")
+
+    (message,) = outbox.drain(A_PHONE)
+    (section,) = message["interactive"]["action"]["sections"]
+    assert [row["description"] for row in section["rows"]] == ["MYR 94.34 · 7 in stock"] * 8
+
+
+def test_a_page_that_holds_everything_is_not_apologised_for(_outbox):
+    """Three rice cookers is three rice cookers. The demo asks this exact
+    question, and "showing 3 of 3" would read as though something were missing."""
+    with _catalogue([SKU_ROW, LITE_SKU_ROW], stock=[MATRIX_ROW]):
+        erp.erp_search_sku("earbuds")
+
+    (message,) = outbox.drain(A_PHONE)
+    assert message["interactive"]["body"]["text"] == erp.PRODUCT_LIST_BODY
 
 
 def test_an_unreachable_erp_becomes_an_answer_the_bot_can_relay():
