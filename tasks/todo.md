@@ -813,7 +813,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 >
 > ### 阻塞项（需要用户处理）
 >
-> - [ ] **F. `erp_os` 要开 `DEMO_MODE=true`，并且 Celery worker + beat 要真的在跑。** 不开的话 `/api/admin/demo-reset` 直接返回 `DEMO_MODE_REQUIRED`，任务 34 的 ERP 那一半无从谈起。这是 `erp_os` 的部署改动，不在本仓库
+> - [x] ~~**F. `erp_os` 要开 `DEMO_MODE=true`，并且 Celery worker + beat 要真的在跑。**~~——**2026-09-05 实测已解除，任务 34 可以开工**。两条证据：
+>   - `curl https://erp.kelvinpeng.com/health` → `{"demo_mode":true,...,"database":"ok","redis":"ok"}`。**这个 `/health` 是公开的、不要凭据**（`erp_os/backend/app/main.py:276` 把 `DEMO_MODE` 直接报出来），以后要查这个别再上 VPS 了
+>   - VPS 上 `docker ps`：`erp_celery_worker` Up 2 hours、`erp_celery_beat` Up 4 weeks
+>   ⚠️ **两个坑，任务 34 必须知道**：
+>   - **`POST /api/admin/demo-reset` 是入队就返回**（`erp_os/backend/app/routers/admin.py:102`），响应固定是 `status:"queued"` + `demo_reset_log_id:0`。**worker 没起的话它照样回成功、什么都不会发生**——教科书级的假绿。所以验收**不能看这个返回值**，要去 `GET /api/admin/demo-reset/history` 核对有没有新行
+>   - **每晚 3 点那个自动重置多半没注册**。`demo-reset-nightly` 是在 `_build_app()` 里按 `settings.DEMO_MODE` 决定加不加的（`erp_os/backend/app/tasks/celery_app.py:67-76`），**进程启动时算一次**。beat 容器已经 4 周没重启，而 worker 2 小时前才重启（看着就是刚改完 env 只重启了 worker）——所以 beat 进程里大概率没有这条 schedule。**手动触发不受影响**（走 worker），但想要它每晚自己跑，得重启 beat 容器。⚠️ 这一条是从「beat 4 周没重启」推的，DEMO_MODE 到底什么时候打开的我不知道，**没实测**
 > - [ ] **G. `OPENAI_API_KEY`**，任务 36 用。VPS 的 `/opt/ai_chatbot/backend/.env` 和本地都要有
 
 - [x] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）——**2026-09-04 完成**。22 个新 pytest（全套 254 → **276 passed**），另外拿**真的 redis:7-alpine + 真的 redis-py** 跑了一遍活体验证（不是打桩）：写入/读回全字段含中文、`ttl=600s`、把 TTL 手动压到 30s 后再 save 又回到 600s、delete 生效、指向不存在的主机时降级到内存仍能读回。两个 compose 都过了 `docker compose config`。**已推 master 并部署，线上也验了**：`/api/bots` 401、`/webhook/whatsapp` 带错 token 403（加了 `data_net` 之后容器正常起来了）；`ai_chatbot_backend` 确实挂在 `data_net` 上、容器内 `REDIS_URL=redis://infra_redis:6379/16`；最关键的一步——**拿刚部署的那个镜像本身**在 `data_net` 上跑了一次真实存取：写入含中文的档案、读回一致、`ttl=60s`、探针 key 已删除。所以 db 16 和 `databases 256` 这两条假设是在线上被证实的，不是推断的。
