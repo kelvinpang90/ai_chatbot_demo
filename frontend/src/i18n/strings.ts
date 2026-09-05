@@ -10,13 +10,6 @@ export const DEFAULT_LANG: Lang = 'en'
 
 interface Strings {
   appTitle: string
-  passwordGate: {
-    title: string
-    subtitle: string
-    placeholder: string
-    button: string
-    error: string
-  }
   phoneEntry: {
     title: string
     subtitle: string
@@ -41,13 +34,6 @@ interface Strings {
 export const STRINGS: Record<Lang, Strings> = {
   zh: {
     appTitle: 'AI Chatbot 演示',
-    passwordGate: {
-      title: '请输入访问密码',
-      subtitle: '这是一个受限访问的产品演示',
-      placeholder: '访问密码',
-      button: '进入',
-      error: '密码不正确',
-    },
     phoneEntry: {
       title: '请输入手机号',
       subtitle: '用你在 WhatsApp 上的那个号码，手机上的对话会接着往下聊',
@@ -70,13 +56,6 @@ export const STRINGS: Record<Lang, Strings> = {
   },
   en: {
     appTitle: 'AI Chatbot Demo',
-    passwordGate: {
-      title: 'Enter Access Password',
-      subtitle: 'This is a password-protected product demo',
-      placeholder: 'Access password',
-      button: 'Enter',
-      error: 'Incorrect password',
-    },
     phoneEntry: {
       title: 'Enter your phone number',
       subtitle: 'The same number you use on WhatsApp - your conversation carries on from there',
@@ -99,13 +78,6 @@ export const STRINGS: Record<Lang, Strings> = {
   },
   ms: {
     appTitle: 'Demo Chatbot AI',
-    passwordGate: {
-      title: 'Masukkan Kata Laluan Akses',
-      subtitle: 'Ini adalah demo produk yang dilindungi kata laluan',
-      placeholder: 'Kata laluan akses',
-      button: 'Masuk',
-      error: 'Kata laluan salah',
-    },
     phoneEntry: {
       title: 'Masukkan nombor telefon anda',
       subtitle: 'Nombor yang sama seperti di WhatsApp - perbualan anda diteruskan dari situ',

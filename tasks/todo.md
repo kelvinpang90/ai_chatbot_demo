@@ -865,6 +865,14 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   文件：`backend/app/routers/chat.py`、`backend/app/models.py`、`backend/app/services/phone.py`、`backend/app/services/user_store.py`、`backend/app/session_store.py`、`frontend/src/pages/PhoneEntry.tsx`（新增）、`frontend/src/pages/Chat.tsx`、`frontend/src/App.tsx`、`frontend/src/api.ts`、`frontend/src/i18n/strings.ts`、`frontend/src/App.css`、`backend/tests/test_chat_api.py`（新增）、`backend/tests/test_user_store.py`、`backend/tests/test_session_store.py`
   目标：网页开场输一个手机号，之后与 WhatsApp 走同一条路径、同一个 Redis 档案
   验收：网页输入手机上那个真实号码，**能看到手机上那段对话的历史**——这一条本身就是很强的演示素材
+  **✅ 2026-09-05 用户真机验收通过**：「通过号码可以回到 whatsapp 的聊天记录」。上面「没验的」第 1 条（真机）已消。第 2、3 条（网页发消息没走过真模型、空 API key 时 500）仍未验
+
+- [x] **临时需求：取消网页访问密码**（2026-09-05 用户指示，不在原计划内）
+  **口令这一层整个删掉，不是只藏起来前端**：`require_auth` / `_valid_tokens` / `POST /api/auth/login` / `LoginRequest` / `LoginResponse` / 配置项 `demo_access_password` / `.env.example` 里那一行、前端的 `PasswordGate.tsx` 和 token 的存取（`getToken` / `setToken` / `clearToken` / `X-Access-Token` 请求头）全部移除。只删前端会让所有接口 401、页面直接废掉，所以两边必须一起动。
+  连带清掉的：三个页面的 `onAuthError` 分支和 i18n 的 `passwordGate` 三份翻译；CSS 的 `.password-gate` 改名 `.entry-form`（`PhoneEntry` 在复用它，留着名字会骗人）。
+  ⚠️ **现在 `chatbot.acuventech.com` 对任何人开放**——拿到链接就能跑 demo，也就能烧 Anthropic 用量、往 ERP/CRM 的 demo 数据里写东西。用户已知情拍板。
+  **VPS 的 `/opt/ai_chatbot/backend/.env` 里那行 `DEMO_ACCESS_PASSWORD` 不用删**：实测多传一个环境变量不会让 app 起不来（pydantic-settings 忽略多余的 key），留着无害。
+  验证：374 passed（数量不变，一条「在口令门后面」的测试改成了「接口是开放的 + login 路由已 404」）；前端镜像构建过；真镜像跑真 HTTP，无任何 header 时 `/api/bots` 200、`/api/chat/identify` 200、`/api/auth/login` 404；另外单独验了「VPS 那行旧变量还在」时 app 照常启动
 
 - [ ] **任务 34：7 天清理**
   文件：`backend/app/tasks/`（新增）、`backend/app/tools/crm.py`、`backend/app/tools/erp.py`、测试

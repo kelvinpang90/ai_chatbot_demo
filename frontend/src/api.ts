@@ -1,17 +1,3 @@
-const TOKEN_STORAGE_KEY = 'ai_chatbot_demo_token'
-
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_STORAGE_KEY)
-}
-
-export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_STORAGE_KEY, token)
-}
-
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_STORAGE_KEY)
-}
-
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -21,32 +7,18 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken()
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> | undefined),
-  }
-  if (token) {
-    headers['X-Access-Token'] = token
-  }
-
-  const response = await fetch(path, { ...options, headers })
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers as Record<string, string> | undefined),
+    },
+  })
   if (!response.ok) {
     const body = await response.json().catch(() => ({}) as { detail?: string })
     throw new ApiError(response.status, body.detail ?? 'Request failed')
   }
   return response.json() as Promise<T>
-}
-
-export interface LoginResponse {
-  token: string
-}
-
-export async function login(password: string): Promise<LoginResponse> {
-  return request<LoginResponse>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ password }),
-  })
 }
 
 export interface BotSummary {

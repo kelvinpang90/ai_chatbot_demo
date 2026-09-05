@@ -1,11 +1,10 @@
 import { useState, type FormEvent } from 'react'
-import { ApiError, identify, type IdentifyResponse } from '../api'
+import { identify, type IdentifyResponse } from '../api'
 import { STRINGS, type Lang } from '../i18n/strings'
 
 interface Props {
   lang: Lang
   onIdentified: (result: IdentifyResponse) => void
-  onAuthError: () => void
 }
 
 /**
@@ -14,7 +13,7 @@ interface Props {
  * record rather than an anonymous session. Type a number that has been talking
  * to the bot on a phone and the conversation is already there.
  */
-export default function PhoneEntry({ lang, onIdentified, onAuthError }: Props) {
+export default function PhoneEntry({ lang, onIdentified }: Props) {
   const [phone, setPhone] = useState('')
   const [error, setError] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -26,11 +25,7 @@ export default function PhoneEntry({ lang, onIdentified, onAuthError }: Props) {
     setError(false)
     try {
       onIdentified(await identify(phone.trim(), lang))
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        onAuthError()
-        return
-      }
+    } catch {
       setError(true)
     } finally {
       setLoading(false)
@@ -39,7 +34,7 @@ export default function PhoneEntry({ lang, onIdentified, onAuthError }: Props) {
 
   return (
     <div className="page-centered">
-      <form className="password-gate" onSubmit={handleSubmit}>
+      <form className="entry-form" onSubmit={handleSubmit}>
         <h1>{t.title}</h1>
         <p>{t.subtitle}</p>
         <input

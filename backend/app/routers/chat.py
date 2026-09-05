@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-import secrets
-
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, HTTPException
 
 from app.bots.registry import BotConfig, LocalizedText, get_bot, list_bots
-from app.config import settings
 from app.models import (
     BotDetail,
     BotSummary,
     ChatTurn,
     IdentifyRequest,
     IdentifyResponse,
-    LoginRequest,
-    LoginResponse,
     ResetResponse,
     SelectBotRequest,
     SelectBotResponse,
@@ -23,11 +18,10 @@ from app.models import (
 from app.services import llm, phone
 from app.services.user_store import UserProfile, identity, user_store
 
+# 2026-09-05: the access password is gone at the owner's request, so these
+# routes are open. Whoever has the link can run the demo -- which is what "show
+# a customer the link" was already worth in practice.
 router = APIRouter(prefix="/api")
-
-# Demo-scale: valid tokens live in memory, same single-process constraint the
-# rest of this service runs under.
-_valid_tokens: set[str] = set()
 
 GREETING_SUFFIX = {
     "zh": "有什么可以帮你的吗？",
@@ -49,11 +43,6 @@ def _detail(bot: BotConfig, lang: str) -> BotDetail:
     )
 
 
-def require_auth(x_access_token: str | None = Header(default=None)) -> None:
-    if not x_access_token or x_access_token not in _valid_tokens:
-        raise HTTPException(status_code=401, detail="Invalid or missing access token")
-
-
 def _identity_or_400(key: str) -> str:
     """The key this request is about, refusing anything unfilable.
 
@@ -67,16 +56,7 @@ def _identity_or_400(key: str) -> str:
         raise HTTPException(status_code=400, detail="Not a usable phone number") from None
 
 
-@router.post("/auth/login", response_model=LoginResponse)
-def login(body: LoginRequest) -> LoginResponse:
-    if not settings.demo_access_password or body.password != settings.demo_access_password:
-        raise HTTPException(status_code=401, detail="Incorrect password")
-    token = secrets.token_urlsafe(24)
-    _valid_tokens.add(token)
-    return LoginResponse(token=token)
-
-
-@router.get("/bots", response_model=list[BotSummary], dependencies=[Depends(require_auth)])
+@router.get("/bots", response_model=list[BotSummary])
 def list_bots_endpoint(lang: str = "en") -> list[BotSummary]:
     return [
         BotSummary(
@@ -89,7 +69,7 @@ def list_bots_endpoint(lang: str = "en") -> list[BotSummary]:
     ]
 
 
-@router.get("/bots/{bot_id}", response_model=BotDetail, dependencies=[Depends(require_auth)])
+@router.get("/bots/{bot_id}", response_model=BotDetail)
 def get_bot_endpoint(bot_id: str, lang: str = "en") -> BotDetail:
     bot = get_bot(bot_id)
     if not bot:
@@ -97,7 +77,7 @@ def get_bot_endpoint(bot_id: str, lang: str = "en") -> BotDetail:
     return _detail(bot, lang)
 
 
-@router.post("/chat/identify", response_model=IdentifyResponse, dependencies=[Depends(require_auth)])
+@router.post("/chat/identify", response_model=IdentifyResponse)
 def identify(body: IdentifyRequest) -> IdentifyResponse:
     """Open the web chat as a phone number, the way WhatsApp opens as one.
 
@@ -133,11 +113,7 @@ def identify(body: IdentifyRequest) -> IdentifyResponse:
     )
 
 
-@router.post(
-    "/chat/{key}/select",
-    response_model=SelectBotResponse,
-    dependencies=[Depends(require_auth)],
-)
+@router.post("/chat/{key}/select", response_model=SelectBotResponse)
 def select_bot(key: str, body: SelectBotRequest) -> SelectBotResponse:
     bot = get_bot(body.bot_id)
     if not bot:
@@ -157,11 +133,7 @@ def select_bot(key: str, body: SelectBotRequest) -> SelectBotResponse:
     return SelectBotResponse(greeting=greeting, quick_questions=quick_questions)
 
 
-@router.post(
-    "/chat/{key}/message",
-    response_model=SendMessageResponse,
-    dependencies=[Depends(require_auth)],
-)
+@router.post("/chat/{key}/message", response_model=SendMessageResponse)
 def send_message(key: str, body: SendMessageRequest) -> SendMessageResponse:
     profile = user_store.get_or_create(_identity_or_400(key))
     if not profile.bot_id:
@@ -185,11 +157,7 @@ def send_message(key: str, body: SendMessageRequest) -> SendMessageResponse:
     return SendMessageResponse(reply=reply)
 
 
-@router.post(
-    "/chat/{key}/reset",
-    response_model=ResetResponse,
-    dependencies=[Depends(require_auth)],
-)
+@router.post("/chat/{key}/reset", response_model=ResetResponse)
 def reset_session(key: str) -> ResetResponse:
     """Back to the demo menu, without forgetting who this is -- WhatsApp "menu"."""
     profile = user_store.get(_identity_or_400(key))

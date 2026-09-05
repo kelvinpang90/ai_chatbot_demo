@@ -51,8 +51,6 @@ class Settings(BaseSettings):
     # one. Both compose files set it.
     redis_url: str = ""
 
-    demo_access_password: str = ""
-
     internal_shared_secret: str = ""
 
 

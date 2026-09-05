@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { ApiError, sendMessage, type BotSummary, type ChatTurn } from '../api'
+import { sendMessage, type BotSummary, type ChatTurn } from '../api'
 import { STRINGS, type Lang } from '../i18n/strings'
 
 interface ChatMessage {
@@ -16,7 +16,6 @@ interface Props {
   history: ChatTurn[]
   quickQuestions: string[]
   onReset: () => void
-  onAuthError: () => void
 }
 
 export default function Chat({
@@ -26,7 +25,6 @@ export default function Chat({
   history,
   quickQuestions: initialQuickQuestions,
   onReset,
-  onAuthError,
 }: Props) {
   // Seeded once, from whatever the customer already had on file - a greeting for
   // a demo just picked, or the conversation they were having on their phone.
@@ -55,11 +53,7 @@ export default function Chat({
     try {
       const res = await sendMessage(chatKey, text)
       setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: res.reply }])
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        onAuthError()
-        return
-      }
+    } catch {
       setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, failed: true } : m)))
     } finally {
       setSending(false)

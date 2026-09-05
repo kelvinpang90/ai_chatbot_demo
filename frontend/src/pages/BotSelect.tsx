@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react'
-import { ApiError, listBots, type BotSummary } from '../api'
+import { listBots, type BotSummary } from '../api'
 import { STRINGS, type Lang } from '../i18n/strings'
 
 interface Props {
   lang: Lang
   onSelect: (bot: BotSummary) => void
-  onAuthError: () => void
 }
 
-export default function BotSelect({ lang, onSelect, onAuthError }: Props) {
+export default function BotSelect({ lang, onSelect }: Props) {
   const [bots, setBots] = useState<BotSummary[]>([])
   const [loading, setLoading] = useState(true)
   const t = STRINGS[lang].botSelect
@@ -20,10 +19,8 @@ export default function BotSelect({ lang, onSelect, onAuthError }: Props) {
       .then((data) => {
         if (!cancelled) setBots(data)
       })
-      .catch((err: unknown) => {
-        if (!cancelled && err instanceof ApiError && err.status === 401) {
-          onAuthError()
-        }
+      .catch(() => {
+        // Nothing to show but the empty list; the retry is reloading the page.
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -31,7 +28,7 @@ export default function BotSelect({ lang, onSelect, onAuthError }: Props) {
     return () => {
       cancelled = true
     }
-  }, [lang, onAuthError])
+  }, [lang])
 
   return (
     <div className="page">

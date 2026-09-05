@@ -46,7 +46,7 @@
   text-align: center;
 }
 
-.password-gate {
+.entry-form {
   width: 100%;
   max-width: 340px;
   display: flex;
@@ -55,7 +55,7 @@
   text-align: center;
 }
 
-.password-gate input {
+.entry-form input {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
@@ -63,7 +63,7 @@
   color: var(--text-h);
 }
 
-.password-gate button {
+.entry-form button {
   border: none;
   border-radius: 8px;
   padding: 10px 12px;
@@ -72,7 +72,7 @@
   font-weight: 600;
 }
 
-.password-gate button:disabled {
+.entry-form button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

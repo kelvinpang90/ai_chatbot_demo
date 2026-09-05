@@ -1,14 +1,6 @@
 from pydantic import BaseModel
 
 
-class LoginRequest(BaseModel):
-    password: str
-
-
-class LoginResponse(BaseModel):
-    token: str
-
-
 class BotSummary(BaseModel):
     id: str
     name: str

@@ -17,23 +17,17 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import settings
 from app.main import app
 from app.routers.whatsapp_webhook import dispatch_message
 from app.services import llm
 from app.services.user_store import user_store
 
-PASSWORD = "not-a-real-demo-password"
-
-
 @pytest.fixture
 def client():
-    """A logged-in web client, since every chat route sits behind the gate."""
-    with patch.object(settings, "demo_access_password", PASSWORD):
-        with TestClient(app) as http:
-            token = http.post("/api/auth/login", json={"password": PASSWORD}).json()["token"]
-            http.headers["X-Access-Token"] = token
-            yield http
+    """A web client. The access password was dropped on 2026-09-05, so there is
+    nothing to log in to: the demo is open to whoever has the link."""
+    with TestClient(app) as http:
+        yield http
 
 
 def _text_message(phone: str, text: str, seq: int = 1) -> dict:
@@ -86,9 +80,13 @@ def test_something_that_is_not_a_number_is_refused(client, junk):
     assert _identify(client, junk).status_code == 400
 
 
-def test_identify_is_behind_the_password_gate():
-    with TestClient(app) as anonymous:
-        assert anonymous.post("/api/chat/identify", json={"phone": "60129990103"}).status_code == 401
+def test_the_demo_asks_for_nothing_but_the_number():
+    """No password, and no leftover login route to send anyone to. A 401 here
+    would strand the page, which has no gate left to show."""
+    with TestClient(app) as anyone:
+        assert anyone.post("/api/chat/identify", json={"phone": "60129990103"}).status_code == 200
+        assert anyone.get("/api/bots").status_code == 200
+        assert anyone.post("/api/auth/login", json={"password": "x"}).status_code == 404
 
 
 # -- the acceptance criterion -------------------------------------------------

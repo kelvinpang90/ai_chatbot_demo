@@ -1,24 +1,13 @@
 import { useState } from 'react'
 import './App.css'
 import LanguageSwitcher from './components/LanguageSwitcher'
-import PasswordGate from './pages/PasswordGate'
 import PhoneEntry from './pages/PhoneEntry'
 import BotSelect from './pages/BotSelect'
 import Chat from './pages/Chat'
-import {
-  ApiError,
-  clearToken,
-  getToken,
-  resetSession,
-  selectBot,
-  type BotSummary,
-  type ChatTurn,
-  type IdentifyResponse,
-} from './api'
+import { resetSession, selectBot, type BotSummary, type ChatTurn, type IdentifyResponse } from './api'
 import { DEFAULT_LANG, type Lang } from './i18n/strings'
 
 type View =
-  | { name: 'password' }
   | { name: 'phone' }
   | { name: 'botSelect'; chatKey: string }
   | {
@@ -31,12 +20,7 @@ type View =
 
 function App() {
   const [lang, setLang] = useState<Lang>(DEFAULT_LANG)
-  const [view, setView] = useState<View>(() => (getToken() ? { name: 'phone' } : { name: 'password' }))
-
-  function handleAuthError() {
-    clearToken()
-    setView({ name: 'password' })
-  }
+  const [view, setView] = useState<View>({ name: 'phone' })
 
   // A number already in a demo goes straight back into it, carrying whatever was
   // said on the phone. Only a number with no conversation sees the menu.
@@ -64,8 +48,8 @@ function App() {
         history: [{ role: 'assistant', content: greeting }],
         quickQuestions: quick_questions,
       })
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) handleAuthError()
+    } catch {
+      // Staying on the menu is the honest outcome: nothing was started.
     }
   }
 
@@ -82,20 +66,10 @@ function App() {
     <div className="app-shell">
       <LanguageSwitcher lang={lang} onChange={setLang} />
 
-      {view.name === 'password' && (
-        <PasswordGate lang={lang} onSuccess={() => setView({ name: 'phone' })} />
-      )}
-
-      {view.name === 'phone' && (
-        <PhoneEntry lang={lang} onIdentified={handleIdentified} onAuthError={handleAuthError} />
-      )}
+      {view.name === 'phone' && <PhoneEntry lang={lang} onIdentified={handleIdentified} />}
 
       {view.name === 'botSelect' && (
-        <BotSelect
-          lang={lang}
-          onSelect={(bot) => handleBotSelected(view.chatKey, bot)}
-          onAuthError={handleAuthError}
-        />
+        <BotSelect lang={lang} onSelect={(bot) => handleBotSelected(view.chatKey, bot)} />
       )}
 
       {view.name === 'chat' && (
@@ -109,7 +83,6 @@ function App() {
           history={view.history}
           quickQuestions={view.quickQuestions}
           onReset={() => handleReset(view.chatKey)}
-          onAuthError={handleAuthError}
         />
       )}
     </div>
