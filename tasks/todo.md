@@ -904,6 +904,13 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   | **没验：真跑一次清理** | 删 ERP 账号 + 触发全库单据重置是破坏性写操作，按 CLAUDE.md 的高风险规则没有自己跑 |
   | **没验：清理后同一号码能重新开户** | 依赖上一条 |
   **2026-09-06 已推 master**（`c9ba291`）触发部署。推后 6.5 分钟内每 20 秒探一次 `chatbot.acuventech.com/health`，**20 次全 200、没看到重启的空档**。⚠️ **这只证明服务是活的，不证明新镜像已经上**——本次改动没有任何对外可见的行为变化，黑盒探不出版本；`gh run list` 被权限分类器拦了，Actions 的绿灯也没看到（那个 workflow 本来就会把失败报成绿灯）。要确认镜像：VPS 上 `docker inspect ai_chatbot_backend --format '{{.Image}} {{.Created}}'`。
+  **✅ 2026-09-06 用户在 VPS 上真跑通过**（`docker exec ai_chatbot_backend python -m app.tasks.cleanup`）：
+  `CRM cards 0 / CRM contacts 0 / ERP accounts 1 / ERP documents: reset success`，与预期逐条对上。这一跑同时证明了四件事：
+  - **新镜像确实上线了**——容器里有 `app.tasks.cleanup` 这个模块，旧镜像没有。上面那条「20 次 200 不证明版本」的疑问就此消掉
+  - **204 空 body 的处理是对的**——`DELETE /api/customers/51` 回 `204 No Content`，没崩在 JSON 解析上（正是变异测试守的那一处）
+  - **等 reset 跑完的逻辑在真环境生效**——POST 之后连查了 4 次 history 才等到那条已结束的新记录，第一次没被当成功
+  - **`admin@demo.my` 的 ADMIN 角色够用**——admin 路由和客户删除都进得去
+  **仍未验（两条）**：① **清理后同一个号码能不能重新开户**——要真机再下一单，这是 code 加时间戳那处改动的真正验收点，而且现在正好是干净的测试条件（旧格式那个已被删）；② **CRM 的删除路径线上没真跑过**——这次 0 删 0 是因为旧行没标记，真机再演一次之后新行才带 `[DEMO]`，那时再跑一次才看得到
   **验收怎么做**（你来跑，一条命令）：`docker exec ai_chatbot_backend python -m app.tasks.cleanup`，然后核对：① ERP 后台 `WA-60168623902` 不见了、Sunrise Hypermart 这些还在；② 单据被重置（history 里多一条 SUCCESS）；③ 拿那个号码在 WhatsApp 上再下一单，能重新开户；④ CRM 这一轮预期是「0 删 0」——真机再演一次之后新写的行才会带标记，那时再跑一次才看得到 ② 的效果
   文件：`backend/app/tasks/`（新增）、`backend/app/tools/crm.py`、`backend/app/tools/erp.py`、测试
   目标：**四**件事。① Redis 靠 TTL 自动过期，**不用写任务**；② CRM：bot 建的联系人 `notes` 写 `[DEMO]` 前缀，清理时只删带标记的；③ ERP 单据：调 `POST /api/admin/demo-reset`，不自己写删除；④ **ERP 客户：按 `WA-` 前缀删**（2026-09-05 用户拍板要清）
