@@ -951,7 +951,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 列表那句「Showing X of Y」现在用 ERP 的 `total`，不是本页条数——本页正好是能装下的那 10 条，用它算等于永远说「10 of 10」。装得下就不说这句（有测试守着「3 of 3」不许出现）
   验收：真机问「有什么风扇」，5 款全出来；ERP 里手工加第 6 款后再问，出 6 款
 
-- [x] **任务 36：语音输入**（原任务 15，口径改为抽象层；不依赖前面，可插队）——**2026-09-06 完成，代码侧全绿；真机那一半没做（要用户拿手机 + 线上部署）**。后端 **431 passed**（408 → 431，净增 23），另做一轮**变异测试：18 处逐个改坏，18 处全部有测试变红**（audio 分支拿掉 / 转录结果丢掉改用原 body / 空转录照样推下去 / 导演台不发 TOOL_END / mime 上报成假的 / 下载失败不接住 / 没 media id 照样下载 / 静音在屏幕上是空行 / 图片混进已处理 / mime 参数不剥 / 不认识的格式照发 / 文件名不带扩展名 / 不检查 api key / 不发语种提示 / 传输异常裸奔出去 / 没有 text 字段当成空转录 / 不 strip / 供应商写死不可换）。
+- [x] **任务 36：语音输入**（原任务 15，口径改为抽象层；不依赖前面，可插队）——**2026-09-06 完成，已部署上线并真机验收（用户拿手机发过语音，bot 听懂并走了工具）**。后端 **431 passed**（408 → 431，净增 23），另做一轮**变异测试：18 处逐个改坏，18 处全部有测试变红**（audio 分支拿掉 / 转录结果丢掉改用原 body / 空转录照样推下去 / 导演台不发 TOOL_END / mime 上报成假的 / 下载失败不接住 / 没 media id 照样下载 / 静音在屏幕上是空行 / 图片混进已处理 / mime 参数不剥 / 不认识的格式照发 / 文件名不带扩展名 / 不检查 api key / 不发语种提示 / 传输异常裸奔出去 / 没有 text 字段当成空转录 / 不 strip / 供应商写死不可换）。
   **下游确实一行都没改**：`type: "audio"` → `whatsapp_media.fetch_media` 下载 → `transcribe.transcribe` → 拿到的字**原样喂给 `_handle_text_message`**。所以口头说 "menu" 会重置 demo、口头报商品名会搜 ERP、写进 `history` 的是那句话而不是一个 audio id——这三条各有一个测试守着。
   **抽象层**：`Transcriber` 基类（一个 `transcribe(audio, mime) -> str`）+ `WhisperTranscriber` 实现 + 模块级 `transcriber` 实例，换供应商 = 多写一个类、改一行赋值，webhook 不动。**用 httpx 直接打 `/v1/audio/transcriptions`，没引 `openai` 包**——就一个 multipart POST，为它多一个 HTTP 客户端和一套失败模式不划算。
   几个决定和踩到的坑：
@@ -962,7 +962,13 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **两种失败对客户是同一句话**（`VOICE_UNREADABLE_MESSAGE`，都让他打字），区别只在导演台上（`status=error` 带原因 vs `status=ok` 带 `(nothing audible)`）
   - **`TRANSCRIPTION_MODEL` 做成了配置项**，默认 `whisper-1`。唯一无法在这里验证的就是它对夹杂语句的准确度，真机跑下来不行的话应该改环境变量而不是改代码（`gpt-4o-transcribe` 是同一个端点）
   - ⚠️ **部署前必须先在 VPS 的 `backend/.env` 里确认 `OPENAI_API_KEY` 有值**，否则第一条语音会走到 `TranscriptionError("OPENAI_API_KEY is not set")`、客户看到「请打字」。另：阻塞项 G 记的那个坑仍然成立——未声明但有值的 key 会让容器起不来
-  **剩下没做的**：真机发一条中英夹杂的语音、看 bot 是否听懂并正确走工具。要部署 + 手机，Claude 做不了
+  **真机验收（2026-09-06 晚，用户手机）**：三条语音，把成功和失败两条路都走到了——
+  - 9:26 那条（`OPENAI_API_KEY` 还没进容器）：客户收到「Sorry, I couldn't make out that voice message - please type your question instead.」。**失败路径在真机上确认是有话说的，不是沉默**
+  - 9:35 那条：bot 认出是谁，并报出他真实的 ERP 单号（`SO-2026-00001` / `SO-2026-00004`）
+  - 9:36 那条（9 秒）：bot 回「我用关键字查了一下」+ `Sony WF-C710N 真无线降噪耳机 RM 328.90（含税）`。**语音驱动了工具调用，价格来自 ERP 商品档案**，验收条件达成
+  ⚠️ **`env_file` 改了必须 `docker compose up -d --force-recreate backend`**，`docker compose restart` 读的是容器创建时固定下来的那份环境变量，改了也读不到——上面 9:26 失败 / 9:35 成功这一对就是它。**部署 workflow 本身没问题**（它走 `up -d`，镜像变了就会重建）；坑在「只改 `.env` 不改代码」那种手工场景
+  ⚠️ **导演台现在没有页面可看**（任务 12 未做），只有裸 SSE `/console/stream`，而且**公网打不到**——前端 nginx 只转 `/api/` 和 `/webhook/`（任务 3 的记录里写过，是故意的，那条流没有鉴权）。所以这次验收是靠「手机上的回复对不对」判定的，**没有逐字看到 Whisper 听成了什么**。夹杂句的转录准确度因此仍未被直接观测到，只知道「准到足以走对工具」
+  ⚠️ **PowerShell → ssh → 远端 shell 这条路会吃掉反斜杠**。验证时 `sh -c "echo len=\${#OPENAI_API_KEY}"` 和 `grep -c "^OPENAI_API_KEY=.\+"` 都给了假结果（前者没输出、后者报 0），换成不带反斜杠的 `printenv KEY | wc -c` 立刻拿到 165。**要跑带转义的命令就开交互式 ssh，别塞进一行字符串里**
 
 ## 评审记录
 
