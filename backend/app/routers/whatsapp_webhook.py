@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
 from fastapi import APIRouter, BackgroundTasks, Request, Response
@@ -8,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 from app.bots.registry import BotConfig, get_bot, list_bots
 from app.config import settings
 from app.console import events
-from app.services import llm, outbox, whatsapp
+from app.services import llm, outbox, transcribe, whatsapp, whatsapp_media
 from app.services.user_store import user_store
 from app.session_store import session_store
 from app.tools import erp
@@ -18,9 +19,21 @@ logger = logging.getLogger(__name__)
 
 RATE_LIMIT_MESSAGE = "You've reached today's message limit for this demo. Please try again tomorrow."
 UNSUPPORTED_TYPE_MESSAGE = (
-    "Sorry, I can only read text messages in this demo - please type your question instead."
+    "Sorry, I can only read text and voice messages in this demo - "
+    "please type your question instead."
+)
+# One line for both ways a voice note can come to nothing, because the customer's
+# next move is the same either way. Which of the two it was is on the console.
+VOICE_UNREADABLE_MESSAGE = (
+    "Sorry, I couldn't make out that voice message - please type your question instead."
 )
 GREETING_SUFFIX_EN = "How can I help you today?"
+# Not a tool the model called, but the same thing to the person watching the
+# console: a step that took time, against an input, producing an output worth
+# reading. Emitted as a tool span so it renders on the director's screen without
+# a new event type nothing knows how to draw.
+VOICE_TOOL = "voice.transcribe"
+NOTHING_AUDIBLE = "(nothing audible)"
 MENU_KEYWORDS = {"menu", "菜单"}
 
 
@@ -193,12 +206,75 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
     if msg_type == "interactive":
         return _handle_interactive_reply(sender, message.get("interactive", {}))
 
+    if msg_type == "audio":
+        spoken = _transcribe_voice_note(message.get("audio") or {})
+        if not spoken:
+            return [whatsapp.build_text_message(sender.key, VOICE_UNREADABLE_MESSAGE)]
+        # From here it is a text message and nothing downstream is told otherwise:
+        # "menu" said out loud resets the demo, a spoken product name searches the
+        # ERP, and the history the model reads holds the words, not the audio.
+        return _handle_text_message(sender, spoken)
+
     if msg_type != "text":
         logger.info("Ignoring unsupported message type '%s' from %s", msg_type, sender.key)
         return [whatsapp.build_text_message(sender.key, UNSUPPORTED_TYPE_MESSAGE)]
 
     text = message.get("text", {}).get("body", "")
     return _handle_text_message(sender, text)
+
+
+def _transcribe_voice_note(audio: dict) -> str:
+    """What the customer said, or "" if we could not tell.
+
+    The console line this leaves behind is the point of the feature as much as the
+    reply is: the customer hears nothing happen, while the room watching the
+    second screen sees the sentence the bot heard before it acts on it.
+    """
+    media_id = audio.get("id")
+    if not media_id:
+        logger.error("Audio message arrived with no media id: keys=%s", sorted(audio))
+        events.emit(
+            type=events.SEND_FAILED,
+            tool=VOICE_TOOL,
+            tool_use_id="",
+            output="audio message carried no media id",
+            status="error",
+        )
+        return ""
+
+    events.emit(
+        type=events.TOOL_START,
+        tool=VOICE_TOOL,
+        tool_use_id=media_id,
+        input={"mime_type": audio.get("mime_type", "")},
+    )
+    started = time.monotonic()
+    try:
+        media = whatsapp_media.fetch_media(media_id)
+        spoken = transcribe.transcribe(media.content, media.mime_type)
+    except (whatsapp_media.MediaError, transcribe.TranscriptionError) as failure:
+        logger.exception("Could not transcribe voice note %s", media_id)
+        events.emit(
+            type=events.TOOL_END,
+            tool=VOICE_TOOL,
+            tool_use_id=media_id,
+            output=f"{type(failure).__name__}: {failure}",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            status="error",
+        )
+        return ""
+
+    events.emit(
+        type=events.TOOL_END,
+        tool=VOICE_TOOL,
+        tool_use_id=media_id,
+        # An empty transcript is a successful call that heard nothing, and on a
+        # screen a blank line reads as a bug rather than as silence.
+        output=(spoken or NOTHING_AUDIBLE)[: llm.MAX_CONSOLE_OUTPUT_CHARS],
+        duration_ms=int((time.monotonic() - started) * 1000),
+        status="ok",
+    )
+    return spoken
 
 
 def _start_over(sender: Sender) -> None:

@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     # empty value is dropped, which is why the leftover DEMO_ACCESS_PASSWORD on
     # the VPS is harmless and this one would not have been.)
     openai_api_key: str = ""
+    # Which model listens to the voice notes. Settable because the one thing that
+    # cannot be tested from here is how well it handles a Malaysian customer
+    # switching between three languages in one sentence -- if the real-phone run
+    # says badly, the answer should be an env var rather than a code change.
+    transcription_model: str = "whisper-1"
 
     whatsapp_access_token: str = ""
     whatsapp_phone_number_id: str = ""

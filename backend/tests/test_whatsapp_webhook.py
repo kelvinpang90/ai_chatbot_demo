@@ -1,5 +1,6 @@
 import itertools
 import json
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,8 @@ from app.config import settings
 from app.console import events
 from app.main import app
 from app.routers.whatsapp_webhook import (
+    UNSUPPORTED_TYPE_MESSAGE,
+    VOICE_UNREADABLE_MESSAGE,
     Sender,
     _extract_messages,
     _handle_incoming_message,
@@ -18,7 +21,7 @@ from app.routers.whatsapp_webhook import (
     _resolve_quick_question,
     dispatch_message,
 )
-from app.services import llm, outbox, whatsapp
+from app.services import llm, outbox, transcribe, whatsapp, whatsapp_media
 from app.services.user_store import user_store
 
 client = TestClient(app)
@@ -491,3 +494,194 @@ def test_the_username_does_not_overwrite_a_name_we_were_given():
 
     assert profile.display_name == "Kelvin Pang"
     assert profile.username == "kelvin.p"
+
+
+# -- voice notes (task 36) -----------------------------------------------------
+#
+# A voice note becomes a text message before anything downstream sees it. That is
+# the whole design: no branch in the model call, no branch in the history, no
+# branch in the tools. What these tests guard is the seam -- that the words get
+# in, that the audio does not, and that the ways it can come to nothing all leave
+# the customer with an instruction and the console with a line.
+
+VOICE_MIME = "audio/ogg; codecs=opus"
+
+
+def _voice_message(phone: str, media_id: str = "media-voice-1", seq: int = 5) -> dict:
+    return {
+        "id": f"wamid.{phone}.{seq}",
+        "from": phone,
+        "type": "audio",
+        "audio": {"id": media_id, "mime_type": VOICE_MIME, "voice": True},
+    }
+
+
+@contextmanager
+def _hears(said: str):
+    """Both hops a voice note takes: Meta hands over the bytes, a provider reads them."""
+    media = whatsapp_media.Media(content=b"OggS-pretend-opus", mime_type=VOICE_MIME)
+    with patch.object(whatsapp_media, "fetch_media", return_value=media) as fetch:
+        with patch.object(transcribe, "transcribe", return_value=said) as heard:
+            yield fetch, heard
+
+
+def test_a_voice_note_reaches_the_model_as_the_sentence_that_was_spoken():
+    """The acceptance criterion. A customer who speaks instead of typing has to
+    get the same assistant, mid-sentence language switching and all."""
+    phone = "60129994001"
+    _in_conversation(phone)
+    spoken = "Boleh tak you check ada stock tak, 那个 earbuds?"
+    seen = {}
+
+    def capture(bot, customer, history):
+        seen["said"] = history[-1].content
+        return "Let me check the stock."
+
+    with _hears(spoken):
+        with patch.object(llm, "get_reply", side_effect=capture):
+            sent = dispatch_message(_voice_message(phone))
+
+    assert seen["said"] == spoken
+    assert [message["type"] for message in sent] == ["text"]
+
+
+def test_the_words_are_what_gets_remembered_not_the_voice_note():
+    """The model is shown this history again next turn, and it cannot listen to
+    an audio id."""
+    phone = "60129994002"
+    _in_conversation(phone)
+
+    with _hears("do you deliver to Penang"):
+        with patch.object(llm, "get_reply", return_value="We do."):
+            dispatch_message(_voice_message(phone))
+
+    stored = user_store.get(phone)
+    assert [m.content for m in stored.history] == ["do you deliver to Penang", "We do."]
+
+
+def test_the_voice_note_is_fetched_by_the_id_on_the_audio_block():
+    phone = "60129994003"
+    _in_conversation(phone)
+
+    with _hears("hello") as (fetch, heard):
+        with patch.object(llm, "get_reply", return_value="Hi."):
+            dispatch_message(_voice_message(phone, media_id="media-voice-42"))
+
+    assert fetch.call_args.args[0] == "media-voice-42"
+    # And the provider is handed the type Meta reported, not one we guessed.
+    assert heard.call_args.args[1] == VOICE_MIME
+
+
+def test_saying_menu_out_loud_starts_the_demo_over():
+    """Downstream is not told the message was spoken, so every text path answers
+    a voice note too -- including the one that is not a question."""
+    phone = "60129994004"
+    _in_conversation(phone)
+
+    with _hears("Menu"):
+        sent = dispatch_message(_voice_message(phone))
+
+    assert [message["type"] for message in sent] == ["interactive"]
+    assert user_store.get(phone).bot_id is None
+
+
+def test_the_console_shows_the_sentence_the_bot_heard():
+    """The customer hears nothing happen; the room watching the second screen has
+    to see what was understood before it is acted on."""
+    phone = "60129994005"
+    _in_conversation(phone)
+    events.clear()
+    spoken = "我要买两个 fan, hantar ke Johor"
+
+    with _hears(spoken):
+        with patch.object(llm, "get_reply", return_value="Two fans to Johor."):
+            dispatch_message(_voice_message(phone))
+
+    voice = [e for e in events.since(0) if e.tool == "voice.transcribe"]
+    assert [e.type for e in voice] == [events.TOOL_START, events.TOOL_END]
+    assert voice[0].input["mime_type"] == VOICE_MIME
+    assert voice[1].output == spoken
+    assert voice[1].status == "ok"
+    assert voice[1].duration_ms is not None
+    events.clear()
+
+
+def test_a_transcription_that_fails_asks_for_typing_and_says_why_on_the_console():
+    phone = "60129994006"
+    _in_conversation(phone)
+    events.clear()
+    media = whatsapp_media.Media(content=b"OggS", mime_type=VOICE_MIME)
+
+    with patch.object(whatsapp_media, "fetch_media", return_value=media):
+        with patch.object(
+            transcribe, "transcribe", side_effect=transcribe.TranscriptionError("quota exceeded")
+        ):
+            with patch.object(llm, "get_reply") as get_reply:
+                sent = dispatch_message(_voice_message(phone))
+
+    get_reply.assert_not_called()
+    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE
+    ended = [e for e in events.since(0) if e.type == events.TOOL_END]
+    assert ended[0].status == "error" and "quota exceeded" in ended[0].output
+    events.clear()
+
+
+def test_a_download_that_fails_is_answered_rather_than_thrown():
+    """`fetch_media` raises for a file over the size cap as well as for a dead
+    network, and both arrive here as a customer waiting on a reply."""
+    phone = "60129994007"
+    _in_conversation(phone)
+
+    with patch.object(
+        whatsapp_media, "fetch_media", side_effect=whatsapp_media.MediaTooLargeError("too big")
+    ):
+        sent = dispatch_message(_voice_message(phone))
+
+    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE
+
+
+def test_a_clip_with_nothing_audible_never_becomes_an_empty_turn():
+    """An empty transcript down the text path is an empty user message: the model
+    is asked to answer nothing, and the turn would be recorded as if something had
+    been said. It stops here, and the console says which of the two it was."""
+    phone = "60129994008"
+    _in_conversation(phone)
+    events.clear()
+
+    with _hears(""):
+        with patch.object(llm, "get_reply") as get_reply:
+            sent = dispatch_message(_voice_message(phone))
+
+    get_reply.assert_not_called()
+    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE
+    assert user_store.get(phone).history == []
+    ended = [e for e in events.since(0) if e.type == events.TOOL_END]
+    assert ended[0].status == "ok" and ended[0].output == "(nothing audible)"
+    events.clear()
+
+
+def test_an_audio_message_with_no_media_id_is_answered_without_a_download():
+    phone = "60129994009"
+    _in_conversation(phone)
+    events.clear()
+    no_id = {**_voice_message(phone), "audio": {"mime_type": VOICE_MIME}}
+
+    with patch.object(whatsapp_media, "fetch_media") as fetch:
+        sent = dispatch_message(no_id)
+
+    fetch.assert_not_called()
+    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE
+    failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
+    assert len(failures) == 1 and "no media id" in failures[0].output
+    events.clear()
+
+
+def test_a_picture_is_still_answered_with_the_type_it_instead_message():
+    """Only audio was added. Images are task 14, and must not look handled."""
+    phone = "60129994010"
+    _in_conversation(phone)
+    picture = {**_voice_message(phone), "type": "image", "image": {"id": "media-img-1"}}
+
+    sent = dispatch_message(picture)
+
+    assert sent[0]["text"]["body"] == UNSUPPORTED_TYPE_MESSAGE

@@ -951,13 +951,18 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 列表那句「Showing X of Y」现在用 ERP 的 `total`，不是本页条数——本页正好是能装下的那 10 条，用它算等于永远说「10 of 10」。装得下就不说这句（有测试守着「3 of 3」不许出现）
   验收：真机问「有什么风扇」，5 款全出来；ERP 里手工加第 6 款后再问，出 6 款
 
-- [ ] **任务 36：语音输入**（原任务 15，口径改为抽象层；不依赖前面，可插队）
-  文件：`backend/app/services/transcribe.py`（新增）、`backend/app/routers/whatsapp_webhook.py`、`backend/app/config.py`、测试
-  目标：收到 `type: "audio"` → 用**任务 1 已经做好的** `whatsapp_media.fetch_media` 下载 → 转录 → 拿到文字后走现有文字路径，**下游一行都不用改**
-  抽象层：`transcribe(audio, mime) -> str` 一个接口 + 一个 OpenAI Whisper API 实现，换供应商只是换实现类
-  **导演台要显示「语音 → 文字」这一步**：客户听不到，但老板看得到它听懂了什么。马来西亚客人大概率中英马夹杂，这一行字就是证据
-  依赖阻塞项 G
-  验收：真机发一条中英夹杂的语音，bot 听懂并正确走工具
+- [x] **任务 36：语音输入**（原任务 15，口径改为抽象层；不依赖前面，可插队）——**2026-09-06 完成，代码侧全绿；真机那一半没做（要用户拿手机 + 线上部署）**。后端 **431 passed**（408 → 431，净增 23），另做一轮**变异测试：18 处逐个改坏，18 处全部有测试变红**（audio 分支拿掉 / 转录结果丢掉改用原 body / 空转录照样推下去 / 导演台不发 TOOL_END / mime 上报成假的 / 下载失败不接住 / 没 media id 照样下载 / 静音在屏幕上是空行 / 图片混进已处理 / mime 参数不剥 / 不认识的格式照发 / 文件名不带扩展名 / 不检查 api key / 不发语种提示 / 传输异常裸奔出去 / 没有 text 字段当成空转录 / 不 strip / 供应商写死不可换）。
+  **下游确实一行都没改**：`type: "audio"` → `whatsapp_media.fetch_media` 下载 → `transcribe.transcribe` → 拿到的字**原样喂给 `_handle_text_message`**。所以口头说 "menu" 会重置 demo、口头报商品名会搜 ERP、写进 `history` 的是那句话而不是一个 audio id——这三条各有一个测试守着。
+  **抽象层**：`Transcriber` 基类（一个 `transcribe(audio, mime) -> str`）+ `WhisperTranscriber` 实现 + 模块级 `transcriber` 实例，换供应商 = 多写一个类、改一行赋值，webhook 不动。**用 httpx 直接打 `/v1/audio/transcriptions`，没引 `openai` 包**——就一个 multipart POST，为它多一个 HTTP 客户端和一套失败模式不划算。
+  几个决定和踩到的坑：
+  - **导演台复用 `TOOL_START` / `TOOL_END`，`tool="voice.transcribe"`**，没有新增事件类型。理由：它对看屏幕的人来说就是一次「花了时间、有输入、有值得读的输出」的调用，而**新类型是现有渲染端不认识、会静默丢掉的东西**。`output` 就是那句转录文本
+  - **OpenAI 认的是文件名扩展名，不是 mime**。WhatsApp 的语音是 `audio/ogg; codecs=opus`——分号后面那截是合法的 header、非法的字典 key，不剥掉就查不到扩展名。已显式建表，**表里没有的直接在本地拒掉**（`UnsupportedAudioError`），不发出去换一个什么都说明不了的 400。⚠️ **`audio/amr` 就在这一类**：WhatsApp 会发，OpenAI 不认
+  - **加了语种提示 prompt**（"A customer in Malaysia... mixing English, Malay and Chinese in the same sentence"）。不给的话模型会给整段选定一种语言、把其余部分音译过去——而中英马夹杂正是验收要打的那一句
+  - **空转录 ≠ 失败**。误录的语音是真会发生的事，它是一次成功的调用听到了空。所以 `transcribe()` 返回 `""`，webhook 不把它当成一轮对话推下去（否则模型被要求回答「无」，而且这一轮会被记进历史），导演台上写成 `(nothing audible)`——屏幕上一行空白读起来像 bug，不像沉默
+  - **两种失败对客户是同一句话**（`VOICE_UNREADABLE_MESSAGE`，都让他打字），区别只在导演台上（`status=error` 带原因 vs `status=ok` 带 `(nothing audible)`）
+  - **`TRANSCRIPTION_MODEL` 做成了配置项**，默认 `whisper-1`。唯一无法在这里验证的就是它对夹杂语句的准确度，真机跑下来不行的话应该改环境变量而不是改代码（`gpt-4o-transcribe` 是同一个端点）
+  - ⚠️ **部署前必须先在 VPS 的 `backend/.env` 里确认 `OPENAI_API_KEY` 有值**，否则第一条语音会走到 `TranscriptionError("OPENAI_API_KEY is not set")`、客户看到「请打字」。另：阻塞项 G 记的那个坑仍然成立——未声明但有值的 key 会让容器起不来
+  **剩下没做的**：真机发一条中英夹杂的语音、看 bot 是否听懂并正确走工具。要部署 + 手机，Claude 做不了
 
 ## 评审记录
 
