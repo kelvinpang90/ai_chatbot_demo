@@ -47,7 +47,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - ✅ **2026-09-01 用户拍板：不轮换，风险已知情接受。** 理由：demo 系统、数据不重要，被人改坏了重跑 seed 即可。**这是已决定的事，不要再提**；审查方若再报这一条，回「owner accepted, see tasks/todo.md」。源码侧的清理与轮换与否无关，继续保持——新密码永远不要写回仓库。
   - ⚠️ **两边都没有 API key 机制**，只有邮箱+密码换 JWT。access token 15 分钟过期、refresh 一次性、登录限流 10 次/分（连错 5 次锁 5 分钟）。所以客户端**必须缓存 token + 到期前刷新**，绝不能每次调用都登录——一场演示连调五六个工具就会撞限流
 - [ ] **B. Meta 后台三个入口确认能点**——媒体权限、模板提审、Flows。用户已确认后台可用，但任务 18 的模板提审要在批次 03 第一天就提交（审核要几小时到 1-2 天）。
-- [ ] **C. 语音转录选型拍板**——外部 API（准、快、多一个供应商）vs 自托管 faster-whisper（无外部依赖、CPU 上每条慢 3-5 秒、吃 VPS 内存）。阻塞任务 15。建议先接外部 API 把戏跑通，转录做成抽象层，之后换实现只是换一个类。
+- [x] ~~**C. 语音转录选型拍板**~~——**2026-09-06 已定：走外部 API（OpenAI `/v1/audio/transcriptions`，默认 `whisper-1`）**，正是这一条当初建议的路子：先接外部 API 把戏跑通，转录做成抽象层，换实现只是换一个类。任务 36 已落地并真机验收。自托管 faster-whisper 没有被否掉，只是没有理由现在做——真要换，见任务 15 条目下记的那处残留（换类可以，换环境变量还不行）。以下是原文：
+  ~~外部 API（准、快、多一个供应商）vs 自托管 faster-whisper（无外部依赖、CPU 上每条慢 3-5 秒、吃 VPS 内存）。阻塞任务 15。~~
 - [ ] **D. 演示环境的脏数据——会直接出现在演示要指的那块屏上**（2026-09-02 在 Chrome 上实地看到的）：
   - **Lead 那一列现在有一张标题是 `16315551181`、金额 RM 0 的卡**，负责人 Marcus Johnson。这正是 `crm_os/backend/app/utils/demo_scope.py` 注释里写「a dashboard full of leads named after phone numbers and worth RM 0 undercuts the product being demonstrated」的那种卡——但它**没有被过滤掉**，说明这条联系人的 `is_gateway` 是 false（`demo_scope` 只挡 true 的）。任务 9.1 建出来的线索卡就会挨着它出现
   - **联系人列表最上面 5 条是 `KK Hardware` / `demo company 1-4`**，全是 RM 0、0 个商机的空壳（列表按创建时间倒序，所以它们排最前）。客户点开 Contacts 第一眼看到的就是这些
@@ -645,10 +646,10 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   目标：收到图片 → 用 `fetch_media()` 下载 → 转成 Claude 的 image content block 塞进对话；去掉现在的「只支持文本」提示
   验收：pytest 覆盖 image 分支；真机发一张商品照片，bot 能描述它
 
-- [ ] **任务 15：语音转录抽象层 + 一个实现**（依赖阻塞项 C）
-  文件：`backend/app/services/transcribe.py`（新增）、`backend/app/config.py`、测试
-  目标：定义 `transcribe(audio_bytes, mime) -> str` 的抽象，按配置选实现（外部 API / 自托管）。webhook 支持 `type == "audio"`：下载 → 转录 → 当成文本走原有链路
-  验收：pytest；真机按住说一句中文和一句马来语，日志里转录文本正确
+- [x] ~~**任务 15：语音转录抽象层 + 一个实现**~~——**已由任务 36 完成（2026-09-06），不要重做**。36 就是它，只是后来在批次 06 里重开、口径改成抽象层。抽象层、webhook 的 `audio` 分支、pytest 全都落地了，真机也验过。
+  ⚠️ **但有两处残留，是 15 要求过而 36 没做满的**，谁捡起来就在那里做，别再开一个新任务：
+  - **「按配置选实现」只做了一半**。换供应商是多写一个 `Transcriber` 子类 + 改一行 `transcriber = ...` 赋值，**不是改环境变量**。真要按配置切（比如线上临时切回自托管），得再加一个 `TRANSCRIPTION_PROVIDER` setting + 一张查表。目前只有 `TRANSCRIPTION_MODEL` 是配置项，那只换模型不换供应商
+  - **马来语没单独验过**。36 的真机验收打的是中英夹杂那一枪，过了；15 原本要的是「中文一句 + 马来语一句，日志里转录文本正确」。而且**至今没有逐字看过转录文本**——导演台没页面（任务 12），只能从回复反推「听懂了」。想补这一枪，等任务 12 的页面出来再看 `voice.transcribe` 那一行最省事
 
 - [ ] **任务 15.1：文档消息接入 —— 客户发 PDF，bot 当场能答**
   文件：`backend/app/routers/whatsapp_webhook.py`（支持 `type == "document"`）、`backend/app/services/llm.py`（document content block + citations）、测试
