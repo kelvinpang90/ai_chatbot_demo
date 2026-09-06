@@ -76,10 +76,21 @@ def test_the_endpoint_answers_as_an_event_stream():
     assert response.headers["x-accel-buffering"] == "no"  # or nginx sits on the chunks
 
 
+def test_the_stream_says_something_before_it_has_anything_to_say():
+    """The headers have to leave at once or a buffering proxy sits on them.
+
+    Measured on the deployed site: without this first byte the page showed
+    "connecting..." until the first keepalive, up to fifteen seconds into a demo.
+    """
+    frames = asyncio.run(_take(console._event_stream(replay=True), count=1))
+
+    assert frames[0] == ": connected\n\n"
+
+
 def test_replay_sends_the_buffered_calls_in_sse_frames():
     _emit_call()
 
-    frames = asyncio.run(_take(console._event_stream(replay=True), count=2))
+    _connected, *frames = asyncio.run(_take(console._event_stream(replay=True), count=3))
 
     assert frames[0].startswith("event: tool_start\n")
     assert frames[1].startswith("event: tool_end\n")
@@ -165,6 +176,7 @@ def _tokens(**counts: int) -> dict[str, int]:
 
 async def _first_chunk_after_a_new_event() -> str:
     stream = console._event_stream(replay=False)
+    await stream.__anext__()  # the ": connected" byte that unblocks the proxy
     pending = asyncio.create_task(stream.__anext__())
     try:
         # Let the generator take its cursor before anything new is emitted --
