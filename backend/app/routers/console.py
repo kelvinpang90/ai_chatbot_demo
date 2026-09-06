@@ -28,13 +28,13 @@ async def _event_stream(replay: bool) -> AsyncIterator[str]:
     cursor = 0 if replay else events.latest_seq()
     silent_for = 0.0
 
-    # Say something before saying anything, so the response headers leave the
-    # building at once. Measured on the deployed site: without this the page sat
-    # on "connecting..." for as long as it took the first keepalive to arrive,
-    # because a proxy between here and the browser holds the response until
-    # something flushes it. Which proxy does not matter -- one byte now is the
-    # fix at either end of the chain.
-    yield ": connected\n\n"
+    # Say something before there is anything to say, for two reasons. It flushes
+    # the response headers: measured on the deployed site, without a first byte
+    # the page sat on "connecting..." until the first keepalive, because a proxy
+    # between here and the browser holds the response until something flushes it.
+    # And it names this run of the process, so a console can tell a replayed
+    # event from a brand-new one whose sequence number happens to be low.
+    yield f'event: hello\ndata: {{"boot_id": "{events.BOOT_ID}"}}\n\n'
 
     while True:
         batch = events.since(cursor)

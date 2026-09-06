@@ -3,12 +3,20 @@ from __future__ import annotations
 import itertools
 import threading
 import time
+import uuid
 from collections import deque
 
 from pydantic import BaseModel
 
 # Enough to hold a whole demo's worth of tool calls without ever growing.
 MAX_EVENTS = 200
+
+# Which run of this process a sequence number belongs to. Sequence numbers start
+# again at 1 when the service restarts, so a console that remembers what it has
+# already seen -- which it must, or a reconnect replays the buffer into duplicate
+# rows -- would take every event after a redeploy for one it had seen before and
+# quietly show nothing. Handing the id out lets it tell the two apart.
+BOOT_ID = uuid.uuid4().hex
 
 TOOL_START = "tool_start"
 TOOL_END = "tool_end"

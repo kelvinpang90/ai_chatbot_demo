@@ -638,6 +638,19 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **上线前必须做的一件事**：VPS 的 `/opt/ai_chatbot/backend/.env` 要加 `CONSOLE_TOKEN=<随便一串长随机串>`，否则页面打开就是 503。另外 `deploy/nginx/chatbot.acuventech.com.conf` 改了，要手工拷到 `/srv/infra/nginx/conf.d/` 再 reload——那个文件不在部署流水线里
 
+  **2026-09-06 已上线**（用户拍板推 master）。`CONSOLE_TOKEN` 用户已配在 VPS 上（线上探测返回 401 而不是 503，说明配好了）。`deploy/nginx/*.conf` 那份**还没拷**到 `/srv/infra/`——但实测不影响路由，外层 vhost 本来就把 `/` 整个转给前端容器，那份改动只关缓冲这一件事。
+
+  **上线后连着修了三个真 bug，全是「本地不出、线上才出」那一类，记下来**：
+
+  1. **页面开场卡在「连接中…」十几秒**。SSE 一句话都不说的时候，中间某一跳（infra_nginx 或 Cloudflare，没定位是哪个，也不需要定位）会把响应头一起攒着，`EventSource` 收不到头就不 `onopen`。修法与「是哪一跳」无关：**流一打开先吐一帧**。这一帧后来顺便承担了第 3 条的职责
+  2. **部署时后端一停，页面把「后端 502」当成「token 不对」，把存的 token 抹了**——重新部署一次就被踢回输入框。`EventSource` 对任何非 2xx 都是永久放弃（`readyState` 变 CLOSED），401 和 502 在客户端长得一模一样。判据改成「**这个 token 有没有成功连通过**」，而且这个标记必须放在 effect 外面（`useRef`）：放在 `EventSource` 上的话每次重试都重置为 false，后端停超过一次重试间隔就又误判了。第一版就是这么写的，第二版才发现
+  3. **后端重启后页面显示「实时」但永远不动**。为了防重连重放导致的重复行，去重集合做成了跨重连持久的；而 seq 是每进程从 1 重新开始的，于是新进程的事件全被当成「见过」丢掉——**一块声称实时却什么都不显示的屏，比报错还糟**。修法是让服务端自报家门：`events.BOOT_ID`（每进程一个 uuid）随开场那一帧发出来，boot_id 变了就清空去重集合
+  4. 附带把行配对从 `findIndex` 改成从后往前找，并给行加了独立的 `key`——真实 `tool_use_id` 由 Anthropic 生成不会撞，但重启后 id 复用时旧行会把新行的 `tool_end` 抢走，让活着的调用永远停在「运行中」
+
+  **这三条的共同点**：单测、HTTP 层 curl、本地单机浏览器全都发现不了，**必须真的部署一次、真的把后端停掉才会露出来**。以后类似的实时页面，验收清单里应该固定加一条「部署过程中盯着这块屏」。
+
+  **重新验证**：全套 **438 passed**；本地 docker 起前后端，浏览器里实测「连上 → 停后端 30 秒 → 起后端」：期间红字「连接中断，重试中…」、**没有**被踢回输入框、历史和成本都留着，恢复后自动重连、事件继续滚、行正确配对成 ok/error。线上 `chatbot.acuventech.com/console` 打开即「● 实时」
+
 - [ ] **任务 12.1：WhatsApp 端「正在输入」状态**
   文件：`backend/app/services/whatsapp.py`（加 typing indicator）、`backend/app/routers/whatsapp_webhook.py`
   目标：收到消息立刻发 typing indicator，回复发出后停止
