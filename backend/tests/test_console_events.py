@@ -1,9 +1,14 @@
 import asyncio
 import json
+from unittest.mock import patch
 
 import pytest
-from app.console import events
+from app.config import settings
+from app.console import cost, events
 from app.routers import console
+from fastapi import HTTPException
+
+TOKEN = "console-token-for-tests"
 
 
 @pytest.fixture(autouse=True)
@@ -11,6 +16,17 @@ def clean_buffer():
     events.clear()
     yield
     events.clear()
+
+
+@pytest.fixture(autouse=True)
+def console_token():
+    """Every test here talks to a console that has a token configured.
+
+    Without this the router refuses before it reaches anything worth testing,
+    which is the point of the two tests below that opt out of it explicitly.
+    """
+    with patch.object(settings, "console_token", TOKEN):
+        yield
 
 
 def _emit_call(tool: str = "erp_search_sku", tool_use_id: str = "tu_1") -> None:
@@ -53,7 +69,7 @@ def test_buffer_drops_the_oldest_instead_of_growing():
 
 
 def test_the_endpoint_answers_as_an_event_stream():
-    response = asyncio.run(console.stream(replay=True))
+    response = asyncio.run(console.stream(token=TOKEN, replay=True))
 
     assert response.media_type == "text/event-stream"
     assert response.headers["cache-control"] == "no-cache"
@@ -90,6 +106,61 @@ def test_a_fresh_subscriber_gets_what_happens_next_not_the_backlog():
 
     assert "stale_tool" not in chunk
     assert "fresh_tool" in chunk
+
+
+def test_the_stream_refuses_without_the_right_token():
+    for bad in (None, "", "not-the-token"):
+        with pytest.raises(HTTPException) as raised:
+            asyncio.run(console.stream(token=bad))
+        assert raised.value.status_code == 401
+
+
+def test_an_unconfigured_token_closes_the_stream_rather_than_opening_it():
+    """The feed carries live orders and customer records, and nginx forwards it.
+
+    A missing secret must not read as "no gate needed" -- that is exactly how
+    this endpoint spent task 3 to task 12 unprotected.
+    """
+    with patch.object(settings, "console_token", ""):
+        with pytest.raises(HTTPException) as raised:
+            asyncio.run(console.stream(token="anything"))
+    assert raised.value.status_code == 503
+
+
+def test_a_usage_event_carries_the_ringgit_it_cost():
+    tokens = {"input": 1000, "output": 500, "cache_write": 0, "cache_read": 0}
+    events.emit(
+        type=events.USAGE,
+        model="claude-opus-5",
+        tokens=tokens,
+        cost_myr=cost.cost_myr("claude-opus-5", tokens),
+    )
+
+    (event,) = events.since(0)
+    assert event.tool == ""  # a usage event belongs to the turn, not to a tool
+    # 1000 in at $5/MTok + 500 out at $25/MTok = $0.0175.
+    assert event.cost_myr == pytest.approx(0.0175 * cost.USD_TO_MYR)
+
+
+def test_cached_tokens_are_billed_at_their_own_rates():
+    plain = cost.cost_myr("claude-sonnet-5", _tokens(input=1000))
+    written = cost.cost_myr("claude-sonnet-5", _tokens(cache_write=1000))
+    read = cost.cost_myr("claude-sonnet-5", _tokens(cache_read=1000))
+
+    assert written == pytest.approx(plain * cost.CACHE_WRITE_MULTIPLIER)
+    assert read == pytest.approx(plain * cost.CACHE_READ_MULTIPLIER)
+
+
+def test_an_unpriced_model_is_quoted_at_the_dearest_rate_we_know():
+    """Quoting low would be a promise we cannot keep once the bill arrives."""
+    unknown = cost.cost_myr("claude-something-new", _tokens(input=1000, output=1000))
+    dearest = cost.cost_myr("claude-opus-5", _tokens(input=1000, output=1000))
+
+    assert unknown == dearest
+
+
+def _tokens(**counts: int) -> dict[str, int]:
+    return {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0, **counts}
 
 
 async def _first_chunk_after_a_new_event() -> str:

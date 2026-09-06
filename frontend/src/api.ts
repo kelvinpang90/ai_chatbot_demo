@@ -81,3 +81,30 @@ export async function sendMessage(key: string, message: string): Promise<SendMes
 export async function resetSession(key: string): Promise<{ status: string }> {
   return request(`/api/chat/${key}/reset`, { method: 'POST' })
 }
+
+/** One line on the director's console. Mirrors backend/app/console/events.py. */
+export interface ConsoleEvent {
+  seq: number
+  at: number
+  type: 'tool_start' | 'tool_end' | 'send_failed' | 'usage'
+  tool: string
+  tool_use_id: string
+  input: Record<string, unknown> | null
+  output: string | null
+  duration_ms: number | null
+  status: 'ok' | 'error' | null
+  model: string | null
+  tokens: Record<string, number> | null
+  cost_myr: number | null
+}
+
+/**
+ * The tool feed, gated by CONSOLE_TOKEN.
+ *
+ * The token travels as a query parameter because EventSource cannot set request
+ * headers - see the note on `_check_token` in the router. `replay` asks for the
+ * buffer first, which is what a screen opened mid-conversation wants.
+ */
+export function consoleStreamUrl(token: string, replay = true): string {
+  return `/console/stream?token=${encodeURIComponent(token)}&replay=${replay}`
+}

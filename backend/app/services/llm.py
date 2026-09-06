@@ -8,7 +8,7 @@ import anthropic
 
 from app.bots.registry import BotConfig
 from app.config import settings
-from app.console import events
+from app.console import cost, events
 from app.services.user_store import UserProfile
 from app.session_store import Message
 from app.tools.registry import get_tools
@@ -180,7 +180,9 @@ def _emit_tool_end(call, results: dict[str, dict], duration_ms: int) -> None:
     )
 
 
-def _reply_with_tools(model: str, system: list[dict], messages: list[dict], tools: list):
+def _reply_with_tools(
+    bot: BotConfig, model: str, system: list[dict], messages: list[dict], tools: list
+):
     """Drive the SDK's loop a turn at a time so the console sees each tool call.
 
     `until_done()` would run the same loop with nothing to watch. Iterating instead
@@ -198,6 +200,7 @@ def _reply_with_tools(model: str, system: list[dict], messages: list[dict], tool
     last_message = None
     for message in runner:
         last_message = message
+        _record_usage(bot, model, message)
         calls = [block for block in message.content if block.type == "tool_use"]
         if not calls:
             continue
@@ -223,20 +226,32 @@ def _reply_with_tools(model: str, system: list[dict], messages: list[dict], tool
     return last_message
 
 
-def _log_usage(bot: BotConfig, model: str, response) -> None:
-    """One greppable line per reply. cache_read > 0 on a second turn means the
-    breakpoint is placed where we think it is."""
+def _record_usage(bot: BotConfig, model: str, response) -> None:
+    """One greppable line and one console event per API call.
+
+    Per call, not per reply: a turn that runs a tool loop makes several, and the
+    console's running total is only honest if every one of them is counted. The
+    log line is the same as before except for that cardinality. cache_read > 0 on
+    a second turn means the breakpoint is placed where we think it is.
+    """
     usage = getattr(response, "usage", None)
     if usage is None:
         return
+    tokens = cost.usage_tokens(usage)
     logger.info(
         "claude usage bot=%s model=%s input=%s output=%s cache_write=%s cache_read=%s",
         bot.id,
         model,
-        usage.input_tokens,
-        usage.output_tokens,
-        getattr(usage, "cache_creation_input_tokens", None),
-        getattr(usage, "cache_read_input_tokens", None),
+        tokens["input"],
+        tokens["output"],
+        tokens["cache_write"],
+        tokens["cache_read"],
+    )
+    events.emit(
+        type=events.USAGE,
+        model=model,
+        tokens=tokens,
+        cost_myr=cost.cost_myr(model, tokens),
     )
 
 
@@ -247,11 +262,12 @@ def get_reply(bot: BotConfig, customer: UserProfile | None, history: list[Messag
     tools = get_tools(bot.id)
 
     try:
-        response = (
-            _reply_with_tools(model, system, messages, tools)
-            if tools
-            else _reply_without_tools(model, system, messages)
-        )
+        if tools:
+            # Records its own usage as it goes: one API call per loop iteration.
+            response = _reply_with_tools(bot, model, system, messages, tools)
+        else:
+            response = _reply_without_tools(model, system, messages)
+            _record_usage(bot, model, response)
     except anthropic.APIError:
         logger.exception("Claude API call failed")
         return FALLBACK_REPLY
@@ -259,8 +275,6 @@ def get_reply(bot: BotConfig, customer: UserProfile | None, history: list[Messag
     if response is None:
         logger.error("Tool runner finished without producing a message")
         return FALLBACK_REPLY
-
-    _log_usage(bot, model, response)
 
     return _reply_text(bot, response)
 

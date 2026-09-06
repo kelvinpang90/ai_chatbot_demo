@@ -100,7 +100,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **订阅者按 seq 轮询 ring buffer，不是被 push**：聊天请求跑在 FastAPI 的同步线程池里，SSE 跑在事件循环上，跨线程往 `asyncio.Queue` 里塞是错的。轮询间隔 250ms，人眼看不出来，换来的是没有 per-subscriber 队列会在浏览器标签页关掉时泄漏
   - **`?replay=true` 才回放缓冲区**，默认只推新事件——演示时先连屏再说话，不该一上来糊一屏历史
   - **一个 turn 里的并行工具共享同一个 `duration_ms`**，因为 runner 是一起执行它们的。想要 per-tool 精确耗时得包装工具对象，现在不值得
-  - ⚠️ **`/console/stream` 没有鉴权，靠「打不到」保护**：前端容器的 nginx 只转 `/api/` 和 `/webhook/`，`/console/` 会落到 SPA。**任务 12 建导演台页面时必须同时解决**——那条流里有 ERP 订单数据和客户资料，加了 nginx 转发就等于公开
+  - ~~⚠️ **`/console/stream` 没有鉴权，靠「打不到」保护**~~——**2026-09-06 任务 12 已解决**，改为 `CONSOLE_TOKEN` 查询参数把守，未配置时一律 503（不是放行）。以下是原文：
+    ~~前端容器的 nginx 只转 `/api/` 和 `/webhook/`，`/console/` 会落到 SPA。**任务 12 建导演台页面时必须同时解决**——那条流里有 ERP 订单数据和客户资料，加了 nginx 转发就等于公开~~
 
   文件：`backend/app/console/events.py`（新增）、`backend/app/routers/console.py`（新增）、`backend/app/services/llm.py`（在 tool runner 的 per-turn 钩子里 emit）
   目标：内存 ring buffer 存事件（工具名、入参、返回、耗时、状态）；`GET /console/stream` 走 SSE 推给前端；每次工具调用前后各 emit 一条
@@ -604,12 +605,38 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   为什么这是销售功能不是工程功能：每一场 AI 演示，客户心里第一个念头都是「这是你准备好的，我换个问题它就废了」——**而他一定会试**。一个查不到就说「这个我查不到，帮您转同事」的 bot 比什么都敢答的可信十倍，因为老板最怕的不是 AI 不会，是 **AI 乱答然后他赔钱**
   验收：一组 eval——不存在的订单号、不存在的 SKU、超出政策范围的要求、和本行业无关的问题，四类各问一遍，断言它**说不知道而不是编**；演示时可以主动邀请客户砸场（*「你随便问，问倒它才是好事」*），这句话本身就是说服力
 
-- [ ] **任务 12：导演台 v1 页面**
+- [x] **任务 12：导演台 v1 页面**
   文件：`frontend/src/pages/Console.tsx`（新增）、`frontend/src/api.ts`、`frontend/nginx.conf`
   ⚠️ **开工第一件事：给 `/console/stream` 加鉴权。** 现在它没有任何保护，仅仅因为前端 nginx 不转 `/console/` 才打不到（见任务 3）。这个页面要能用就得加转发，那一刻这条流——里面是 ERP 订单和客户资料——就公开了。复用 `require_auth` 那套 `X-Access-Token` 即可，但 `EventSource` 不能设请求头，所以 token 要走查询参数
   目标：订阅 SSE，把工具调用逐条渲染成一条流——工具名、入参、返回摘要、耗时、HTTP 状态。深色控制台风格，先能看清楚，不追求美观（v2 再打磨）
   **必须有一行「本次会话成本 RM x.xx」**：token 对老板是无意义单位，马币不是。「会不会很贵」通常是中小企业主真正的拦路问题，而这一行字直接终结它。实现是一行乘法（Opus 5：输入 $5 / 输出 $25 每百万 token，按当时汇率换算），成本几乎为零。旁边可以再放一句对照：*「同样这通询问，人工客服约 3 分钟」*
   验收：手机发消息，笔记本上的页面实时滚出对应的工具调用；会话成本以马币显示且随对话累加
+
+  **2026-09-06 做完。**
+
+  **鉴权这一条和任务描述写的不一样，说明理由**：任务里写「复用 `require_auth` 那套 `X-Access-Token`」，但**那一层 2026-09-05 已经被整个删掉了**（commit `cd5af81`，用户要求去掉访问密码：登录路由、token 集合、`DEMO_ACCESS_PASSWORD` 全没了）。所以没有复活它，改为**只给这一条流加一个独立的 `CONSOLE_TOKEN`**——客户聊天页保持无密码（那是已拍板的），只有导演台这条带真实订单和客户资料的流关起来。三条状态：未配置 → 503（不是放行，这一点专门写了测试），token 错/缺 → 401，对 → 200 SSE。比对用 `secrets.compare_digest`。
+
+  **做了什么**
+  - `backend/app/routers/console.py`：`?token=` 查询参数把守（`EventSource` 设不了请求头，所以只能走 URL；代价写在注释里了）
+  - `backend/app/console/cost.py`（新增）：按模型的价目表 + 四种 token 各自计价（输入 / 输出 / cache write ×1.25 / cache read ×0.1）+ USD→MYR。**价格是查了 claude-api skill 的当前表拿的，不是凭记忆写的**：Opus 5 $5/$25、Sonnet 5 $2/$10 每百万。未知模型按最贵的算——报低了是兑现不了的承诺
+  - `backend/app/services/llm.py`：`_log_usage` → `_record_usage`，**改成每次 API 调用记一条，不再是每次回复记一条**。这是必须的：一个跑工具循环的 turn 会调好几次 Claude，只算最后一次会把屏幕上那个数字变成实际花销的零头，工具循环越深谎越大。日志行的条数因此也跟着变了（更准了）
+  - `frontend/src/pages/Console.tsx` + `Console.css`（新增）、`main.tsx` 加一行路径判断当路由（不引 router，只有这一个页面不属于客户流程）
+  - `frontend/nginx.conf` + `deploy/nginx/chatbot.acuventech.com.conf`：**两跳都要关缓冲**。nginx 会把后端的 `X-Accel-Buffering: no` 自己吃掉、不往上一跳传，所以只关里层那一跳没用；两边都用 `location = /console/stream` 精确匹配，不把整个 `/console/` 前缀变成后端面
+
+  **修掉一个自己写出来的真 bug**（浏览器实测才暴露）：token 错时 `EventSource` 收到 401 会**永久放弃、`onerror` 只触发一次**，所以按「失败 3 次就退回输入框」写的计数器永远到不了 3，页面会一直挂在「连接中断，重试中…」——一条没人在重连的流上说着「重试中」，正是这块屏最不该做的事。改成按 `readyState` 分流：`CLOSED` = 被拒，立刻退回输入框并说明原因（并清掉存的 token，否则刷新又是同一出）；`CONNECTING` = 真在重连，才走计数器
+
+  **验证到什么程度**
+  - 单测：容器里 **437 passed**（新增 6 条：401/503 两条门禁、usage 事件带马币、cache 两种费率、未知模型按最贵算；另改了 2 条既有测试——加了 usage 事件后「控制台上什么都没有」的断言不再成立，改成「没有工具调用」）
+  - HTTP 层：真 uvicorn + curl，401 / 401 / 200 `text/event-stream` / 未配置 503 四种都实测过，SSE 帧原样打出来看过
+  - 页面：**docker 起了前端 nginx + 后端两个容器，Chrome 里真看过**。URL 带 token 进 → token 从地址栏抹掉、流滚起来、成本从 RM 1.53 涨到 RM 1.87；坏 token → 立刻退回输入框并报原因；手输 token → 连上；「运行中」半行、error 红条、耗时右对齐都对
+  - `tsc -b` + `oxlint` + `vite build` 全绿
+  - **没验的**：真手机 → WhatsApp → 真 ERP 这一整条（那是任务 13 的活）；VPS 上的表现；`X-Accel-Buffering` 在 infra_nginx 那一跳的实际效果（本地只有一跳 nginx）
+
+  **两处和任务描述的偏差**
+  1. 「HTTP 状态」没做成 HTTP 状态码——事件里从来只有 `ok` / `error`（任务 3 定的），没有状态码可显示。屏幕上显示的是 `ok` / `error` / `运行中` 三态。要真状态码得改 erp/crm client 往上报，不在本任务范围
+  2. 汇率 `USD_TO_MYR = 4.30` 是**手填常量，不是实时汇率**，写在注释里了。一场演示不需要外汇接口，差几个百分点只动一个已经小于一令吉的数字的最后一位
+
+  **上线前必须做的一件事**：VPS 的 `/opt/ai_chatbot/backend/.env` 要加 `CONSOLE_TOKEN=<随便一串长随机串>`，否则页面打开就是 503。另外 `deploy/nginx/chatbot.acuventech.com.conf` 改了，要手工拷到 `/srv/infra/nginx/conf.d/` 再 reload——那个文件不在部署流水线里
 
 - [ ] **任务 12.1：WhatsApp 端「正在输入」状态**
   文件：`backend/app/services/whatsapp.py`（加 typing indicator）、`backend/app/routers/whatsapp_webhook.py`

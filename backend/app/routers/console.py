@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter
+import secrets
+
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.config import settings
 from app.console import events
 
 router = APIRouter(prefix="/console")
@@ -41,13 +44,27 @@ async def _event_stream(replay: bool) -> AsyncIterator[str]:
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
+def _check_token(token: str | None) -> None:
+    """The gate on the feed. Query parameter, because EventSource sends no headers.
+
+    A token in a URL is weaker than a header -- it lands in browser history and in
+    the proxy's access log -- and it is still the right trade here: the alternative
+    is a stream of live orders and customer names open to anyone with the link.
+    """
+    if not settings.console_token:
+        raise HTTPException(status_code=503, detail="CONSOLE_TOKEN is not configured")
+    if not token or not secrets.compare_digest(token, settings.console_token):
+        raise HTTPException(status_code=401, detail="Bad console token")
+
+
 @router.get("/stream")
-async def stream(replay: bool = False) -> StreamingResponse:
+async def stream(token: str | None = None, replay: bool = False) -> StreamingResponse:
     """Live tool-call feed for the director's console.
 
     Subscribing shows what happens from now on; `?replay=true` replays the buffer
     first, for a screen that connects after the conversation has already started.
     """
+    _check_token(token)
     return StreamingResponse(
         _event_stream(replay),
         media_type="text/event-stream",
