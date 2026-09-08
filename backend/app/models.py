@@ -75,7 +75,11 @@ class ConversationSummary(BaseModel):
     tool_calls: int
     input_tokens: int
     output_tokens: int
+    # How many round trips to Claude this conversation took, and what they cost.
+    # Priced when each call happened rather than now -- see the note on
+    # model_usage.cost_myr.
     api_turns: int
+    cost_myr: float
     started_at: str
     last_at: str
 
@@ -113,6 +117,7 @@ class ConversationDetail(BaseModel):
     cache_write_tokens: int
     cache_read_tokens: int
     api_turns: int
+    cost_myr: float
 
 
 class HistoryPage(BaseModel):

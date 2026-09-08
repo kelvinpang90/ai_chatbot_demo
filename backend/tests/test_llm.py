@@ -286,7 +286,7 @@ def test_each_tool_call_is_announced_to_the_console_before_and_after():
         with patch.object(llm._client.beta.messages, "parse", side_effect=[wants_tool, final]):
             llm.get_reply(bot, customer, history=[])
 
-    start, end = events.since(0)
+    start, end = _tool_events()
     assert start.type == events.TOOL_START
     assert start.tool == "check_stock"
     assert start.input == {"sku": "EARBUD-01"}
@@ -299,7 +299,7 @@ def test_each_tool_call_is_announced_to_the_console_before_and_after():
     events.clear()
 
 
-def test_a_bot_without_tools_says_nothing_to_the_console():
+def test_a_bot_without_tools_shows_no_tool_calls_on_the_console():
     bot = get_bot("retail")
     customer = _customer()
     events.clear()
@@ -309,7 +309,50 @@ def test_a_bot_without_tools_says_nothing_to_the_console():
         with patch.object(llm._client.messages, "create", return_value=response):
             llm.get_reply(bot, customer, history=[])
 
-    assert events.since(0) == []
+    assert _tool_events() == []
+
+    events.clear()
+
+
+def test_every_api_call_in_a_tool_loop_is_costed_not_just_the_last():
+    """The console's running total is the whole point of the cost line.
+
+    Counting only the message the reply came out of would put a fraction of what
+    was actually spent on the screen -- and the deeper the tool loop, the bigger
+    the lie.
+    """
+    bot = get_bot("retail")
+    events.clear()
+
+    @beta_tool
+    def check_stock(sku: str) -> str:
+        """Look up how many units of a SKU are on hand.
+
+        Args:
+            sku: The product code to look up.
+        """
+        return "12 units in stock"
+
+    wants_tool = _assistant_message(
+        [BetaToolUseBlock(type="tool_use", id="tu_1", name="check_stock", input={"sku": "X"})],
+        "tool_use",
+    )
+    final = _assistant_message([BetaTextBlock(type="text", text="Yes, 12 left.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[check_stock]):
+        with patch.object(llm._client.beta.messages, "parse", side_effect=[wants_tool, final]):
+            llm.get_reply(bot, _customer(), history=[])
+
+    usage = [e for e in events.since(0) if e.type == events.USAGE]
+    assert len(usage) == 2  # one per API call, not one per reply
+    assert all(e.cost_myr > 0 and e.model == llm.model_for(bot) for e in usage)
+
+    events.clear()
+
+
+def _tool_events() -> list:
+    """The console minus the per-call cost lines, which every turn now emits."""
+    return [e for e in events.since(0) if e.type != events.USAGE]
 
 
 # -- a turn that did not finish is not an answer -------------------------------

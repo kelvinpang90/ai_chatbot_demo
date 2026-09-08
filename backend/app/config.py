@@ -81,5 +81,14 @@ class Settings(BaseSettings):
 
     internal_shared_secret: str = ""
 
+    # The director's console. Until task 12 nothing forwarded /console/, so the
+    # tool feed was protected by being unreachable; now that nginx forwards it,
+    # that accident is gone and this is the only thing between the public and a
+    # live stream of ERP orders and customer records. Empty means the stream
+    # refuses everyone -- an unset secret must never read as "no gate needed".
+    # This is deliberately not a revival of the site-wide password removed on
+    # 2026-09-05: the customer's chat stays open, only this stream is closed.
+    console_token: str = ""
+
 
 settings = Settings()

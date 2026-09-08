@@ -82,42 +82,82 @@ export async function resetSession(key: string): Promise<{ status: string }> {
   return request(`/api/chat/${key}/reset`, { method: 'POST' })
 }
 
-// --- the audit log (task 37.2) ----------------------------------------------
+
+// --- the director's console and the audit log behind it ----------------------
 //
-// Everything under /console needs the console token. It is kept in
-// sessionStorage rather than localStorage on purpose: this screen shows every
-// customer's transcript, and a token that survives until the tab is closed is
-// the right trade between not retyping it all afternoon and not leaving it on a
-// laptop that gets handed to someone.
+// One token for both screens: the live feed (task 12) and the transcripts
+// (task 37.2) sit behind the same CONSOLE_TOKEN, so making each page ask
+// separately would be a worse version of the same thing.
 
-const TOKEN_KEY = 'console-token'
+const TOKEN_STORAGE_KEY = 'console_token'
 
-export function consoleToken(): string {
+export function storedToken(): string {
+  // A token handed over in the URL is the convenient path (open the link on the
+  // laptop); it gets kept so a refresh mid-demo does not drop the screen, and
+  // wiped out of the address bar so it is not sitting on a projector.
+  const fromUrl = new URLSearchParams(window.location.search).get('token')
+  if (fromUrl) {
+    try {
+      window.localStorage.setItem(TOKEN_STORAGE_KEY, fromUrl)
+    } catch {
+      // Private windows refuse. The token still works for this page load.
+    }
+    window.history.replaceState(null, '', window.location.pathname)
+    return fromUrl
+  }
   try {
-    return sessionStorage.getItem(TOKEN_KEY) ?? ''
+    return window.localStorage.getItem(TOKEN_STORAGE_KEY) ?? ''
   } catch {
     return ''
   }
 }
 
-export function setConsoleToken(token: string): void {
+export function rememberToken(token: string): void {
   try {
-    sessionStorage.setItem(TOKEN_KEY, token)
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, token)
   } catch {
     // A browser refusing storage still works, it just asks again next reload.
   }
 }
 
-export function clearConsoleToken(): void {
+export function forgetToken(): void {
   try {
-    sessionStorage.removeItem(TOKEN_KEY)
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY)
   } catch {
-    // Nothing to clear if it could never be stored.
+    // Nothing was stored to begin with.
   }
 }
 
-function console_<T>(path: string): Promise<T> {
-  return request<T>(path, { headers: { 'X-Console-Token': consoleToken() } })
+/** One line on the director's console. Mirrors backend/app/console/events.py. */
+export interface ConsoleEvent {
+  seq: number
+  at: number
+  type: 'tool_start' | 'tool_end' | 'send_failed' | 'usage'
+  tool: string
+  tool_use_id: string
+  input: Record<string, unknown> | null
+  output: string | null
+  duration_ms: number | null
+  status: 'ok' | 'error' | null
+  model: string | null
+  tokens: Record<string, number> | null
+  cost_myr: number | null
+}
+
+/**
+ * The tool feed, gated by CONSOLE_TOKEN.
+ *
+ * The token travels as a query parameter because EventSource cannot set request
+ * headers - see the note on `require_console_token` in the router. `replay` asks
+ * for the buffer first, which is what a screen opened mid-conversation wants.
+ */
+export function consoleStreamUrl(token: string, replay = true): string {
+  return `/console/stream?token=${encodeURIComponent(token)}&replay=${replay}`
+}
+
+// The transcript endpoints can send a header, so they do.
+function consoleRequest<T>(path: string): Promise<T> {
+  return request<T>(path, { headers: { 'X-Console-Token': storedToken() } })
 }
 
 export interface ConversationSummary {
@@ -131,6 +171,7 @@ export interface ConversationSummary {
   input_tokens: number
   output_tokens: number
   api_turns: number
+  cost_myr: number
   started_at: string
   last_at: string
 }
@@ -166,6 +207,7 @@ export interface ConversationDetail {
   cache_write_tokens: number
   cache_read_tokens: number
   api_turns: number
+  cost_myr: number
 }
 
 export interface HistoryPage {
@@ -177,9 +219,9 @@ export interface HistoryPage {
 export async function listConversations(search: string, offset = 0): Promise<HistoryPage> {
   const params = new URLSearchParams({ offset: String(offset) })
   if (search.trim()) params.set('key', search.trim())
-  return console_<HistoryPage>(`/console/history?${params}`)
+  return consoleRequest<HistoryPage>(`/console/history?${params}`)
 }
 
 export async function readConversation(id: string): Promise<ConversationDetail> {
-  return console_<ConversationDetail>(`/console/history/${encodeURIComponent(id)}`)
+  return consoleRequest<ConversationDetail>(`/console/history/${encodeURIComponent(id)}`)
 }

@@ -190,7 +190,7 @@ def test_tool_input_that_will_not_serialise_costs_its_column_not_its_row():
     assert rows[0][1][5] is not None
 
 
-def test_usage_is_written_with_its_turn_count():
+def test_usage_is_written_with_what_the_call_cost():
     store, conn = _store()
     store.record_usage(
         turn=_turn(),
@@ -199,10 +199,10 @@ def test_usage_is_written_with_its_turn_count():
         output_tokens=300,
         cache_write_tokens=1097,
         cache_read_tokens=0,
-        api_turns=4,
+        cost_myr=0.0421,
     )
     _, params = conn.writes("model_usage")[0]
-    assert params[4:10] == ("claude-opus-5", 1200, 300, 1097, 0, 4)
+    assert params[4:10] == ("claude-opus-5", 1200, 300, 1097, 0, 0.0421)
 
 
 def test_long_content_is_truncated_not_dropped():
@@ -306,7 +306,7 @@ def test_recording_outside_a_turn_does_nothing():
             output_tokens=1,
             cache_write_tokens=0,
             cache_read_tokens=0,
-            api_turns=1,
+            cost_myr=0.0,
         )
     assert conn.statements == []
 

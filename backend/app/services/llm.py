@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
 
 import anthropic
 
 from app.bots.registry import BotConfig
 from app.config import settings
-from app.console import events
+from app.console import cost, events
 from app.services import audit
 from app.services.user_store import UserProfile
 from app.session_store import Message
@@ -173,7 +172,6 @@ def _emit_tool_end(call, results: dict[str, dict], duration_ms: int) -> None:
     output = "" if result is None else str(result.get("content", ""))
     # A tool the runner never answered is a tool that blew up on the way out.
     status = "error" if result is None or result.get("is_error") else "ok"
-    call_input = call.input if isinstance(call.input, dict) else {"value": call.input}
     events.emit(
         type=events.TOOL_END,
         tool=call.name,
@@ -191,44 +189,15 @@ def _emit_tool_end(call, results: dict[str, dict], duration_ms: int) -> None:
     audit.record_tool_call(
         tool=call.name,
         tool_use_id=call.id,
-        input=call_input,
+        input=call.input if isinstance(call.input, dict) else {"value": call.input},
         output=output,
         duration_ms=duration_ms,
         status=status,
     )
 
 
-@dataclass
-class Usage:
-    """What one reply cost, added up across every API call it took.
-
-    Kept as tokens rather than money on purpose: the per-token prices and the
-    ringgit rate both move, and a figure converted on the way in is wrong the day
-    either changes, while the token counts stay true forever. Whoever displays a
-    cost converts at display time.
-    """
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_write_tokens: int = 0
-    cache_read_tokens: int = 0
-    # How many round trips to Claude this reply took. 1 for a bot with no tools;
-    # on the retail bot a single customer question routinely takes three or four.
-    api_turns: int = 0
-
-    def add(self, response) -> None:
-        usage = getattr(response, "usage", None)
-        if usage is None:
-            return
-        self.input_tokens += getattr(usage, "input_tokens", 0) or 0
-        self.output_tokens += getattr(usage, "output_tokens", 0) or 0
-        self.cache_write_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
-        self.cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
-        self.api_turns += 1
-
-
 def _reply_with_tools(
-    model: str, system: list[dict], messages: list[dict], tools: list, usage: Usage
+    bot: BotConfig, model: str, system: list[dict], messages: list[dict], tools: list
 ):
     """Drive the SDK's loop a turn at a time so the console sees each tool call.
 
@@ -247,13 +216,7 @@ def _reply_with_tools(
     last_message = None
     for message in runner:
         last_message = message
-        # Counted here rather than off the final message, which is the only one
-        # `get_reply` ever saw. Every iteration is a billed call that resends the
-        # whole system prompt and history, so on a question that takes four
-        # round trips the old single reading reported roughly a quarter of what
-        # was actually spent -- and it is the number task 12 puts on the screen
-        # in ringgit in front of the customer.
-        usage.add(message)
+        _record_usage(bot, model, message)
         calls = [block for block in message.content if block.type == "tool_use"]
         if not calls:
             continue
@@ -279,33 +242,44 @@ def _reply_with_tools(
     return last_message
 
 
-def _record_usage(bot: BotConfig, model: str, usage: Usage) -> None:
-    """One greppable line per reply, and one audit row.
+def _record_usage(bot: BotConfig, model: str, response) -> None:
+    """One greppable line and one console event per API call.
 
-    `cache_read` > 0 on a second turn means the breakpoint is placed where we
-    think it is. `turns` is new alongside the audit log: the figures are now the
-    sum over every API call the reply took, so a line with turns=4 is not
-    comparable to a pre-2026-09-08 line with the same bot and question.
+    Per call, not per reply: a turn that runs a tool loop makes several, and the
+    console's running total is only honest if every one of them is counted. The
+    log line is the same as before except for that cardinality. cache_read > 0 on
+    a second turn means the breakpoint is placed where we think it is.
     """
-    if not usage.api_turns:
+    usage = getattr(response, "usage", None)
+    if usage is None:
         return
+    tokens = cost.usage_tokens(usage)
     logger.info(
-        "claude usage bot=%s model=%s turns=%s input=%s output=%s cache_write=%s cache_read=%s",
+        "claude usage bot=%s model=%s input=%s output=%s cache_write=%s cache_read=%s",
         bot.id,
         model,
-        usage.api_turns,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_write_tokens,
-        usage.cache_read_tokens,
+        tokens["input"],
+        tokens["output"],
+        tokens["cache_write"],
+        tokens["cache_read"],
     )
+    events.emit(
+        type=events.USAGE,
+        model=model,
+        tokens=tokens,
+        cost_myr=cost.cost_myr(model, tokens),
+    )
+    # The console's copy of this is a 200-event ring buffer that a restart wipes.
+    # One row per call here too, rather than a total per reply: a total can always
+    # be summed back out of the rows, and the individual calls cannot be recovered
+    # from a total.
     audit.record_usage(
         model=model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cache_write_tokens=usage.cache_write_tokens,
-        cache_read_tokens=usage.cache_read_tokens,
-        api_turns=usage.api_turns,
+        input_tokens=tokens["input"],
+        output_tokens=tokens["output"],
+        cache_write_tokens=tokens["cache_write"],
+        cache_read_tokens=tokens["cache_read"],
+        cost_myr=cost.cost_myr(model, tokens),
     )
 
 
@@ -314,30 +288,21 @@ def get_reply(bot: BotConfig, customer: UserProfile | None, history: list[Messag
     system = build_system_blocks(bot, customer)
     messages = [{"role": m.role, "content": m.content} for m in history]
     tools = get_tools(bot.id)
-    usage = Usage()
 
     try:
-        response = (
-            _reply_with_tools(model, system, messages, tools, usage)
-            if tools
-            else _reply_without_tools(model, system, messages)
-        )
+        if tools:
+            # Records its own usage as it goes: one API call per loop iteration.
+            response = _reply_with_tools(bot, model, system, messages, tools)
+        else:
+            response = _reply_without_tools(model, system, messages)
+            _record_usage(bot, model, response)
     except anthropic.APIError:
         logger.exception("Claude API call failed")
-        # Whatever the loop got through before it broke was still billed, so it
-        # is still recorded. A demo that failed expensively is exactly the kind
-        # of thing the audit log exists to be able to look up afterwards.
-        _record_usage(bot, model, usage)
         return FALLBACK_REPLY
 
     if response is None:
         logger.error("Tool runner finished without producing a message")
-        _record_usage(bot, model, usage)
         return FALLBACK_REPLY
-
-    if not tools:
-        usage.add(response)
-    _record_usage(bot, model, usage)
 
     return _reply_text(bot, response)
 

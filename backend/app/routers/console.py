@@ -44,10 +44,15 @@ def require_console_token(
 ) -> None:
     """Let the caller through only with the configured token.
 
-    Unset means closed. Until now `/console/stream` was protected by nothing but
-    the fact that the frontend nginx did not proxy `/console/` -- and that stream
-    carries ERP order data and customer records. Adding the pages this router now
-    serves means adding that proxy rule, so the protection has to be real.
+    Unset means closed. `/console/stream` used to be protected by nothing but the
+    fact that the frontend nginx did not proxy `/console/`, and both task 12 and
+    task 37.1 needed that proxy rule -- so the accident had to become a gate.
+
+    A token in a query string is weaker than one in a header: it lands in browser
+    history and in the proxy's access log. It is still the right trade, because
+    EventSource cannot set headers and the alternative is a live feed of orders
+    and customer names open to anyone with the link. The header is accepted too,
+    for the callers that can send one.
     """
     expected = settings.console_token
     if not expected:
@@ -65,6 +70,14 @@ def _format(event: events.ConsoleEvent) -> str:
 async def _event_stream(replay: bool) -> AsyncIterator[str]:
     cursor = 0 if replay else events.latest_seq()
     silent_for = 0.0
+
+    # Say something before there is anything to say, for two reasons. It flushes
+    # the response headers: measured on the deployed site, without a first byte
+    # the page sat on "connecting..." until the first keepalive, because a proxy
+    # between here and the browser holds the response until something flushes it.
+    # And it names this run of the process, so a console can tell a replayed
+    # event from a brand-new one whose sequence number happens to be low.
+    yield f'event: hello\ndata: {{"boot_id": "{events.BOOT_ID}"}}\n\n'
 
     while True:
         batch = events.since(cursor)
@@ -189,7 +202,9 @@ def list_conversations(
         for row in audit_store.query(
             "SELECT conversation_id, COALESCE(SUM(input_tokens), 0) AS input_tokens,"
             " COALESCE(SUM(output_tokens), 0) AS output_tokens,"
-            " COALESCE(SUM(api_turns), 0) AS api_turns FROM model_usage"
+            " COALESCE(SUM(cost_myr), 0) AS cost_myr,"
+            # One row per API call, so the number of round trips is the row count.
+            " COUNT(*) AS api_turns FROM model_usage"
             f" WHERE conversation_id IN ({placeholders}) GROUP BY conversation_id",
             tuple(ids),
         )
@@ -210,6 +225,7 @@ def list_conversations(
                 input_tokens=int(usage.get(row["conversation_id"], {}).get("input_tokens", 0)),
                 output_tokens=int(usage.get(row["conversation_id"], {}).get("output_tokens", 0)),
                 api_turns=int(usage.get(row["conversation_id"], {}).get("api_turns", 0)),
+                cost_myr=float(usage.get(row["conversation_id"], {}).get("cost_myr", 0)),
                 started_at=_at(row["started_at"]),
                 last_at=_at(row["last_at"]),
             )
@@ -257,7 +273,8 @@ def read_conversation(conversation_id: str) -> ConversationDetail:
         " COALESCE(SUM(output_tokens), 0) AS output_tokens,"
         " COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,"
         " COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,"
-        " COALESCE(SUM(api_turns), 0) AS api_turns"
+        " COALESCE(SUM(cost_myr), 0) AS cost_myr,"
+        " COUNT(*) AS api_turns"
         " FROM model_usage WHERE conversation_id = %s",
         (conversation_id,),
     )
@@ -285,4 +302,5 @@ def read_conversation(conversation_id: str) -> ConversationDetail:
         cache_write_tokens=int(total.get("cache_write_tokens", 0)),
         cache_read_tokens=int(total.get("cache_read_tokens", 0)),
         api_turns=int(total.get("api_turns", 0)),
+        cost_myr=float(total.get("cost_myr", 0)),
     )

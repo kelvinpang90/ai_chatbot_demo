@@ -1,28 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   ApiError,
-  clearConsoleToken,
-  consoleToken,
+  forgetToken,
   listConversations,
   readConversation,
-  setConsoleToken,
+  rememberToken,
+  storedToken,
   type ConversationDetail,
   type ConversationSummary,
   type ToolCallRecord,
 } from '../api'
 
-/** Opus 5 list prices, US dollars per million tokens. */
-const USD_PER_M_INPUT = 5
-const USD_PER_M_OUTPUT = 25
-// Converted at display time rather than stored, so a rate change does not make
-// every historical row wrong. Roughly right is the point: this line exists to
-// answer "is this going to be expensive", and the honest answer is sen, not
-// ringgit.
-const MYR_PER_USD = 4.7
-
-function cost(inputTokens: number, outputTokens: number): string {
-  const usd = (inputTokens * USD_PER_M_INPUT + outputTokens * USD_PER_M_OUTPUT) / 1_000_000
-  return `RM ${(usd * MYR_PER_USD).toFixed(4)}`
+// Priced by the backend (app/console/cost.py) at the moment each call happened,
+// the same module the live console prices with. Two formulas for one number in
+// one product is how the two screens end up disagreeing in front of a customer.
+function money(myr: number): string {
+  return `RM ${myr.toFixed(4)}`
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -38,7 +31,7 @@ function TokenGate({ onUnlocked }: { onUnlocked: () => void }) {
       onSubmit={(e) => {
         e.preventDefault()
         if (!value.trim()) return
-        setConsoleToken(value.trim())
+        rememberToken(value.trim())
         onUnlocked()
       }}
     >
@@ -89,7 +82,7 @@ function Transcript({ detail }: { detail: ConversationDetail }) {
           {' · '}
           {detail.api_turns} 次 API
           {' · '}
-          <strong>{cost(detail.input_tokens, detail.output_tokens)}</strong>
+          <strong>{money(detail.cost_myr)}</strong>
           {detail.cache_read_tokens > 0 && (
             <span className="cache-hit"> · 缓存命中 {detail.cache_read_tokens.toLocaleString()}</span>
           )}
@@ -120,7 +113,7 @@ function Transcript({ detail }: { detail: ConversationDetail }) {
 }
 
 export default function History() {
-  const [unlocked, setUnlocked] = useState(() => consoleToken() !== '')
+  const [unlocked, setUnlocked] = useState(() => storedToken() !== '')
   const [search, setSearch] = useState('')
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -138,7 +131,7 @@ export default function History() {
       if (failure instanceof ApiError && failure.status === 401) {
         // A bad token is the one error worth forgetting, so the gate comes back
         // instead of a screen that keeps failing with no way to fix it.
-        clearConsoleToken()
+        forgetToken()
         setUnlocked(false)
       }
       setError(failure instanceof ApiError ? failure.message : '读不到记录')
@@ -208,7 +201,7 @@ export default function History() {
               {row.last_at.slice(0, 16)} · {row.bot_id}
             </div>
             <div className="history-row-meta">
-              {row.messages} 条 · {row.tool_calls} 次工具 · {cost(row.input_tokens, row.output_tokens)}
+              {row.messages} 条 · {row.tool_calls} 次工具 · {money(row.cost_myr)}
             </div>
           </button>
         ))}

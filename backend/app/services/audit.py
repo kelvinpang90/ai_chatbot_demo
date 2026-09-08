@@ -90,7 +90,12 @@ SCHEMA = (
         output_tokens INT NOT NULL DEFAULT 0,
         cache_write_tokens INT NOT NULL DEFAULT 0,
         cache_read_tokens INT NOT NULL DEFAULT 0,
-        api_turns INT NOT NULL DEFAULT 1,
+        -- What this one call cost, priced by app/console/cost.py at the moment
+        -- it happened. Stored despite the rule that rates change, because that
+        -- is exactly why: re-pricing a two-month-old call at today's rate and
+        -- today's exchange rate would answer a question nobody asked. The token
+        -- counts beside it are what to re-price from if that is ever wanted.
+        cost_myr DECIMAL(12, 6) NOT NULL DEFAULT 0,
         created_at DATETIME(3) NOT NULL,
         PRIMARY KEY (id),
         KEY idx_conversation (conversation_id, id),
@@ -290,13 +295,13 @@ class AuditStore:
         output_tokens: int,
         cache_write_tokens: int,
         cache_read_tokens: int,
-        api_turns: int,
+        cost_myr: float,
         at: float | None = None,
     ) -> None:
         self._write(
             "INSERT INTO model_usage"
             " (conversation_id, key_id, message_id, bot_id, model, input_tokens,"
-            "  output_tokens, cache_write_tokens, cache_read_tokens, api_turns, created_at)"
+            "  output_tokens, cache_write_tokens, cache_read_tokens, cost_myr, created_at)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 turn.conversation_id,
@@ -308,7 +313,7 @@ class AuditStore:
                 output_tokens,
                 cache_write_tokens,
                 cache_read_tokens,
-                api_turns,
+                cost_myr,
                 _timestamp(at),
             ),
         )
@@ -477,8 +482,15 @@ def record_usage(
     output_tokens: int,
     cache_write_tokens: int,
     cache_read_tokens: int,
-    api_turns: int,
+    cost_myr: float,
 ) -> None:
+    """File one API call's bill. One row per call, not per reply.
+
+    A reply that runs a tool loop makes several calls, each resending the whole
+    prompt. Rows per call sum back to a total; a total cannot be taken apart into
+    calls -- and "how many round trips did that answer take" is the question the
+    console is trying to answer on screen.
+    """
     turn = _turn.get()
     if turn is None or not audit_store.enabled:
         return
@@ -489,5 +501,5 @@ def record_usage(
         output_tokens=output_tokens,
         cache_write_tokens=cache_write_tokens,
         cache_read_tokens=cache_read_tokens,
-        api_turns=api_turns,
+        cost_myr=cost_myr,
     )

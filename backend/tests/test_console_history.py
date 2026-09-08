@@ -104,6 +104,7 @@ def test_a_conversation_carries_its_counts_and_its_bill(client, rows):
                 "input_tokens": 12000,
                 "output_tokens": 300,
                 "api_turns": 4,
+                "cost_myr": 0.0982,
             }
         ]
     )
@@ -113,6 +114,7 @@ def test_a_conversation_carries_its_counts_and_its_bill(client, rows):
     assert got["messages"] == 6
     assert got["tool_calls"] == 3
     assert (got["input_tokens"], got["output_tokens"], got["api_turns"]) == (12000, 300, 4)
+    assert got["cost_myr"] == 0.0982, "priced by the backend, not recomputed on the page"
     assert got["last_at"] == "2026-09-08 13:44:00.938"
 
 
@@ -224,7 +226,7 @@ def test_a_transcript_hangs_each_tool_call_under_the_message_that_caused_it(clie
         ]
     )
     rows.append([{"input_tokens": 12000, "output_tokens": 300, "cache_write_tokens": 1097,
-                  "cache_read_tokens": 0, "api_turns": 4}])
+                  "cache_read_tokens": 0, "api_turns": 4, "cost_myr": 0.0982}])
 
     got = client.get("/console/history/c-1", headers={"X-Console-Token": TOKEN}).json()
     assert [m["role"] for m in got["messages"]] == ["user", "assistant"]
