@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     # get. Shape: mysql://user:password@infra_mysql:3306/ai_chatbot
     mysql_url: str = ""
 
+    # Guards everything under /console: the live tool feed, and from task 37.1
+    # the audit log behind it. Empty means the console is closed rather than
+    # open -- the opposite of how the chat routes read an empty password, and
+    # deliberately so. The chat side shows a stranger a demo; this side shows
+    # them every customer's transcript, real ERP order data included. A
+    # deployment that forgets to set this should lose a feature, not leak.
+    console_token: str = ""
+
     internal_shared_secret: str = ""
 
 

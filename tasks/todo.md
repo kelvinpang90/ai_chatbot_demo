@@ -1025,13 +1025,29 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ⚠️ **踩坑记录**：`tests/conftest.py` 必须加一个 autouse fixture 关掉 audit 的 ContextVar——和任务 10 给 outbox 加的那个是同一个坑：生产每条消息各跑在自己的 context 里，pytest 全跑在一个里，所以「上一个测试开了 turn」会让「断言某样东西**没有**被记录」的测试**取决于它排在谁后面**而时绿时红。
   ⚠️ 另一个：`session_store` 的消息去重是进程级的、**没有任何 fixture 重置它**，所以同一个文件里两处用了 `wamid.1` 的话，第二处会被当成重复消息静默返回 `[]`。现象是 `IndexError: list index out of range`，看起来像功能坏了。
 
-- [ ] **任务 37.1：只读查询 API + 鉴权**
-  文件：`backend/app/routers/console.py`、`backend/app/config.py`、`backend/app/models.py`、`frontend/nginx.conf`
-  ⚠️ **开工第一件事和任务 12 是同一件：加鉴权。** 2026-09-05 取消网页密码之后**这个服务没有任何鉴权机制了**（`chat.py:22` 的注释写着「开给拿到链接的人」）。而审计库比 `/console/stream` 敏感得多——那是内存里 200 条工具调用，这是**永久保存的全量客户对话**。要加 nginx 转发就必须同时加 `CONSOLE_TOKEN`，否则等于把所有客户对话挂上公网
-  目标：`GET /console/history`（列对话：客户、渠道、bot、起止时间、消息数、工具数、token 合计）+ `GET /console/history/{conversation_id}`（一通对话的逐条消息，工具调用挂在对应消息下）
-  验收：带 token 打得通、不带 token 401；线上跑一场真实对话后能把它整通读出来
+- [x] **任务 37.1：只读查询 API + 鉴权**——**2026-09-08 完成，代码侧全绿 + 真 MySQL 端到端闭环；线上没验（同阻塞项 H）**。后端 **482 passed**（462 → 482，净增 20）。
+  文件：`backend/app/routers/console.py`、`backend/app/config.py`、`backend/app/models.py`、`backend/app/services/audit.py`、`frontend/nginx.conf`、`backend/.env.example`、`backend/tests/test_console_history.py`（新增）
+
+  **两个端点**：
+  - `GET /console/history` — 列对话，按最近活动倒序，可按 `key`（手机号）和 `bot_id` 过滤，分页。每行带消息数、工具调用数、token 合计
+  - `GET /console/history/{conversation_id}` — 一通对话的逐条 transcript，**每次工具调用挂在触发它的那条客户消息下**
+
+  **⚠️ 这个任务改变了 `/console/stream` 的既有行为：它现在要 token 了。** 任务 3 记录里那条验收方式（`curl -N localhost:8392/console/stream`）**不再直接可用**，要带 `?token=...`。这是故意的——任务 3 和任务 12 都写过「这条流没有鉴权，靠前端 nginx 不转 `/console/` 保护」，而这个任务恰恰要加那条转发规则，所以那层保护当场消失，必须换成真的。
+
+  几个决定：
+  - **`CONSOLE_TOKEN` 没配 = 关闭（503），不是放行。** 和聊天侧读空密码的方式**相反**，刻意的：聊天侧放进来的人看到一个 demo，这一侧放进来的人看到**每一个客户的完整对话记录 + 真实 ERP 订单数据**。忘了配一行环境变量，代价应该是少一个功能，不是泄露一批数据
+  - **token 可以走 query string**，因为 `EventSource` 设不了请求头（任务 12 的记录里点过这件事）。代价是它会进代理日志——接受，因为这一侧全是只读且 token 可轮换。header `X-Console-Token` 同样接受，两者都用 `secrets.compare_digest` 比，避免逐字符试
+  - **工具数和 token 合计是分开查再合并的，没有 JOIN 进主查询。** 一个 GROUP BY 同时 JOIN 两张一对多的表会把行数乘开，`COUNT(*)` 在乘积上得出的数字是错的、而且错得很像真的
+  - **手机号搜索走 `identity()` 归一化**，所以 `017-394 8123` 能找到 webhook 以 `60173948123` 存下的那通对话——这正是任务 33 那条归一化规则，用在搜索上
+  - **`display_name` 从 Redis 档案取，取不到就是 None。** 档案 7 天过期而 transcript 不过期，所以两个月前的对话只显示号码——这是诚实的答案，不是缺行
+
+  **验证做到哪一步**（三栏）：
+  - **代码侧**：482 passed。20 个新测试里 5 个是打门的（无 token 401 / 未配置 503 / 错 token / header 和 query 两种都收）
+  - **活体（真 MySQL + 真 HTTP 路由，只有模型是假的）**：一场对话从 `/api/chat/*` 写进去，再从 `/console/history` 整通读出来，18 项全 PASS。关键几条：未鉴权读 **401**；列表数出「3 条消息（开场白 + 客户 + bot）、1 次工具调用、12000 input token、channel=web」；**用 `017-3948123` 这个国内写法搜到了以 `60173948123` 存的那通**、换个号码搜不到；transcript 顺序 `assistant → user → assistant`；rojak 原句 `Boss 这个 earbuds 还有 stock 吗? 我要 2 个` 原样读回；**工具调用挂在客户那条消息下、bot 那条下面是空的**；`input` 以 dict 形式回来（含中文 key `数量`）；未知 id 404
+  - **没验的**：线上（没库没用户，阻塞项 H）；nginx 那条 `/console/` 转发规则**只是写对了配置，没有真跑过一次请求穿过它**——本地验证走的是 TestClient，绕过了 nginx
 
 - [ ] **任务 37.2：查询页面**
+
   文件：`frontend/src/pages/History.tsx`（新增）、`frontend/src/api.ts`
   目标：左边一列对话、右边逐条 transcript，工具调用可展开看入参和返回，顶上一行这通对话的 token 合计
   验收：投屏能看清；点一通历史对话，能逐条读出客户说了什么、bot 答了什么、中间打了哪些真实 API

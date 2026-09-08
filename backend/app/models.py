@@ -58,3 +58,65 @@ class SendMessageResponse(BaseModel):
 
 class ResetResponse(BaseModel):
     status: str
+
+
+# --- the audit log, read back (task 37.1) ------------------------------------
+
+
+class ConversationSummary(BaseModel):
+    """One run of one demo, as it appears in a list of them."""
+
+    conversation_id: str
+    key_id: str
+    display_name: str | None = None
+    channel: str
+    bot_id: str
+    messages: int
+    tool_calls: int
+    input_tokens: int
+    output_tokens: int
+    api_turns: int
+    started_at: str
+    last_at: str
+
+
+class ToolCallRecord(BaseModel):
+    tool: str
+    tool_use_id: str
+    input: dict | None = None
+    output: str | None = None
+    duration_ms: int | None = None
+    status: str
+    at: str
+
+
+class TranscriptMessage(BaseModel):
+    """One message, with whatever the bot did between reading it and answering."""
+
+    id: int
+    role: str
+    content: str
+    source: str
+    at: str
+    tool_calls: list[ToolCallRecord] = []
+
+
+class ConversationDetail(BaseModel):
+    conversation_id: str
+    key_id: str
+    display_name: str | None = None
+    channel: str
+    bot_id: str
+    messages: list[TranscriptMessage]
+    input_tokens: int
+    output_tokens: int
+    cache_write_tokens: int
+    cache_read_tokens: int
+    api_turns: int
+
+
+class HistoryPage(BaseModel):
+    conversations: list[ConversationSummary]
+    # What the caller asked for, echoed so a page knows whether to offer "more".
+    limit: int
+    offset: int
