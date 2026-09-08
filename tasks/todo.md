@@ -1048,9 +1048,25 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 - [ ] **任务 37.2：查询页面**
 
-  文件：`frontend/src/pages/History.tsx`（新增）、`frontend/src/api.ts`
-  目标：左边一列对话、右边逐条 transcript，工具调用可展开看入参和返回，顶上一行这通对话的 token 合计
-  验收：投屏能看清；点一通历史对话，能逐条读出客户说了什么、bot 答了什么、中间打了哪些真实 API
+- [x] **任务 37.2：查询页面**——**2026-09-08 完成，代码侧全绿 + 真浏览器实地走过一遍；线上没验（同阻塞项 H）**。前端 `tsc -b` + `vite build` + `oxlint`（0 warnings 0 errors）都过。
+  文件：`frontend/src/pages/History.tsx`（新增）、`frontend/src/api.ts`、`frontend/src/App.tsx`、`frontend/src/App.css`
+
+  **入口是 `#history`，不是路由，也不从任何地方链接过去。** 这个 app 没有 router，为运营者自己开的一块屏引一个进来不值得；不放链接是因为**真正守门的是 token**，而在给客户看的页面上放一个链接只会招人去猜。
+  - **token 存 sessionStorage 不存 localStorage**：这块屏显示的是每一个客户的完整对话，标签页一关就要重输是「整个下午不用重打」和「笔记本递给别人时不留东西」之间的正确取舍
+  - **401 会清掉 token 并退回输入框**，否则错 token 会卡在一个反复失败、又没地方改的界面上
+  - **成本在显示时换算，不存**（`RM = (in×$5 + out×$25)/1M × 4.7`）。和后端存 token 不存钱是同一个理由：单价和汇率都会变，换算过的历史行第二天就是错的
+  - 自带一套深色变量，不复用聊天那套——这块屏是在运营者笔记本上、旁边开着两个后台标签页的时候看的，**不该一眼被认成旁边那个给客户看的 demo**
+
+  **验证做到哪一步**（三栏）：
+  - **构建侧**：`tsc -b` 过、`vite build` 过、`oxlint` 0 warnings 0 errors
+  - **真浏览器**（Chrome 打真的 nginx + 真的 backend + 真的 MySQL，灌了两个客户三通对话）：
+    - **补上了任务 37.1 记录里那条「nginx 转发没真跑过」**——`curl` 穿过 nginx 打 `/console/history`：**不带 token 401、带 token 200**
+    - token 门 → 列表 → 点开 → transcript，整条路走通。列表三行，数字对得上（`5 条 · 4 次工具 · RM 0.6877`）
+    - transcript 读出了整场戏：开场白 → 客户 rojak 提问 → **两次工具调用挂在客户那条消息下**（`erp_search_sku 201ms ok` / `erp_check_stock 96ms ok`）→ bot 报真实价格 → **客户改主意「算了，改成 3 个」** → `erp_create_sales_order 1204ms ok` + `crm_create_lead 880ms error`（**失败那条是红框**）→ bot 回真实单号
+    - 展开一次工具调用：入参 JSON 和返回值都在，中文商品名没乱码
+    - 顶栏：`25,822 in / 688 out · 7 次 API · RM 0.6877 · 缓存命中 1,097`
+    - **搜索归一化在浏览器里验掉了**：输 `017-394 8123`，另一个号码那条消失，只剩这个号码的两通
+  - **没验的**：线上；手机/窄屏下的排版（只在 1045px 宽的桌面视口看过）；`/console/stream` 那条 SSE 穿过新加的 nginx 规则**没真订阅过**（只验了 `/console/history` 这条普通请求；`proxy_buffering off` 是照 SSE 的要求写的，没实测）
 
 ### 阻塞项（需要用户处理）
 

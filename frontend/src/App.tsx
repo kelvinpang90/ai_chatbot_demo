@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import PhoneEntry from './pages/PhoneEntry'
 import BotSelect from './pages/BotSelect'
 import Chat from './pages/Chat'
+import History from './pages/History'
 import { resetSession, selectBot, type BotSummary, type ChatTurn, type IdentifyResponse } from './api'
 import { DEFAULT_LANG, type Lang } from './i18n/strings'
 
@@ -18,9 +19,27 @@ type View =
       quickQuestions: string[]
     }
 
+/** The transcript reader lives at #history.
+ *
+ * A hash rather than a route, because this app has no router and one screen the
+ * operator opens on their own laptop does not justify adding one. It is not
+ * linked from anywhere either: the token behind it is what actually guards it,
+ * and a visible link on a page shown to customers would only invite the guess.
+ */
+function useOnHistoryScreen(): boolean {
+  const [onIt, setOnIt] = useState(() => window.location.hash === '#history')
+  useEffect(() => {
+    const update = () => setOnIt(window.location.hash === '#history')
+    window.addEventListener('hashchange', update)
+    return () => window.removeEventListener('hashchange', update)
+  }, [])
+  return onIt
+}
+
 function App() {
   const [lang, setLang] = useState<Lang>(DEFAULT_LANG)
   const [view, setView] = useState<View>({ name: 'phone' })
+  const onHistoryScreen = useOnHistoryScreen()
 
   // A number already in a demo goes straight back into it, carrying whatever was
   // said on the phone. Only a number with no conversation sees the menu.
@@ -60,6 +79,14 @@ function App() {
       // Best-effort: picking a demo again starts a fresh conversation anyway.
     }
     setView({ name: 'botSelect', chatKey })
+  }
+
+  if (onHistoryScreen) {
+    return (
+      <div className="app-shell">
+        <History />
+      </div>
+    )
   }
 
   return (
