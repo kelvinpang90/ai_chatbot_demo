@@ -58,6 +58,12 @@ class UserProfile:
     # identity: Meta lets them change it whenever they like.
     username: str | None = None
     bot_id: str | None = None
+    # Which run of a demo the audit log files this customer's messages under. A
+    # fresh one every time a demo is picked or `menu` starts the customer over,
+    # so a transcript reads back as the conversation it was rather than as one
+    # endless thread stretching across a week and four industries. Absent on
+    # records written before the audit log existed; `audit.begin_for` fills it.
+    conversation_id: str | None = None
     display_name: str | None = None
     # Worth its weight on the second visit alone: the bot can open in the
     # language they used last time instead of guessing.

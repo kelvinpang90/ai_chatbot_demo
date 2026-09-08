@@ -971,6 +971,86 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ⚠️ **导演台现在没有页面可看**（任务 12 未做），只有裸 SSE `/console/stream`，而且**公网打不到**——前端 nginx 只转 `/api/` 和 `/webhook/`（任务 3 的记录里写过，是故意的，那条流没有鉴权）。所以这次验收是靠「手机上的回复对不对」判定的，**没有逐字看到 Whisper 听成了什么**。夹杂句的转录准确度因此仍未被直接观测到，只知道「准到足以走对工具」
   ⚠️ **PowerShell → ssh → 远端 shell 这条路会吃掉反斜杠**。验证时 `sh -c "echo len=\${#OPENAI_API_KEY}"` 和 `grep -c "^OPENAI_API_KEY=.\+"` 都给了假结果（前者没输出、后者报 0），换成不带反斜杠的 `printenv KEY | wc -c` 立刻拿到 165。**要跑带转义的命令就开交互式 ssh，别塞进一行字符串里**
 
+---
+
+## 批次 07：翻得出来（2026-09-08 新增）
+
+> 用户问「有没有什么功能可以翻查 demo 系统被使用的记录，以及与顾客的对话历史」。答案是没有——
+> 导演台是 200 条内存 ring buffer、进程一重启就没且只记工具不记对话；Redis 档案只留最近 20 轮、
+> 7 天过期、且**没有任何接口能列出或查询**，只能 SSH 上去 `SCAN` 手翻 JSON；`docker logs` 有时间戳
+> 和 token 用量但**没有消息内容**。所以这一批是给它补一个真正的落盘层。
+>
+> **临时需求，不在原计划内。** 2026-09-08 用户拍板了三件事，不再重新讨论：
+> 1. **存全量**：对话 + 工具调用 + token 成本，三张表
+> 2. **永久保留**，先不做清理策略——demo 量级一年几万行，MySQL 无感；真要删以后加个脚本
+> 3. **要读的入口**：不止写入，要 API，也要页面
+>
+> ### 开工前必读
+>
+> - **`backend` 容器已经挂在 `data_net` 上**（任务 31 为了 Redis 加的），所以直连 `infra_mysql:3306`
+>   不需要动网络，prod compose 一行没改过网络配置
+> - **`MYSQL_URL` 绝不能进 compose**——它带密码，这个仓库是 PUBLIC。只能走 `backend/.env`
+> - **密码要 percent-encode**。`provision-project.sh` 生成的是 hex 所以碰不到，但手设的密码里一个
+   `@` 或 `/` 就会让 URL 解析出错，现象是「密码不对」而不是「URL 不对」
+> - ⚠️ **`_log_usage` 一直只记最后一轮的 usage**。工具循环每轮都是一次计费调用、都重发整个 system
+>   prompt 和历史，所以一个走了 4 轮工具的问题，日志里报的大约是**实付的四分之一**。任务 12 要把
+>   这个数字换成马币印在客户面前，所以这一批顺手修了（见任务 37 记录）
+
+- [x] **任务 37：审计写入层**——**2026-09-08 完成，代码侧全绿 + 拿真 MySQL 跑了活体验证；线上那一半没做（要建库建用户 + 部署）**。后端 **462 passed**（431 → 462，净增 31）。
+  文件：`backend/app/services/audit.py`（新增）、`backend/app/config.py`、`backend/requirements.txt`、`backend/app/services/user_store.py`、`backend/app/services/llm.py`、`backend/app/routers/chat.py`、`backend/app/routers/whatsapp_webhook.py`、`backend/tests/test_audit.py`（新增）、`backend/tests/conftest.py`、两个 compose、`backend/.env.example`
+
+  **三张表**（`CREATE TABLE IF NOT EXISTS`，第一次写入时自己建，没有迁移框架）：
+  - `chat_messages` — 每条消息一行，带 `conversation_id` / `key_id` / `channel` / `bot_id` / `role` / `content` / `source` / `created_at`
+  - `tool_calls` — 每次**完成**的工具调用一行（不是每个导演台事件一行），`input` 是 JSON 列，`message_id` 指回触发它的那条客户消息
+  - `model_usage` — 每次回复一行，四个 token 计数 + `api_turns`
+
+  几个决定：
+  - **存 token 不存钱**。单价和汇率都会变，换算过的金额第二天就是错的，token 计数永远是真的。谁要显示成本谁在显示时换算
+  - **`conversation_id` 写入时确定，不靠查询时按时间断层猜**。选 bot / `menu` 重置各换一个新 UUID，存进 `UserProfile`。代价只是 profile 多一个字段，换来的是「一次演示」有确定边界。**没有建 `sessions` 表**——那要维护一套会话生命周期状态机，而边界信息塞进一个列就够了
+  - **`source` 列（text / voice / interactive）**。到了记录这一步三者长得一模一样——语音早被转成纯文本、列表点击早被解析成它代表的那句话。而「客户是说的还是打的」正是任务 36 和 35 要证明的东西，不留这一列就永远看不出来了
+  - **不引 SQLAlchemy / alembic**。三条 CREATE TABLE + 手写 SQL，不够格养一个 ORM 和它的迁移。只加了 `PyMySQL`（纯 Python，镜像不用多一个编译步骤）
+  - **一个连接 + 一把锁**。FastAPI 把这些同步路径跑在 threadpool 上，PyMySQL 连接不是线程安全的，选项是连接池 / 每线程一个连接 / 一把锁。演示量级最忙的时刻是三个人同时发消息、每人三条亚毫秒 INSERT，锁是唯一没有活动部件的那个
+  - **`ping(reconnect=True)`**：两场演示之间的空闲一定超过 MySQL 的 `wait_timeout`，不 ping 就是每场演示的第一行必丢
+
+  **和 `user_store` 刻意不一样的一点：没有内存兜底。** 内存里的档案还能干活（bot 记得客户，直到容器重启），内存里的审计行只是**一条看起来被保存了、实际会丢的记录**。MySQL 挂了就丢行 + 打日志，不假装。相同的是那条底线：**任何情况下不能拖垮 demo**——每次调用都包着、失败就开 30 秒断路器、调用方永远不被告知（它在回客户的话，知道了也做不了什么）
+
+  **顺手修掉的真 bug：token 用量一直只统计最后一轮。** `_reply_with_tools` 是一轮一轮驱动 runner 的，但 `get_reply` 只把**最后一条** message 交给 `_log_usage`。每一轮都是一次计费调用、都重发整个 system prompt 和历史，所以走 4 轮工具的一个问题，日志里报的大约是实付的 1/4。改成 `Usage` 累加器逐轮累加。⚠️ **日志行格式变了**（多了 `turns=`，数字变大），`grep "claude usage"` 出来的旧行和新行**不可比**。另外 API 抛异常时也记——已经花掉的钱不会因为失败而退回，而「一场贵且失败的演示」正是审计要能事后翻出来的东西
+
+  **验证做到哪一步**（三栏）：
+  - **代码侧**：462 passed。新增 31 个测试里有一半是「两条渠道真的调了它」——单元测试全绿而**没有任何调用点**是这类改动最容易的死法
+  - **活体（真 MySQL）**：`mysql:8` 容器 + 真 `PyMySQL`，11 项全 PASS：三张表在空库上自己建出来、马来西亚 rojak 原句（中英马夹杂）`utf8mb4` 原样读回、`source='voice'`、`DATETIME(3)` 毫秒确实保留（`.938`）、`tool_calls JOIN chat_messages` 接得上、`JSON_EXTRACT(input,'$.term')` 查得出 `"earbuds"`、10000 字符的长 output 整条存下、`api_turns=4`、transcript 按序读回。**顺带把 percent-encoded 密码这条路在真库上验掉了**——故意把用户密码设成 `p@ss/word`、URL 写成 `p%40ss%2Fword`，真的通过了 MySQL 认证
+  - **降级（真的把 MySQL 停掉）**：写入返回 `None` 不抛；第一次尝试花 3.98s（连接超时），随后五次合计 **0.0000s**——断路器确实在挡，不是每条消息都去撞那个超时
+  - **没验的**：线上。VPS 上还没有这个库、这个用户、这个 `MYSQL_URL`（见下面的阻塞项 H）。所以**线上一行审计都还没写过**
+
+  ⚠️ **踩坑记录**：`tests/conftest.py` 必须加一个 autouse fixture 关掉 audit 的 ContextVar——和任务 10 给 outbox 加的那个是同一个坑：生产每条消息各跑在自己的 context 里，pytest 全跑在一个里，所以「上一个测试开了 turn」会让「断言某样东西**没有**被记录」的测试**取决于它排在谁后面**而时绿时红。
+  ⚠️ 另一个：`session_store` 的消息去重是进程级的、**没有任何 fixture 重置它**，所以同一个文件里两处用了 `wamid.1` 的话，第二处会被当成重复消息静默返回 `[]`。现象是 `IndexError: list index out of range`，看起来像功能坏了。
+
+- [ ] **任务 37.1：只读查询 API + 鉴权**
+  文件：`backend/app/routers/console.py`、`backend/app/config.py`、`backend/app/models.py`、`frontend/nginx.conf`
+  ⚠️ **开工第一件事和任务 12 是同一件：加鉴权。** 2026-09-05 取消网页密码之后**这个服务没有任何鉴权机制了**（`chat.py:22` 的注释写着「开给拿到链接的人」）。而审计库比 `/console/stream` 敏感得多——那是内存里 200 条工具调用，这是**永久保存的全量客户对话**。要加 nginx 转发就必须同时加 `CONSOLE_TOKEN`，否则等于把所有客户对话挂上公网
+  目标：`GET /console/history`（列对话：客户、渠道、bot、起止时间、消息数、工具数、token 合计）+ `GET /console/history/{conversation_id}`（一通对话的逐条消息，工具调用挂在对应消息下）
+  验收：带 token 打得通、不带 token 401；线上跑一场真实对话后能把它整通读出来
+
+- [ ] **任务 37.2：查询页面**
+  文件：`frontend/src/pages/History.tsx`（新增）、`frontend/src/api.ts`
+  目标：左边一列对话、右边逐条 transcript，工具调用可展开看入参和返回，顶上一行这通对话的 token 合计
+  验收：投屏能看清；点一通历史对话，能逐条读出客户说了什么、bot 答了什么、中间打了哪些真实 API
+
+### 阻塞项（需要用户处理）
+
+- [ ] **H. 在 VPS 上给这个项目建 MySQL 库和用户**（我做不了，没有 `MYSQL_ROOT_PASSWORD`）：
+  ```bash
+  cd /srv/infra && docker compose exec -T mysql mysql -uroot -p
+  CREATE DATABASE ai_chatbot CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  CREATE USER 'ai_chatbot_app'@'%' IDENTIFIED BY '<openssl rand -hex 16>';
+  GRANT ALL PRIVILEGES ON `ai_chatbot`.* TO 'ai_chatbot_app'@'%';
+  FLUSH PRIVILEGES;
+  ```
+  然后往 `/opt/ai_chatbot/backend/.env` 加一行 `MYSQL_URL=mysql://ai_chatbot_app:<密码>@infra_mysql:3306/ai_chatbot`。
+  - `scripts/provision-project.sh` 也能干这事，但它强制要第二个参数（Redis 区段），而本项目的 16 已经分过了
+  - ⚠️ **改完 `.env` 必须 `docker compose up -d --force-recreate backend`**，`restart` 读不到新的环境变量（任务 36 的记录里那对 9:26 失败 / 9:35 成功就是这个坑）
+  - **不加也不会坏**：`MYSQL_URL` 空 = 审计关掉，demo 行为和现在完全一致，只是什么都不记
+
 ## 评审记录
 
 （每个任务完成后，如有偏离原方案的地方或踩坑教训，记录在这里）

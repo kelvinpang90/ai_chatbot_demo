@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from app.config import settings
-from app.services import crm_client, erp_client, outbox
+from app.services import audit, crm_client, erp_client, outbox
 from app.services.user_store import user_store
 
 
@@ -54,6 +54,23 @@ def _no_outbox_left_open():
     outbox.close()
     yield
     outbox.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_audit_turn_left_open():
+    """Every test starts outside a turn, whatever the last one did.
+
+    The same ContextVar hazard the outbox has, and for the same reason: in
+    production each inbound message is handled in its own context, while a test
+    suite runs in one. Without this, a turn opened by any earlier test stays
+    open, and a test asserting that something is *not* recorded passes or fails
+    depending on which file it happens to run after.
+    """
+    audit.close()
+    audit.audit_store.reset()
+    yield
+    audit.close()
+    audit.audit_store.reset()
 
 
 @pytest.fixture(autouse=True)

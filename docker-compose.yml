@@ -8,16 +8,29 @@ services:
     env_file:
       - ./backend/.env
     # Overrides whatever .env says, so a developer cannot point their laptop at
-    # the VPS's Redis by copying a production .env across.
+    # the VPS's Redis -- or, worse, write test chatter into the real audit log --
+    # by copying a production .env across.
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - MYSQL_URL=mysql://chatbot:chatbot@mysql:3306/ai_chatbot
     depends_on:
       - redis
+      - mysql
 
   # A local stand-in for the shared infra_redis. Deliberately unpersisted: this
   # one is for exercising the Redis path, not for keeping anything.
   redis:
     image: redis:7-alpine
+
+  # Likewise for infra_mysql. The audit tables create themselves on first write,
+  # so an empty database is all this has to provide.
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: chatbot
+      MYSQL_DATABASE: ai_chatbot
+      MYSQL_USER: chatbot
+      MYSQL_PASSWORD: chatbot
 
   frontend:
     build: ./frontend

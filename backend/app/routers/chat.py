@@ -15,7 +15,7 @@ from app.models import (
     SendMessageRequest,
     SendMessageResponse,
 )
-from app.services import llm, phone
+from app.services import audit, llm, phone
 from app.services.user_store import UserProfile, identity, user_store
 
 # 2026-09-05: the access password is gone at the owner's request, so these
@@ -124,11 +124,21 @@ def select_bot(key: str, body: SelectBotRequest) -> SelectBotResponse:
     # the WhatsApp list does. The customer stays on file; only the talk is new.
     profile.bot_id = bot.id
     profile.history.clear()
+    # A new run of a demo is a new transcript. Without this every industry this
+    # visitor ever tried would read back as one conversation.
+    profile.conversation_id = audit.new_conversation_id()
     user_store.save(profile)
 
     disclaimer = _localize(bot.disclaimer, body.lang)
     suffix = GREETING_SUFFIX.get(body.lang, GREETING_SUFFIX["en"])
     greeting = f"{disclaimer}\n\n{suffix}"
+    # The greeting is the first thing the customer reads, so a transcript that
+    # skipped it would open mid-conversation.
+    audit.begin_for(profile, audit.WEB)
+    try:
+        audit.record_message("assistant", greeting)
+    finally:
+        audit.close()
     quick_questions = [_localize(q, body.lang) for q in bot.quick_questions]
     return SelectBotResponse(greeting=greeting, quick_questions=quick_questions)
 
@@ -143,16 +153,25 @@ def send_message(key: str, body: SendMessageRequest) -> SendMessageResponse:
     if not bot:
         raise HTTPException(status_code=409, detail="This demo no longer exists")
 
-    profile.add_message("user", body.message)
-    # The customer record goes to the model, which is what makes this the same
-    # path as WhatsApp rather than a parallel one: the real phone number is in
-    # the system prompt, so the retail bot looks the caller up in the CRM
-    # instead of asking whoever is sitting at the laptop who they are.
-    reply = llm.get_reply(bot, profile, profile.history)
-    profile.add_message("assistant", reply)
-    # Saved after the turn is complete, so the conversation is on file for the
-    # phone to pick up next -- the same trade in the other direction.
-    user_store.save(profile)
+    # Opened around the whole exchange, not just the writes: the tool calls the
+    # model makes in between are recorded off this same turn, and outside one
+    # they would have no conversation to belong to.
+    audit.begin_for(profile, audit.WEB)
+    try:
+        profile.add_message("user", body.message)
+        audit.record_message("user", body.message)
+        # The customer record goes to the model, which is what makes this the same
+        # path as WhatsApp rather than a parallel one: the real phone number is in
+        # the system prompt, so the retail bot looks the caller up in the CRM
+        # instead of asking whoever is sitting at the laptop who they are.
+        reply = llm.get_reply(bot, profile, profile.history)
+        profile.add_message("assistant", reply)
+        audit.record_message("assistant", reply)
+        # Saved after the turn is complete, so the conversation is on file for the
+        # phone to pick up next -- the same trade in the other direction.
+        user_store.save(profile)
+    finally:
+        audit.close()
 
     return SendMessageResponse(reply=reply)
 
@@ -169,4 +188,6 @@ def reset_session(key: str) -> ResetResponse:
 def _start_over(profile: UserProfile) -> None:
     profile.bot_id = None
     profile.history.clear()
+    # Whatever they pick next is a new transcript, the same as on WhatsApp.
+    profile.conversation_id = None
     user_store.save(profile)

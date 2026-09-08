@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # one. Both compose files set it.
     redis_url: str = ""
 
+    # The shared infra_mysql, where the audit log lives: every message, every
+    # tool call, every token bill, kept past the seven days Redis gives a profile
+    # and past the 200 events the console holds in memory. Empty on purpose and
+    # for the same reason as REDIS_URL -- unset means the log is simply off, which
+    # is what the test suite and any deployment without the shared infrastructure
+    # get. Shape: mysql://user:password@infra_mysql:3306/ai_chatbot
+    mysql_url: str = ""
+
     internal_shared_secret: str = ""
 
 

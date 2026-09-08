@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 from app.bots.registry import BotConfig, get_bot, list_bots
 from app.config import settings
 from app.console import events
-from app.services import llm, outbox, transcribe, whatsapp, whatsapp_media
+from app.services import audit, llm, outbox, transcribe, whatsapp, whatsapp_media
 from app.services.user_store import user_store
 from app.session_store import session_store
 from app.tools import erp
@@ -213,7 +213,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
         # From here it is a text message and nothing downstream is told otherwise:
         # "menu" said out loud resets the demo, a spoken product name searches the
         # ERP, and the history the model reads holds the words, not the audio.
-        return _handle_text_message(sender, spoken)
+        return _handle_text_message(sender, spoken, source=audit.VOICE)
 
     if msg_type != "text":
         logger.info("Ignoring unsupported message type '%s' from %s", msg_type, sender.key)
@@ -290,6 +290,8 @@ def _start_over(sender: Sender) -> None:
         return
     profile.bot_id = None
     profile.history.clear()
+    # Whatever they pick next is a new transcript.
+    profile.conversation_id = None
     user_store.save(profile)
 
 
@@ -309,7 +311,7 @@ def _remember_identity(profile, sender: Sender) -> None:
         profile.display_name = sender.username
 
 
-def _handle_text_message(sender: Sender, text: str) -> list[dict]:
+def _handle_text_message(sender: Sender, text: str, source: str = audit.TEXT) -> list[dict]:
     if text.strip().lower() in MENU_KEYWORDS:
         logger.info("Menu reset requested by %s", sender.key)
         _start_over(sender)
@@ -328,19 +330,32 @@ def _handle_text_message(sender: Sender, text: str) -> list[dict]:
         _start_over(sender)
         return _send_bot_list(sender.key)
 
-    profile.add_message("user", text)
-    reply = llm.get_reply(bot, profile, profile.history)
-    # Built before it is recorded, deliberately. A reply WhatsApp will not carry
-    # must not become part of this customer's history either: the turn is
-    # dropped whole and the next message starts from the last good exchange,
-    # rather than from one the model cannot be shown again.
-    # Anything a tool produced goes out after the words explaining it.
-    payloads = [whatsapp.build_text_message(sender.key, reply), *outbox.drain(sender.key)]
-    profile.add_message("assistant", reply)
-    # Saved after the reply, so the exchange survives a restart and is still
-    # there when they write again days later - this is what "the bot remembers
-    # me" is actually made of.
-    user_store.save(profile)
+    # Opened around the whole exchange, not just the writes: the tool calls the
+    # model makes in between are recorded off this same turn, and outside one
+    # they would have no conversation to belong to.
+    audit.begin_for(profile, audit.WHATSAPP)
+    try:
+        profile.add_message("user", text)
+        # Recorded before the reply is attempted, and kept even if that reply
+        # then fails to build. What the customer said is a fact regardless of
+        # whether we managed to answer it -- and a turn that produced nothing is
+        # precisely the kind a transcript is opened to explain.
+        audit.record_message("user", text, source)
+        reply = llm.get_reply(bot, profile, profile.history)
+        # Built before it is recorded, deliberately. A reply WhatsApp will not carry
+        # must not become part of this customer's history either: the turn is
+        # dropped whole and the next message starts from the last good exchange,
+        # rather than from one the model cannot be shown again.
+        # Anything a tool produced goes out after the words explaining it.
+        payloads = [whatsapp.build_text_message(sender.key, reply), *outbox.drain(sender.key)]
+        profile.add_message("assistant", reply)
+        audit.record_message("assistant", reply)
+        # Saved after the reply, so the exchange survives a restart and is still
+        # there when they write again days later - this is what "the bot remembers
+        # me" is actually made of.
+        user_store.save(profile)
+    finally:
+        audit.close()
     logger.info("Sending LLM reply to %s for bot=%s", sender.key, bot.id)
     return payloads
 
@@ -365,16 +380,22 @@ def _handle_interactive_reply(sender: Sender, interactive: dict) -> list[dict]:
         if not bot:
             return _send_bot_list(sender.key)
         profile.bot_id = bot.id
+        # A new run of a demo is a new transcript.
+        profile.conversation_id = audit.new_conversation_id()
         # Picking a demo off the menu is deliberate enough to file the record on;
         # the greeting that follows has to still be there on the next message.
         user_store.save(profile)
         logger.info("%s selected bot %s", sender.key, bot.id)
-        return _start_conversation(sender.key, bot)
+        audit.begin_for(profile, audit.WHATSAPP)
+        try:
+            return _start_conversation(sender.key, bot)
+        finally:
+            audit.close()
 
     said = _resolve_quick_question(profile.bot_id, selected_id) or _resolve_product_choice(
         selected_id, str(selected.get("title") or "")
     )
-    return _handle_text_message(sender, said) if said else []
+    return _handle_text_message(sender, said, source=audit.INTERACTIVE) if said else []
 
 
 def _resolve_product_choice(row_id: str, title: str) -> str | None:
@@ -411,6 +432,10 @@ def _resolve_quick_question(bot_id: str, button_id: str) -> str | None:
 
 def _start_conversation(to: str, bot: BotConfig) -> list[dict]:
     greeting = f"{bot.disclaimer.en}\n\n{GREETING_SUFFIX_EN}"
+    # The greeting is the first thing the customer reads, so a transcript that
+    # skipped it would open mid-conversation. A no-op outside a turn, which is
+    # what makes it safe to put here rather than at every call site.
+    audit.record_message("assistant", greeting)
     payloads = [whatsapp.build_text_message(to, greeting)]
     if bot.quick_questions:
         buttons = [{"id": f"qq:{i}", "title": q.en} for i, q in enumerate(bot.quick_questions[:3])]
