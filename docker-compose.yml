@@ -13,6 +13,9 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - MYSQL_URL=mysql://chatbot:chatbot@mysql:3306/ai_chatbot
+      # Same clock as production, so a timestamp read here means what it will
+      # mean there.
+      - TZ=Asia/Kuala_Lumpur
     depends_on:
       - redis
       - mysql

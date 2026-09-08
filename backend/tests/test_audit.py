@@ -5,6 +5,8 @@ the SQL and the parameter tuples are asserted as written rather than mocked away
 What that cannot check is whether MySQL accepts the statements -- that is the
 live run recorded in tasks/todo.md, against a real mysql:8 container.
 """
+import os
+import time
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -215,6 +217,36 @@ def test_the_connection_is_pinged_so_an_idle_night_does_not_cost_a_row():
     store.record_message(turn=_turn(), role="user", content="hi")
     store.record_message(turn=_turn(), role="user", content="hi again")
     assert conn.pings == 2
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="tzset is POSIX only")
+def test_a_row_is_stamped_in_the_container_s_local_time():
+    """Both compose files set TZ=Asia/Kuala_Lumpur, and this is what depends on it.
+
+    A DATETIME column stores no timezone, so if this ever went back to UTC every
+    stored row would be eight hours off with nothing in the value to say so --
+    and a demo run at 9pm would be filed, and searched for, under 13:00.
+    """
+    moment = 1789000000.0  # 2026-09-10 00:26:40 UTC
+
+    def stamp_under(tz: str) -> str:
+        with patch.dict(os.environ, {"TZ": tz}):
+            time.tzset()
+            return audit._timestamp(moment)
+
+    try:
+        kl = stamp_under("Asia/Kuala_Lumpur")
+        utc = stamp_under("UTC")
+    finally:
+        time.tzset()  # back to however this process was started
+
+    assert kl.startswith("2026-09-10 08:26:40"), kl
+    assert utc.startswith("2026-09-10 00:26:40"), utc
+
+
+def test_the_millisecond_survives():
+    """DATETIME(3) is worth having only if the fraction actually gets there."""
+    assert audit._timestamp(1789000000.938).endswith(".938")
 
 
 # --- failing -----------------------------------------------------------------

@@ -15,6 +15,13 @@ services:
     # log"` is what says so.
     environment:
       - REDIS_URL=redis://infra_redis:6379/16
+      # Every audit timestamp and every log line is written in the container's
+      # local time, and a DATETIME column keeps no timezone to correct it by
+      # later. Left unset this container runs on UTC, so a demo run at 9pm in
+      # Kuala Lumpur files itself under 13:00 and cannot be found by the hour it
+      # happened. vps_infra sets this on all four of its containers; this one had
+      # simply never needed a clock before.
+      - TZ=Asia/Kuala_Lumpur
     networks:
       - default
       - proxy_net

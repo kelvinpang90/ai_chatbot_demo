@@ -7,6 +7,7 @@ import time
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse
 
@@ -400,9 +401,23 @@ def _default_connect(dsn: dict):
 
 
 def _timestamp(at: float | None) -> str:
+    """The moment, in the container's local time, for a DATETIME(3) column.
+
+    Local rather than UTC on purpose, and it is the compose files that make that
+    safe: both set TZ=Asia/Kuala_Lumpur, so this agrees with the log lines beside
+    it and with every other container vps_infra runs. A DATETIME keeps no
+    timezone to correct it by afterwards, so the clock has to be right when the
+    row is written -- an unset TZ files a 9pm demo under 13:00, and nothing in
+    the stored value would ever say so.
+
+    Built through `datetime` rather than by taking the fraction of the float by
+    hand: `int(seconds % 1 * 1000)` truncates a value the binary representation
+    has already nudged downwards, so .938 was stored as .937. Off by a
+    millisecond does not matter; a rounding bug in the column two rows are
+    ordered by is worth not having.
+    """
     seconds = time.time() if at is None else at
-    whole = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(seconds))
-    return f"{whole}.{int(seconds % 1 * 1000):03d}"
+    return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
 def _json_or_none(value: dict | None) -> str | None:

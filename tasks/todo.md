@@ -820,7 +820,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 >   ⚠️ **两个坑，任务 34 必须知道**：
 >   - **`POST /api/admin/demo-reset` 是入队就返回**（`erp_os/backend/app/routers/admin.py:102`），响应固定是 `status:"queued"` + `demo_reset_log_id:0`。**worker 没起的话它照样回成功、什么都不会发生**——教科书级的假绿。所以验收**不能看这个返回值**，要去 `GET /api/admin/demo-reset/history` 核对有没有新行
 >   - **每晚 3 点那个自动重置多半没注册**。`demo-reset-nightly` 是在 `_build_app()` 里按 `settings.DEMO_MODE` 决定加不加的（`erp_os/backend/app/tasks/celery_app.py:67-76`），**进程启动时算一次**。beat 容器已经 4 周没重启，而 worker 2 小时前才重启（看着就是刚改完 env 只重启了 worker）——所以 beat 进程里大概率没有这条 schedule。**手动触发不受影响**（走 worker），但想要它每晚自己跑，得重启 beat 容器。⚠️ 这一条是从「beat 4 周没重启」推的，DEMO_MODE 到底什么时候打开的我不知道，**没实测**
-> - [x] ~~**G. `OPENAI_API_KEY`**，任务 36 用。~~——**2026-09-06 用户已设置**。本地 `backend/.env` 实测有值。⚠️ **加上它当场把 app 弄挂了**：pydantic-settings 对**有值的**未声明 key 是 `extra_forbidden`，import `app.config` 直接 ValidationError。任务 34 顺手在 `config.py` 声明了 `openai_api_key`。**VPS 上如果已经加了这一行，容器一重启就起不来，直到这次改动部署上去。**
+> - [x] ~~**G. `OPENAI_API_KEY`**，任务 36 用。~~——**2026-09-06 用户已设置**。本地 `backend/.env` 实测有值。⚠️ **加上它当场把 app 弄挂了**：pydantic-settings 对**有值的**未声明 key 是 `extra_forbidden`，import `app.config` 直接 ValidationError。任务 34 顺手在 `config.py` 声明了 `openai_api_key`。
+  > ⚠️ **2026-09-08 更正：这一条最后那句「VPS 上如果已经加了这一行，容器一重启就起不来」是错的，别再照它判断。** `extra_forbidden` 只对**从 dotenv 文件读到的**额外 key 生效；从 `os.environ` 来的额外 key 是被忽略的。而容器里**根本没有 `.env` 文件**——`backend/.dockerignore` 排除了它，Dockerfile 只 `COPY app`，线上是 compose 的 `env_file:` 把它们注入成环境变量。所以**这个坑只在本地直接跑 uvicorn 时存在**。实测：任务 37 期间用户先在 VPS 的 `.env` 加了 `MYSQL_URL` / `CONSOLE_TOKEN` 再重建容器，当时线上跑的还是不认识这两个 key 的旧镜像，`/api/bots` 照样 200、`/webhook/whatsapp` 照样 403。
 
 - [x] **任务 31：接 Redis + 客户档案存取**（纯后端，对外行为零变化）——**2026-09-04 完成**。22 个新 pytest（全套 254 → **276 passed**），另外拿**真的 redis:7-alpine + 真的 redis-py** 跑了一遍活体验证（不是打桩）：写入/读回全字段含中文、`ttl=600s`、把 TTL 手动压到 30s 后再 save 又回到 600s、delete 生效、指向不存在的主机时降级到内存仍能读回。两个 compose 都过了 `docker compose config`。**已推 master 并部署，线上也验了**：`/api/bots` 401、`/webhook/whatsapp` 带错 token 403（加了 `data_net` 之后容器正常起来了）；`ai_chatbot_backend` 确实挂在 `data_net` 上、容器内 `REDIS_URL=redis://infra_redis:6379/16`；最关键的一步——**拿刚部署的那个镜像本身**在 `data_net` 上跑了一次真实存取：写入含中文的档案、读回一致、`ttl=60s`、探针 key 已删除。所以 db 16 和 `databases 256` 这两条假设是在线上被证实的，不是推断的。
   落地与计划的差异 / 需要知道的几件事：
@@ -1068,9 +1069,18 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - **搜索归一化在浏览器里验掉了**：输 `017-394 8123`，另一个号码那条消失，只剩这个号码的两通
   - **没验的**：线上；手机/窄屏下的排版（只在 1045px 宽的桌面视口看过）；`/console/stream` 那条 SSE 穿过新加的 nginx 规则**没真订阅过**（只验了 `/console/history` 这条普通请求；`proxy_buffering off` 是照 SSE 的要求写的，没实测）
 
+- [x] **任务 37.3：时区**——**2026-09-08 完成**（用户看到 37.1 的命令里容器名写错、去翻 `vps_infra/docker-compose.yml` 时顺带发现的）。后端 **484 passed**（482 → 484）。
+  文件：`docker-compose.yml`、`docker-compose.prod.yml`、`backend/app/services/audit.py`、`backend/tests/test_audit.py`
+
+  **问题**：`vps_infra` 给它四个容器每一个都设了 `TZ: Asia/Kuala_Lumpur`，而 **`ai_chatbot` 的两个 compose 都没设**——这个服务此前从来不需要一个时钟，所以没人注意。于是 backend 跑在 UTC 上，`_timestamp()` 走 `time.localtime()`，**审计行存的是 UTC**，而 `DATETIME` 列不带时区、事后无从更正。晚上 9 点在吉隆坡跑的那场演示，会被归档在 `13:00`，按发生的时间根本翻不到。
+  **修法是给容器设 TZ，不是在代码里硬编码时区**：`DATETIME` 存的是字面值，让整个容器（日志、审计、将来的清理脚本）共用一个时钟，比在三处各转一次可靠。⚠️ **线上 `docker logs` 的应用日志时间戳也会从 UTC 变成 KL 时间**，和 2026-09-08 之前的行不可比——但会和 vps_infra 其它容器对齐。**时机是干净的**：线上此时一行审计都还没写过（代码没推），所以没有历史数据要迁移。
+
+  ⚠️ **补时区测试时抓到一个自己写的真 bug**：`int(seconds % 1 * 1000)` 把一个二进制表示已经压低了一点的值再截断，**`.938` 存成了 `.937`**。差一毫秒本身无所谓，但那是两行记录用来排序的那一列，不该有个舍入错误。改成走 `datetime.fromtimestamp(...).strftime(...)`。
+  **验证**：真 MySQL + `TZ=Asia/Kuala_Lumpur` 的真容器，三项全 PASS——容器 `time.tzname` 是 `('+08','+08')`；写入时刻 `23:18:19.034` 读回，与同一瞬间的 UTC `15:18:19` **相差正好 8 小时**；`.938` 读回是 `938000` 微秒。另有一个 pytest 用 `tzset` 把 KL 和 UTC 两种时区各跑一遍，守住「跟随容器时区」这个契约（Windows 上自动跳过）。
+
 ### 阻塞项（需要用户处理）
 
-- [ ] **H. 在 VPS 上给这个项目建 MySQL 库和用户**（我做不了，没有 `MYSQL_ROOT_PASSWORD`）：
+- [x] ~~**H. 在 VPS 上给这个项目建 MySQL 库和用户**~~——**2026-09-08 用户已完成**：库建好了、`.env` 里 `MYSQL_URL` 和 `CONSOLE_TOKEN` 都配了、容器已重建。⚠️ **容器名是 `infra_mysql`，服务名才是 `mysql`**，所以不挑目录的写法是 `docker exec -it infra_mysql mysql -uroot -p`。以下是原文：
   ```bash
   cd /srv/infra && docker compose exec -T mysql mysql -uroot -p
   CREATE DATABASE ai_chatbot CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
