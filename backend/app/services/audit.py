@@ -330,8 +330,8 @@ class AuditStore:
                 with conn.cursor(pymysql.cursors.DictCursor) as cursor:
                     cursor.execute(sql, params)
                     return list(cursor.fetchall())
-            except Exception:
-                self._go_offline("read failed")
+            except Exception as failure:
+                self._go_offline("read failed", failure)
                 return []
 
     def reset(self) -> None:
@@ -350,8 +350,8 @@ class AuditStore:
                 with conn.cursor() as cursor:
                     cursor.execute(sql, params)
                     return cursor.lastrowid
-            except Exception:
-                self._go_offline("write failed")
+            except Exception as failure:
+                self._go_offline("write failed", failure)
                 return None
 
     def _connection(self):
@@ -367,16 +367,16 @@ class AuditStore:
                 return None
             try:
                 self._conn = self._connect(dsn)
-            except Exception:
-                self._go_offline("could not connect")
+            except Exception as failure:
+                self._go_offline("could not connect", failure)
                 return None
         try:
             # Cheap, and the alternative is losing the first row after every idle
             # period longer than MySQL's wait_timeout -- which, between two
             # demos, is every one of them.
             self._conn.ping(reconnect=True)
-        except Exception:
-            self._go_offline("ping failed")
+        except Exception as failure:
+            self._go_offline("ping failed", failure)
             return None
         if not self._schema_ready:
             try:
@@ -384,16 +384,29 @@ class AuditStore:
                     for statement in SCHEMA:
                         cursor.execute(statement)
                 self._schema_ready = True
-            except Exception:
-                self._go_offline("could not create the audit tables")
+            except Exception as failure:
+                self._go_offline("could not create the audit tables", failure)
                 return None
         return self._conn
 
-    def _go_offline(self, reason: str) -> None:
+    def _go_offline(self, reason: str, failure: Exception | None = None) -> None:
+        """Stop trying for half a minute, and say why in one line.
+
+        One line, not a traceback. The driver's own message is the whole
+        diagnosis -- `(1045, "Access denied for user ...")` says more than the
+        eleven frames above it -- and a stack dump per failure buries the demo's
+        own log lines, which are what anyone reading this file came for. The
+        frames were never actionable: they are always the same path through
+        pymysql.
+        """
         self._conn = None
         self._schema_ready = False
         self._offline_until = time.time() + RETRY_AFTER_SECONDS
-        logger.warning("audit log unavailable, dropping rows: %s", reason, exc_info=True)
+        logger.warning(
+            "audit log unavailable, dropping rows: %s%s",
+            reason,
+            f": {failure}" if failure else "",
+        )
 
 
 def _default_connect(dsn: dict):
