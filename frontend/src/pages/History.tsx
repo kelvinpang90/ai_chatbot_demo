@@ -23,7 +23,7 @@ const SOURCE_LABEL: Record<string, string> = {
   interactive: '👆 点选',
 }
 
-function TokenGate({ onUnlocked }: { onUnlocked: () => void }) {
+function TokenGate({ note, onUnlocked }: { note: string; onUnlocked: () => void }) {
   const [value, setValue] = useState('')
   return (
     <form
@@ -37,6 +37,10 @@ function TokenGate({ onUnlocked }: { onUnlocked: () => void }) {
     >
       <h2>演示记录</h2>
       <p>需要 console token（服务器上的 CONSOLE_TOKEN）。</p>
+      {/* Without this the gate simply reappears with an empty box, which reads
+          as "the button does nothing" rather than "that token is wrong" -- and
+          leaves the one likely cause unsaid. */}
+      {note && <p className="history-note error">{note}</p>}
       <input
         type="password"
         value={value}
@@ -112,8 +116,14 @@ function Transcript({ detail }: { detail: ConversationDetail }) {
   )
 }
 
+const BAD_TOKEN_NOTE =
+  'token 不对。如果是从服务器 .env 复制的，注意值两边不要带引号——docker compose 会把引号也当成 token 的一部分。'
+const NOT_CONFIGURED_NOTE = '后端没有配 CONSOLE_TOKEN，这个页面打不开。'
+
+
 export default function History() {
   const [unlocked, setUnlocked] = useState(() => storedToken() !== '')
+  const [gateNote, setGateNote] = useState('')
   const [search, setSearch] = useState('')
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -128,11 +138,14 @@ export default function History() {
       const page = await listConversations(term)
       setConversations(page.conversations)
     } catch (failure) {
-      if (failure instanceof ApiError && failure.status === 401) {
-        // A bad token is the one error worth forgetting, so the gate comes back
-        // instead of a screen that keeps failing with no way to fix it.
+      const status = failure instanceof ApiError ? failure.status : 0
+      if (status === 401 || status === 503) {
+        // A token the server will not take is the one error worth forgetting, so
+        // the gate comes back rather than a screen that keeps failing with no way
+        // to fix it -- but it has to come back saying why.
         forgetToken()
         setUnlocked(false)
+        setGateNote(status === 503 ? NOT_CONFIGURED_NOTE : BAD_TOKEN_NOTE)
       }
       setError(failure instanceof ApiError ? failure.message : '读不到记录')
       setConversations([])
@@ -164,7 +177,17 @@ export default function History() {
     }
   }, [selected])
 
-  if (!unlocked) return <TokenGate onUnlocked={() => setUnlocked(true)} />
+  if (!unlocked) {
+    return (
+      <TokenGate
+        note={gateNote}
+        onUnlocked={() => {
+          setGateNote('')
+          setUnlocked(true)
+        }}
+      />
+    )
+  }
 
   return (
     <div className="history">
