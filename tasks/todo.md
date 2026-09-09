@@ -1135,6 +1135,26 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **我加的 `location /console/` 会把导演台页面抢走**。任务 12 刻意只转 `= /console/stream` 这一条精确路径，注释写着「`/console` 自己是 SPA 渲染的页面」——而我按前缀转发，`/console/`（带尾斜杠，`main.tsx` 明确当页面处理）就会落到后端拿 404。收窄成 `location /console/history`
   - **任务 12 的三个测试直接调 `console.stream(token=...)`**，token 移进依赖后必然坏。改成走 TestClient 打 HTTP——那才是部署后真实经过的路径。⚠️ **但测 SSE headers 那个不能走 TestClient**：`http.stream()` 会挂在一条永不结束的流上，整个测试套件超时 10 分钟才被杀。那一个保持直接调用（它本来也只测 headers）
 
+- [x] **任务 37.5：上线**——**2026-09-08/09 完成，审计日志线上真的在写了**。批次 07 到此全部落地。
+
+  **上线时卡了两处，都不是代码问题，但都值得记：**
+  - **MySQL `Access denied for user 'ai_chatbot_app'@'172.18.0.8'`。** ⚠️ **MySQL 的 1045 对「密码错」和「用户/host 不存在」返回的是同一条错误**（故意的，防用户名探测），所以**光看日志分不出来**。排查顺序应该是先 `SELECT user, host FROM mysql.user WHERE user='...'` 确认用户在哪些 host 上存在、`SHOW DATABASES LIKE '...'` 确认库在，**排除掉这两个之后**剩下的才是密码。这次两项都正常，最后是重设密码解决的
+  - **`CONSOLE_TOKEN` 输进去进不了页面。** 和上面无关的另一件事，最后是浏览器里那份和 `.env` 里的有出入。**别手打 48 位 hex**，用 `echo "https://.../history?token=$(sed -n 's/^CONSOLE_TOKEN=//p' .env)"` 生成整条链接
+
+  **排查时用的脱敏命令**（不暴露值，一次看清引号 / 尾随空格 / CRLF / percent 编码四类问题）：
+  ```bash
+  sed -n -e '/^CONSOLE_TOKEN=/p' -e '/^MYSQL_URL=/p' backend/.env | sed 's/[A-Za-z0-9]/x/g' | cat -A
+  ```
+  这次结果是两行都干净（`.env` 是 LF，无引号），从而把「compose 不剥引号」和「Windows 行尾」这两个最常见的猜测**排除掉**——先排除比先猜快。
+
+  **顺带修掉两个真 bug**（都是这次事故直接暴露的，不是猜的）：
+  - **查询页面的 token 门被拒后一言不发。** 401 → 丢掉 token → 退回登录框、输入框空着，读起来是「按钮坏了」而不是「token 不对」。任务 12 的导演台早就有 `gateNote` 做这件事，只有这个页面漏了。现在会分开说「token 不对」和「后端没配 CONSOLE_TOKEN」两种情况
+  - **一次连不上刷 30 行 traceback。** `_go_offline` 带着 `exc_info=True`，而每条入站消息撞一次断路器就是一整段 pymysql 调用栈——把 demo 自己的日志全埋了。那些帧永远是同一条路径、从来不 actionable，而驱动自己那句 `(1045, "Access denied for user ...")` 就是全部诊断信息。改成一行
+
+  ✅ **降级设计被一次真实事故验证了**：MySQL 连不上的那整段时间里，日志是 `audit log unavailable, dropping rows`，而**对话照常跑完**——Claude 回了、WhatsApp 收了 200。丢的只有审计行。这正是「没有内存兜底、但绝不拖垮 demo」当初的设计意图。
+
+  **线上实测**（重建容器后）：`/api/bots` 200、`/history` 200、`/console` 200、`/console/history` 无 token **401**（不是 503，证明 `CONSOLE_TOKEN` 在容器里）、webhook verify 403、前端是带修复的最新包。
+
 ### 阻塞项（需要用户处理）
 
 - [x] ~~**H. 在 VPS 上给这个项目建 MySQL 库和用户**~~——**2026-09-08 用户已完成**：库建好了、`.env` 里 `MYSQL_URL` 和 `CONSOLE_TOKEN` 都配了、容器已重建。⚠️ **容器名是 `infra_mysql`，服务名才是 `mysql`**，所以不挑目录的写法是 `docker exec -it infra_mysql mysql -uroot -p`。以下是原文：
