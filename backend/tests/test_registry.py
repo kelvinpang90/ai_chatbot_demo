@@ -66,6 +66,30 @@ def test_retail_is_wired_to_the_erp_and_crm_it_demonstrates():
     assert [tool.name for tool in tool_registry.get_tools("retail")] == retail.tools
 
 
+def test_the_light_tier_bots_run_on_tools_too():
+    """The point of task 11.2: five industries on the menu, one shell behind them.
+
+    A guest who picks `hotel` and sees a console with nothing on it has learned
+    that only one of the five demos is real.
+    """
+    hotel = registry.get_bot("hotel")
+    saas = registry.get_bot("saas")
+    assert hotel is not None and saas is not None
+    assert set(hotel.tools) == {
+        "hotel_search_rooms",
+        "hotel_create_booking",
+        "hotel_get_booking",
+        "hotel_modify_booking",
+    }
+    assert set(saas.tools) == {
+        "saas_search_known_issues",
+        "saas_create_ticket",
+        "saas_get_tickets",
+    }
+    assert [tool.name for tool in tool_registry.get_tools("hotel")] == hotel.tools
+    assert [tool.name for tool in tool_registry.get_tools("saas")] == saas.tools
+
+
 def test_retail_no_longer_carries_the_answers_it_is_supposed_to_look_up():
     """The static catalogue and the fake order history were the thing to remove.
 

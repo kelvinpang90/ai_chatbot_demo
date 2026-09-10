@@ -12,6 +12,7 @@ from app.console import cost, events
 from app.services import audit
 from app.services.user_store import UserProfile
 from app.session_store import Message
+from app.tools import local
 from app.tools.registry import get_tools
 
 logger = logging.getLogger(__name__)
@@ -291,8 +292,14 @@ def get_reply(bot: BotConfig, customer: UserProfile | None, history: list[Messag
 
     try:
         if tools:
-            # Records its own usage as it goes: one API call per loop iteration.
-            response = _reply_with_tools(bot, model, system, messages, tools)
+            # The bots with no back office keep their bookings and tickets in
+            # this customer's own record, and the tool functions take only the
+            # arguments the model fills in. This is where they are told whose
+            # conversation they are in -- and what they write goes into the very
+            # profile object the caller saves once this returns.
+            with local.serving(bot, customer):
+                # Records its own usage as it goes: one API call per loop iteration.
+                response = _reply_with_tools(bot, model, system, messages, tools)
         else:
             response = _reply_without_tools(model, system, messages)
             _record_usage(bot, model, response)

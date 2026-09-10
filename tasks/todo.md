@@ -593,11 +593,33 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **没做、故意不做的**：没有把「WhatsApp 手机号自动对应 ERP/CRM 客户」这件事做掉。演示里客户身份还是靠菜单手动选，这条只解决「同一个手动选中的散客身份，第二次来 bot 记不记得」。要做到真号自动识别，得把「这通对话是谁」接进工具层（`get_tools(bot_id)` 现在连 conversation 都不知道），跨 session 层和 `llm.py`，是单独一条架构任务，todo.md 里任务 10 P3-2 那条已经点过名。
 
-- [ ] **任务 11.2：轻量档也套上工具循环**（`hotel` + `saas`）
+- [x] **任务 11.2：轻量档也套上工具循环**（`hotel` + `saas`）——**2026-09-10 完成**（35 个新测试，全套 528 passed）
   文件：`backend/app/tools/local.py`（新增）、`backend/app/bots/data/hotel.json`、`backend/app/bots/data/saas.json`、测试
   目标：客户在菜单里平等看到五个行业，点进 `retail` 是活的、点进 `hotel` 还在背 JSON，落差太明显，会显得「只有一个是真的」。给轻量档套同样的工具外壳——`hotel_search_rooms` / `hotel_get_booking` / `hotel_modify_booking`，`saas_search_known_issues` / `saas_get_tickets` / `saas_create_ticket`
   **读走现有 JSON**（`context_data` + 选中身份的 `profile`），零新增数据；**写落会话级内存**——纯只读会露馅，SaaS 客服不能建工单、酒店客服不能改预订，客户一试就穿帮
   验收：`hotel` 和 `saas` 各问一句，**导演台上滚出工具调用**，形态和 `retail` 一致；建一张工单后在同一段对话里能查回来
+
+  **做了什么**
+  - `backend/app/tools/local.py`（新增，7 个工具）：`hotel_search_rooms` / `hotel_create_booking` / `hotel_get_booking` / `hotel_modify_booking`，`saas_search_known_issues` / `saas_create_ticket` / `saas_get_tickets`。读的是 bot 自己 JSON 里的 `context_data`（房型表 / 已知问题表），零新增数据
+  - `backend/app/services/llm.py`：工具分支外面套一层 `local.serving(bot, customer)`
+  - `backend/app/tools/registry.py`：`CATALOGUE` 加上 `local.TOOLS`
+  - `hotel.json` / `saas.json`：加 `tools` 数组，persona 重写成 retail 那套「每一句话都来自工具」的口径。**顺带修掉两处过期文案**——两个 persona 都还写着「the current guest's booking history provided in context」，而 `identities` 早在批次 06 就删了，那段 context 根本不存在
+
+  **三处和任务描述不一样，说明理由**
+
+  1. **多了一个工具 `hotel_create_booking`**（任务里只列了 search / get / modify）。`identities` 删掉之后，一个真实号码进来是**没有任何预订的**——`hotel_get_booking` 永远返回「查不到」，`hotel_modify_booking` 永远无单可改，这两个工具在真机上是死的。批次 06 拍板「不演假身份」，所以不能预置一张假预订，唯一的活路是让它当场建一张。它也正好是 `saas_create_ticket` 的对位：验收要求的「建一张工单后在同一段对话里能查回来」，酒店那半就是「订一间房，然后改成 2 晚，总价跟着降」
+  2. **写的地方不是「会话级内存」，是 `UserProfile.profile[bot_id]`**——批次 06 第 896 行原本就写明这一格由 11.2 来补。代价/好处：它跟着客户档案活 7 天，不是一场对话就没，同一个号第二天回来预订还在
+  3. **没做取消预订、没做关闭工单**。改预订能演的都能演，取消是另一档要求，不顺手加
+
+  **一个必须说清楚的机制**：工具改的是**路由手上那个 `UserProfile` 对象**，不是自己 `user_store.save` 一份。如果自己存，`get_reply` 返回后路由那句 `user_store.save(profile)` 会拿它手里的旧副本把工单盖掉——这条有测试守着（`test_a_write_lands_on_the_profile_the_router_is_about_to_save`）。「这通对话是谁」靠 ContextVar 传进工具层，和审计日志同一套路子（任务 10 P3-2 点过名的那个洞，这里只是给本地工具开了一条不动 4 个文件的路，**ERP/CRM 那半仍然不知道对话是谁**，那条架构任务还在）
+
+  **不编造的几条硬约束**（这些是 11.3 的预演，写在工具里而不是提示词里）：房型不在目录里 → 拒绝并列出真实房型；人数超过房间容量 → 拒绝并说清睡几个；日期读不出来 → 拒绝，**并把今天的日期带回去**（模型不知道今天几号，不带今天它只能再猜一次）；入住日已过期 → 拒绝；工单 priority 不在四档里 → 拒绝，**不静默降级**（把 urgent 悄悄存成 normal 是在没人看得见的地方毁约）。⚠️ 有一条**故意不对称**：「入住日已过期」只在**这次真给了新入住日**时才拦——住到一半的客人要求延住，`check_in` 本来就在过去，一刀切会让 bot 对着人在房间里的客人说「您的入住日已过期」；价格、晚数、总价全部由工具从目录算，模型只负责转述
+
+  ✅ **验证到什么程度**
+  - 单测：容器里 **528 passed**（基线 493，+35）。覆盖：目录过滤三条、总价 = 房价×晚数、五种拒绝、同一回合内建完能查回来（工单和预订各一）、改短住期总价真的降、换房型按新价重算、改失败时原单不动、两个客户互相看不到对方的预订、两个 bot 不写进对方的格子、档案损坏时重新开一格而不是抛异常、记录条数上限、回合外调用返回 `NO_TURN`
+  - **`get_reply` 那一跳单独有测试**：不开这一层的话上面所有工具在生产里全是 `NO_TURN`。测试跑的是真的 `saas_create_ticket`，断言工单落到 profile 上、**并且 `tool_start` / `tool_end` 上了导演台**（`status=ok`、输出里带工单号）——这就是验收那句「形态和 retail 一致」在测试里的样子
+  - 另外单独 dump 了 `beta_tool` 生成的 7 个 schema：参数全在 `properties` 里，可选参数都不在 `required` 里（任务 11.1 踩过这个坑）
+  - **没验的**：**模型是不是真的会去调这些工具**——`backend/.env` 里 `ANTHROPIC_API_KEY` 还是空的，和任务 11 当时一样，所以上面证明的是「工具挂对了、算得对、写得对、屏幕上看得见」，证明不了「模型选择了用它」。这一条只能真机验收；VPS 上的表现同样没验
 
 - [ ] **任务 11.3：让它会说「我不知道」**
   文件：五个 bot 的 `persona_prompt`、`backend/tests/test_refusal.py`（新增）
