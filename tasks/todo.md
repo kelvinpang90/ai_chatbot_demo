@@ -772,10 +772,29 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 >
 > 2b 是这一批真正的销售武器。2a 证明「它认得懂」，2b 证明「**这是你的资料**」——客户不用想象，他手里就有东西可以立刻试。
 
-- [ ] **任务 14：图片消息接入**
-  文件：`backend/app/routers/whatsapp_webhook.py`（`dispatch_message` 支持 `type == "image"`）、`backend/app/services/llm.py`（多模态 content block）、测试
+- [x] **任务 14：图片消息接入**——**2026-09-11 代码完成，真机那一枪留给任务 17**
+  文件：`backend/app/routers/whatsapp_webhook.py`（`dispatch_message` 的 `image` 分支）、`backend/app/services/llm.py`（`Image` + image content block）、`backend/app/services/audit.py`（`IMAGE` 来源）、测试
   目标：收到图片 → 用 `fetch_media()` 下载 → 转成 Claude 的 image content block 塞进对话；去掉现在的「只支持文本」提示
   验收：pytest 覆盖 image 分支；真机发一张商品照片，bot 能描述它
+
+  **做了什么**
+  - **图片只进当前这一轮的请求，不进 history**。这是这个任务唯一一处真正的设计取舍：`Message.content` 是字符串、history 会写进 Redis 并且**每一轮都重发给模型**，把 base64 图塞进去等于 Redis 存一次、input token 付一辈子。所以走的是 `llm.get_reply(..., image=llm.Image(data, media_type))` 这个只活一轮的参数，history 里留下的是**一行占位文本**：`[photo] 客户写的说明文字`（没说明就只有 `[photo]`）
+    - 代价写在这里：下一轮模型**看不见那张图了**，只看得见这行标记和它自己上一轮的描述。剧本 2a「照片 → 认 SKU → 找单 → 开退款单」靠的正是它自己那句描述当锚点，够用；但如果哪天需要「再看一眼刚才那张图」，得在这里加一个「最近一张图缓存 N 轮」的东西
+    - `[photo]` 这个标记顺便还挡了一件事：**带 `menu` 说明文字的图片不会把 demo 重置掉**——`MENU_KEYWORDS` 匹配的是整条消息，而这条永远不是
+  - 图片块拼在**最后那条 user 消息里**，图在前、文字在后（Anthropic 对单图的建议顺序），不是单独开一条消息——一条只有图没有话的 user 消息读起来就是「客户发了个东西但什么都没问」
+  - 格式在**下载之后**用 `llm.image_media_type()` 卡一道（只认 jpeg/png/gif/webp）。卡在 llm 这一侧是因为「模型能不能读」是模型那边的事实；卡在下载之后是因为 webhook 上报的 `mime_type` 和元数据那一跳报的可以不一样，后者才是字节真正的类型。不卡的话就是一个 400，而且是**客户已经等完整个下载之后**才到的 400
+  - 导演台上是一条 `image.download` 的 tool span，和 `voice.transcribe` 同一个套路：TOOL_START 带 mime_type，TOOL_END 带「类型 + 字节数」。**沿用 tool 事件而不是新开事件类型**，前端不用改一行
+  - 三种失败（下载炸了 / 超过 `whatsapp_media_max_bytes` / 格式读不了）**对客户是同一句话**，因为客户下一步要做的事一样；是哪一种在导演台上分得开。和语音那条线的口径一致
+  - `UNSUPPORTED_TYPE_MESSAGE` 改成「文字、语音、图片」；原来那条「只支持文本和语音」的测试改成拿 sticker 来打——它现在才是真正没人接的类型
+
+  **验证到什么程度**
+  - 单测：容器里 **569 passed / 7 skipped**（新增 14 条）。webhook 侧 9 条：图片+说明文字到达模型、无说明文字也不会变成空 turn、history 里留的是说明文字不是图、按 `image` 块上的 id 去下载、导演台两条 span 的形状、下载失败、格式读不了（两条都验了 `get_reply` 根本没被调用）、没有 media id 就不下载、带 `menu` 说明文字的图不重置 demo。llm 侧 5 条：图块的 base64/顺序、**只有最后一轮被改写成 blocks**（更早那轮的图早就没了）、没有图的时候消息体仍然是纯字符串（这条是给其余所有消息路径的回归绳）、media_type 去参数、不认识的格式
+  - 改了 6 处既有测试替身的签名（`def capture(bot, customer, history)` → 加 `image=None`）——`get_reply` 多了一个参数，替身就得跟着变
+  - **踩了一个坑，记下来**：新写的 `test_a_download_that_fails_is_answered_rather_than_thrown` 和语音那节的同名函数**在同一个文件里撞名**，Python 直接用后定义的覆盖前面的，语音那条测试就**无声无息地消失了**——pytest 全绿，只是少跑一条。是因为对了一下总数（预期 569 实得 568）才发现的。`grep -oh "^def test_[a-z_0-9]*" tests/*.py | sort | uniq -d` 可以查，以后同一个文件里加同类测试先跑一下
+  - ⚠️ **没有一次真实的模型调用**：本地 `backend/.env` 的 `ANTHROPIC_API_KEY` 是空的（key 只在 VPS 上），和任务 12.2 同一个处境。代码侧能证明的是「图的字节和 media_type 按 Anthropic 的格式进了请求」，**证明不了 Claude 真的看懂了那张图**——那是任务 17 剧本 2a 第一步的事
+  - 边角：客户在**还没选 demo** 的时候发图，图会照样下载完再被丢掉（回的是 demo 列表）。语音那条线一模一样的行为，保持一致没动
+  - 边角：`whatsapp_media_max_bytes` 默认 5MB，正好压在 Anthropic 单图 5MB 的线上；WhatsApp 自己的入站图片上限也是 5MB，所以没有再加第二道尺寸检查
+  - 网页聊天（`routers/chat.py`）**没有接图片**，它没有上传入口。本任务只动 WhatsApp 这条线
 
 - [x] ~~**任务 15：语音转录抽象层 + 一个实现**~~——**已由任务 36 完成（2026-09-06），不要重做**。36 就是它，只是后来在批次 06 里重开、口径改成抽象层。抽象层、webhook 的 `audio` 分支、pytest 全都落地了，真机也验过。
   ⚠️ **但有两处残留，是 15 要求过而 36 没做满的**，谁捡起来就在那里做，别再开一个新任务：

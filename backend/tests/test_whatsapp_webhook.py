@@ -10,6 +10,7 @@ from app.config import settings
 from app.console import events
 from app.main import app
 from app.routers.whatsapp_webhook import (
+    IMAGE_UNREADABLE_MESSAGE,
     UNSUPPORTED_TYPE_MESSAGE,
     VOICE_UNREADABLE_MESSAGE,
     Sender,
@@ -174,7 +175,7 @@ def test_tapping_a_product_reaches_the_model_as_the_order_it_is():
     _in_conversation(phone)
     seen = {}
 
-    def capture(bot, customer, history):
+    def capture(bot, customer, history, image=None):
         seen["said"] = history[-1].content
         return "How many would you like?"
 
@@ -205,7 +206,7 @@ def test_the_model_is_handed_the_number_that_actually_wrote_in():
     _in_conversation(phone)
     seen = {}
 
-    def capture(bot, customer, history):
+    def capture(bot, customer, history, image=None):
         seen["customer"] = customer
         return "Sure."
 
@@ -241,7 +242,7 @@ def test_writing_in_again_continues_where_they_left_off():
 
     seen = {}
 
-    def capture(bot, customer, history):
+    def capture(bot, customer, history, image=None):
         seen["bot"] = bot.id
         seen["history"] = [m.content for m in history]
         return "Ten in KL."
@@ -577,7 +578,7 @@ def test_a_voice_note_reaches_the_model_as_the_sentence_that_was_spoken():
     spoken = "Boleh tak you check ada stock tak, 那个 earbuds?"
     seen = {}
 
-    def capture(bot, customer, history):
+    def capture(bot, customer, history, image=None):
         seen["said"] = history[-1].content
         return "Let me check the stock."
 
@@ -720,12 +721,196 @@ def test_an_audio_message_with_no_media_id_is_answered_without_a_download():
     events.clear()
 
 
-def test_a_picture_is_still_answered_with_the_type_it_instead_message():
-    """Only audio was added. Images are task 14, and must not look handled."""
+def test_a_message_type_nobody_handles_is_still_answered_with_the_type_it_instead():
+    """Text, voice and photos are handled. A sticker is not, and must not look
+    like it was: the customer has to be told to type."""
     phone = "60129994010"
     _in_conversation(phone)
-    picture = {**_voice_message(phone), "type": "image", "image": {"id": "media-img-1"}}
+    sticker = {**_voice_message(phone), "type": "sticker", "sticker": {"id": "media-stk-1"}}
 
-    sent = dispatch_message(picture)
+    sent = dispatch_message(sticker)
 
     assert sent[0]["text"]["body"] == UNSUPPORTED_TYPE_MESSAGE
+
+
+# -- photos (task 14) ----------------------------------------------------------
+#
+# Unlike a voice note, a photo cannot be turned into text on the way in, so this
+# is the one input that reaches the model as itself. The seam these guard: the
+# bytes get in, the history gets the caption instead of the bytes, and each of
+# the three ways a download comes to nothing leaves the customer with something
+# to do and the console with a line saying which it was.
+
+PHOTO_MIME = "image/jpeg"
+PHOTO_BYTES = b"\xff\xd8\xff-pretend-a-jpeg"
+
+
+def _photo_message(
+    phone: str, media_id: str = "media-img-1", caption: str | None = None, seq: int = 7
+) -> dict:
+    image = {"id": media_id, "mime_type": PHOTO_MIME, "sha256": "abc"}
+    if caption is not None:
+        image["caption"] = caption
+    return {"id": f"wamid.{phone}.{seq}", "from": phone, "type": "image", "image": image}
+
+
+@contextmanager
+def _sees(mime_type: str = PHOTO_MIME):
+    media = whatsapp_media.Media(content=PHOTO_BYTES, mime_type=mime_type)
+    with patch.object(whatsapp_media, "fetch_media", return_value=media) as fetch:
+        yield fetch
+
+
+def test_a_photo_reaches_the_model_as_an_image_alongside_its_caption():
+    """The acceptance criterion. What the customer photographed is what the bot
+    is asked about, and the caption travels with it rather than separately."""
+    phone = "60129995001"
+    _in_conversation(phone)
+    seen = {}
+
+    def capture(bot, customer, history, image=None):
+        seen["said"] = history[-1].content
+        seen["image"] = image
+        return "Those are the SP-1001 earbuds."
+
+    with _sees():
+        with patch.object(llm, "get_reply", side_effect=capture):
+            sent = dispatch_message(_photo_message(phone, caption="what model is this?"))
+
+    assert seen["said"] == "[photo] what model is this?"
+    assert seen["image"] == llm.Image(data=PHOTO_BYTES, media_type="image/jpeg")
+    assert [message["type"] for message in sent] == ["text"]
+
+
+def test_a_photo_with_no_caption_is_still_a_turn_and_not_an_empty_one():
+    """Most photos arrive with nothing written under them. An empty user message
+    is one the API refuses and the transcript cannot explain."""
+    phone = "60129995002"
+    _in_conversation(phone)
+    seen = {}
+
+    def capture(bot, customer, history, image=None):
+        # Read inside the call: the reply is appended to this same list on the
+        # way out, so by the time `call_args` is inspected the last turn is the
+        # bot's, not the customer's.
+        seen["said"] = history[-1].content
+        return "A cracked earbud case."
+
+    with _sees():
+        with patch.object(llm, "get_reply", side_effect=capture):
+            dispatch_message(_photo_message(phone))
+
+    assert seen["said"] == "[photo]"
+
+
+def test_the_caption_is_what_gets_remembered_not_the_picture():
+    """History is persisted per customer and replayed on every later turn. A photo
+    kept in it would be paid for in Redis once and in input tokens forever."""
+    phone = "60129995003"
+    _in_conversation(phone)
+
+    with _sees():
+        with patch.object(llm, "get_reply", return_value="A pair of earbuds."):
+            dispatch_message(_photo_message(phone, caption="what is this?"))
+
+    stored = user_store.get(phone)
+    assert [m.content for m in stored.history] == ["[photo] what is this?", "A pair of earbuds."]
+
+
+def test_the_photo_is_fetched_by_the_id_on_the_image_block():
+    phone = "60129995004"
+    _in_conversation(phone)
+
+    with _sees() as fetch:
+        with patch.object(llm, "get_reply", return_value="Seen."):
+            dispatch_message(_photo_message(phone, media_id="media-img-42"))
+
+    assert fetch.call_args.args[0] == "media-img-42"
+
+
+def test_the_console_shows_the_file_arriving_with_its_type_and_size():
+    """The customer sees only a pause. The room watching the second screen sees
+    the download happen before anything is said about it."""
+    phone = "60129995005"
+    _in_conversation(phone)
+    events.clear()
+
+    with _sees():
+        with patch.object(llm, "get_reply", return_value="Seen."):
+            dispatch_message(_photo_message(phone))
+
+    spans = [e for e in events.since(0) if e.tool == "image.download"]
+    assert [e.type for e in spans] == [events.TOOL_START, events.TOOL_END]
+    assert spans[0].input["mime_type"] == PHOTO_MIME
+    assert spans[1].status == "ok"
+    assert spans[1].output == f"image/jpeg, {len(PHOTO_BYTES)} bytes"
+    assert spans[1].duration_ms is not None
+    events.clear()
+
+
+def test_a_photo_download_that_fails_is_answered_rather_than_thrown():
+    """`fetch_media` raises for a file over the size cap as well as for a dead
+    network, and both arrive here as a customer waiting on a reply."""
+    phone = "60129995006"
+    _in_conversation(phone)
+    events.clear()
+
+    with patch.object(
+        whatsapp_media, "fetch_media", side_effect=whatsapp_media.MediaTooLargeError("too big")
+    ):
+        with patch.object(llm, "get_reply") as get_reply:
+            sent = dispatch_message(_photo_message(phone))
+
+    get_reply.assert_not_called()
+    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE
+    ended = [e for e in events.since(0) if e.type == events.TOOL_END]
+    assert ended[0].status == "error" and "too big" in ended[0].output
+    events.clear()
+
+
+def test_a_format_the_model_cannot_read_never_becomes_an_api_call():
+    """Sent as a TIFF, say. The 400 would arrive after the download was already
+    paid for, and reach the customer as a dead bot rather than as an answer."""
+    phone = "60129995007"
+    _in_conversation(phone)
+    events.clear()
+
+    with _sees(mime_type="image/tiff"):
+        with patch.object(llm, "get_reply") as get_reply:
+            sent = dispatch_message(_photo_message(phone))
+
+    get_reply.assert_not_called()
+    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE
+    ended = [e for e in events.since(0) if e.type == events.TOOL_END]
+    assert ended[0].status == "error" and "image/tiff" in ended[0].output
+    events.clear()
+
+
+def test_an_image_message_with_no_media_id_is_answered_without_a_download():
+    phone = "60129995008"
+    _in_conversation(phone)
+    events.clear()
+    no_id = {**_photo_message(phone), "image": {"mime_type": PHOTO_MIME}}
+
+    with patch.object(whatsapp_media, "fetch_media") as fetch:
+        sent = dispatch_message(no_id)
+
+    fetch.assert_not_called()
+    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE
+    failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
+    assert len(failures) == 1 and "no media id" in failures[0].output
+    events.clear()
+
+
+def test_a_photo_captioned_menu_does_not_start_the_demo_over():
+    """The marker earns its keep here: `menu` resets the demo, and a customer
+    captioning a photo with it is asking about the photo, not for the list."""
+    phone = "60129995009"
+    _in_conversation(phone)
+
+    with _sees():
+        with patch.object(llm, "get_reply", return_value="That's our menu board."):
+            sent = dispatch_message(_photo_message(phone, caption="menu"))
+
+    assert [message["type"] for message in sent] == ["text"]
+    assert user_store.get(phone).bot_id is not None

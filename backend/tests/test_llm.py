@@ -1,3 +1,4 @@
+import base64
 import json
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from app.console import events
 from app.services import llm, whatsapp
 from app.tools import registry as tool_registry
 from app.services.user_store import UserProfile
+from app.session_store import Message
 
 PHONE = "60173948123"
 
@@ -499,3 +501,89 @@ def test_the_control_switch_takes_even_a_tooled_bot_down_the_plain_path():
     assert _tool_events() == []
 
     events.clear()
+
+
+# -- photos (task 14) ----------------------------------------------------------
+#
+# A picture is the one thing that cannot become text on the way in, so unlike a
+# voice note it does reach `get_reply`. What these guard is where it goes: into
+# this turn's request and nowhere else -- not into a message of its own, and not
+# into the history that is replayed and paid for on every turn after this one.
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n-pretend-a-photo"
+
+
+def test_a_photo_rides_on_this_turns_message_with_the_caption_after_it():
+    """The acceptance criterion: the bytes reach the model, in the same message
+    as the words that came with them, image first."""
+    bot = get_bot("retail")
+    history = [Message(role="user", content="[photo] is this covered by warranty?")]
+    response = _assistant_message([BetaTextBlock(type="text", text="Let me look.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(
+                bot, _customer(), history, image=llm.Image(PNG_BYTES, media_type="image/png")
+            )
+
+    content = mock_create.call_args.kwargs["messages"][-1]["content"]
+    assert [block["type"] for block in content] == ["image", "text"]
+    assert content[0]["source"] == {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": base64.b64encode(PNG_BYTES).decode("ascii"),
+    }
+    assert content[1]["text"] == "[photo] is this covered by warranty?"
+
+
+def test_only_the_newest_turn_carries_the_picture():
+    """An earlier photo is gone by the next turn -- that is the whole point of
+    keeping it out of the history -- so nothing below the last message may be
+    rewritten into blocks."""
+    bot = get_bot("retail")
+    history = [
+        Message(role="user", content="[photo] what is this?"),
+        Message(role="assistant", content="A pair of earbuds."),
+        Message(role="user", content="how much?"),
+    ]
+    response = _assistant_message([BetaTextBlock(type="text", text="RM 199.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(
+                bot, _customer(), history, image=llm.Image(PNG_BYTES, media_type="image/png")
+            )
+
+    sent = mock_create.call_args.kwargs["messages"]
+    assert sent[0]["content"] == "[photo] what is this?"
+    assert sent[1]["content"] == "A pair of earbuds."
+    assert isinstance(sent[2]["content"], list)
+
+
+def test_a_turn_with_no_photo_still_sends_plain_strings():
+    """Every other message in this project comes through here. The image path has
+    to stay invisible to them."""
+    bot = get_bot("retail")
+    history = [Message(role="user", content="do you deliver to Penang?")]
+    response = _assistant_message([BetaTextBlock(type="text", text="We do.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(bot, _customer(), history)
+
+    assert mock_create.call_args.kwargs["messages"] == [
+        {"role": "user", "content": "do you deliver to Penang?"}
+    ]
+
+
+def test_the_media_type_is_the_bare_type_without_the_headers_parameters():
+    assert llm.image_media_type("image/jpeg") == "image/jpeg"
+    assert llm.image_media_type("image/JPEG; charset=binary") == "image/jpeg"
+
+
+def test_a_format_the_model_cannot_read_is_refused_here_rather_than_by_the_api():
+    """Anything outside the four types is a 400 from Anthropic that arrives only
+    after the customer has already waited for the download."""
+    assert llm.image_media_type("image/tiff") is None
+    assert llm.image_media_type("application/pdf") is None
+    assert llm.image_media_type("") is None

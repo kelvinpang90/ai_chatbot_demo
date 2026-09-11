@@ -135,7 +135,7 @@ def test_what_is_said_on_the_laptop_is_there_on_the_phone(client):
 
     seen = {}
 
-    def capture(bot, customer, history):
+    def capture(bot, customer, history, image=None):
         seen["history"] = [(m.role, m.content) for m in history]
         return "Tuesday, confirmed."
 
@@ -156,7 +156,7 @@ def test_the_model_is_handed_the_number_the_visitor_typed(client):
     client.post(f"/api/chat/{key}/select", json={"bot_id": "retail", "lang": "en"})
     seen = {}
 
-    def capture(bot, customer, history):
+    def capture(bot, customer, history, image=None):
         seen["customer"] = customer
         return "Sure."
 

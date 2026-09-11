@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
+from typing import NamedTuple
 
 import anthropic
 
@@ -34,6 +36,36 @@ MAX_TOOL_ITERATIONS = 8
 # A tool that returns a whole product catalogue should not push the rest of the
 # demo off the console screen.
 MAX_CONSOLE_OUTPUT_CHARS = 2000
+
+# What the Messages API will accept inside an image block. Anything else is a 400
+# that arrives after the customer has already waited for the download, so the
+# check happens here, at the boundary that knows what the model can read, and the
+# caller answers for it.
+IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+
+
+class Image(NamedTuple):
+    """A picture to put in front of the model for this turn and no other.
+
+    Deliberately not a `Message`: history is persisted per customer and replayed
+    on every subsequent turn, so a photo kept in it would be paid for in Redis
+    once and in input tokens forever. What history keeps instead is the line the
+    router writes in its place -- the caption, marked as having come with a
+    photo -- which is what the model needs to know a picture was discussed.
+    """
+
+    data: bytes
+    media_type: str
+
+
+def image_media_type(mime_type: str) -> str | None:
+    """The media_type an image block can carry, or None if the model cannot read it.
+
+    WhatsApp reports types the way a header spells them (`image/jpeg; charset=...`
+    does turn up), and the parameters after the semicolon are not part of the type.
+    """
+    base = mime_type.split(";")[0].strip().lower()
+    return base if base in IMAGE_MEDIA_TYPES else None
 
 FALLBACK_REPLY = (
     "抱歉，我这边出了点问题，请稍后再试。 / "
@@ -299,10 +331,40 @@ def _record_usage(bot: BotConfig, model: str, response) -> None:
     )
 
 
-def get_reply(bot: BotConfig, customer: UserProfile | None, history: list[Message]) -> str:
+def _as_messages(history: list[Message], image: Image | None) -> list[dict]:
+    """The conversation as the API wants it, with this turn's photo attached to it.
+
+    The image rides on the last user message rather than one of its own: a bare
+    image turn reads as a message with no question in it, and the caption that
+    came with the photo belongs in the same breath as the photo. Image first,
+    then the words -- Anthropic's own guidance for a single attachment.
+    """
+    messages = [{"role": m.role, "content": m.content} for m in history]
+    if image is None or not messages or messages[-1]["role"] != "user":
+        return messages
+    messages[-1]["content"] = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": base64.b64encode(image.data).decode("ascii"),
+            },
+        },
+        {"type": "text", "text": messages[-1]["content"]},
+    ]
+    return messages
+
+
+def get_reply(
+    bot: BotConfig,
+    customer: UserProfile | None,
+    history: list[Message],
+    image: Image | None = None,
+) -> str:
     model = model_for(bot)
     system = build_system_blocks(bot, customer)
-    messages = [{"role": m.role, "content": m.content} for m in history]
+    messages = _as_messages(history, image)
     tools = get_tools(bot.id)
 
     try:

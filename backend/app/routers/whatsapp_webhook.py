@@ -19,13 +19,20 @@ logger = logging.getLogger(__name__)
 
 RATE_LIMIT_MESSAGE = "You've reached today's message limit for this demo. Please try again tomorrow."
 UNSUPPORTED_TYPE_MESSAGE = (
-    "Sorry, I can only read text and voice messages in this demo - "
+    "Sorry, I can only read text, voice and photo messages in this demo - "
     "please type your question instead."
 )
 # One line for both ways a voice note can come to nothing, because the customer's
 # next move is the same either way. Which of the two it was is on the console.
 VOICE_UNREADABLE_MESSAGE = (
     "Sorry, I couldn't make out that voice message - please type your question instead."
+)
+# Same posture for a photo. Three ways it can come to nothing -- the download
+# failed, the file was over the cap, or it is a format the model cannot read --
+# and one thing left for the customer to do about any of them.
+IMAGE_UNREADABLE_MESSAGE = (
+    "Sorry, I couldn't open that photo - please try sending it again, "
+    "or describe what you're seeing."
 )
 GREETING_SUFFIX_EN = "How can I help you today?"
 # Not a tool the model called, but the same thing to the person watching the
@@ -34,6 +41,14 @@ GREETING_SUFFIX_EN = "How can I help you today?"
 # a new event type nothing knows how to draw.
 VOICE_TOOL = "voice.transcribe"
 NOTHING_AUDIBLE = "(nothing audible)"
+# Same reasoning as VOICE_TOOL: a download the customer is waiting on, with an
+# input and an outcome, drawn as the span it already is.
+IMAGE_TOOL = "image.download"
+# What a photo leaves behind in the history the model is replayed next turn. The
+# picture itself is gone by then -- see llm.Image -- and without this the turn
+# reads as if the customer had sent the caption on its own, or, where there was
+# no caption, as if they had sent nothing at all.
+PHOTO_MARKER = "[photo]"
 MENU_KEYWORDS = {"menu", "菜单"}
 
 
@@ -223,6 +238,21 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
         # ERP, and the history the model reads holds the words, not the audio.
         return _handle_text_message(sender, spoken, source=audit.VOICE)
 
+    if msg_type == "image":
+        block = message.get("image") or {}
+        photo = _fetch_photo(block)
+        if photo is None:
+            return [whatsapp.build_text_message(sender.key, IMAGE_UNREADABLE_MESSAGE)]
+        # The picture travels beside the turn, not inside it: what the history
+        # keeps is the caption under a marker, which is all the model can use on
+        # a later turn anyway.
+        return _handle_text_message(
+            sender,
+            _photo_text(str(block.get("caption") or "")),
+            source=audit.IMAGE,
+            image=photo,
+        )
+
     if msg_type != "text":
         logger.info("Ignoring unsupported message type '%s' from %s", msg_type, sender.key)
         return [whatsapp.build_text_message(sender.key, UNSUPPORTED_TYPE_MESSAGE)]
@@ -285,6 +315,76 @@ def _transcribe_voice_note(audio: dict) -> str:
     return spoken
 
 
+def _photo_text(caption: str) -> str:
+    """A photo as the line that stands in for it in the transcript.
+
+    One string doing both jobs, so there is no branch: it is the text block sent
+    alongside the picture this turn, and it is what stays in the history once the
+    picture is gone. The marker also keeps a photo captioned "menu" from resetting
+    the demo -- `MENU_KEYWORDS` matches the whole message and this is never one.
+    """
+    return f"{PHOTO_MARKER} {caption}".strip() if caption.strip() else PHOTO_MARKER
+
+
+def _fetch_photo(image: dict) -> llm.Image | None:
+    """The picture the customer sent, or None if we cannot put it before the model.
+
+    The console line is half the point, as with a voice note: the customer sees
+    only a pause, while the room watching the second screen sees the file arrive
+    with its type and size before anything is said about it.
+    """
+    media_id = image.get("id")
+    if not media_id:
+        logger.error("Image message arrived with no media id: keys=%s", sorted(image))
+        events.emit(
+            type=events.SEND_FAILED,
+            tool=IMAGE_TOOL,
+            tool_use_id="",
+            output="image message carried no media id",
+            status="error",
+        )
+        return None
+
+    events.emit(
+        type=events.TOOL_START,
+        tool=IMAGE_TOOL,
+        tool_use_id=media_id,
+        input={"mime_type": image.get("mime_type", "")},
+    )
+    started = time.monotonic()
+    try:
+        media = whatsapp_media.fetch_media(media_id)
+    except whatsapp_media.MediaError as failure:
+        logger.exception("Could not download image %s", media_id)
+        _end_image_span(media_id, started, f"{type(failure).__name__}: {failure}", "error")
+        return None
+
+    # Checked after the download rather than off the webhook's `mime_type`,
+    # because the type Meta reports on the metadata hop is the one the bytes
+    # actually came with -- and the model is the party that gets to refuse.
+    media_type = llm.image_media_type(media.mime_type)
+    if not media_type:
+        logger.error("Image %s is of unreadable type '%s'", media_id, media.mime_type)
+        _end_image_span(
+            media_id, started, f"cannot read an image of type '{media.mime_type}'", "error"
+        )
+        return None
+
+    _end_image_span(media_id, started, f"{media_type}, {len(media.content)} bytes", "ok")
+    return llm.Image(data=media.content, media_type=media_type)
+
+
+def _end_image_span(media_id: str, started: float, output: str, status: str) -> None:
+    events.emit(
+        type=events.TOOL_END,
+        tool=IMAGE_TOOL,
+        tool_use_id=media_id,
+        output=output[: llm.MAX_CONSOLE_OUTPUT_CHARS],
+        duration_ms=int((time.monotonic() - started) * 1000),
+        status=status,
+    )
+
+
 def _start_over(sender: Sender) -> None:
     """Put this customer back at the demo menu, without forgetting them.
 
@@ -319,7 +419,12 @@ def _remember_identity(profile, sender: Sender) -> None:
         profile.display_name = sender.username
 
 
-def _handle_text_message(sender: Sender, text: str, source: str = audit.TEXT) -> list[dict]:
+def _handle_text_message(
+    sender: Sender,
+    text: str,
+    source: str = audit.TEXT,
+    image: llm.Image | None = None,
+) -> list[dict]:
     if text.strip().lower() in MENU_KEYWORDS:
         logger.info("Menu reset requested by %s", sender.key)
         _start_over(sender)
@@ -349,7 +454,7 @@ def _handle_text_message(sender: Sender, text: str, source: str = audit.TEXT) ->
         # whether we managed to answer it -- and a turn that produced nothing is
         # precisely the kind a transcript is opened to explain.
         audit.record_message("user", text, source)
-        reply = llm.get_reply(bot, profile, profile.history)
+        reply = llm.get_reply(bot, profile, profile.history, image=image)
         # Built before it is recorded, deliberately. A reply WhatsApp will not carry
         # must not become part of this customer's history either: the turn is
         # dropped whole and the next message starts from the last good exchange,

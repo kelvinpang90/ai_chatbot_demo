@@ -23,12 +23,14 @@ WEB = "web"
 
 # How a customer's words reached us. Worth a column of its own because "they
 # spoke it" and "they tapped it off a list" are two of the things a demo is
-# meant to prove, and by the time a message is recorded all three look alike --
+# meant to prove, and by the time a message is recorded they all look alike --
 # a voice note is transcribed into plain text before anything downstream sees
-# it, and a list tap is resolved into the sentence it stands for.
+# it, a list tap is resolved into the sentence it stands for, and a photo is
+# left behind as the caption that came with it.
 TEXT = "text"
 VOICE = "voice"
 INTERACTIVE = "interactive"
+IMAGE = "image"
 
 # The console's ring buffer holds 200 events and forgets them on restart; this is
 # the copy that outlives the demo. Long values are still capped, because one
