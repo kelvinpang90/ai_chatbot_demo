@@ -43,6 +43,16 @@ def test_system_blocks_carry_the_persona_and_the_customer_on_file():
     assert "Lee Kok Hao" in volatile["text"]
 
 
+def test_chinese_means_the_simplified_kind():
+    """Found on a real phone: a customer typed simplified and got traditional
+    back. Malaysia writes simplified, so that reads as a bot from somewhere
+    else - which is the one impression a localised demo cannot afford."""
+    stable = llm.build_system_blocks(get_bot("retail"), _customer())[0]
+
+    assert "Simplified Chinese" in stable["text"]
+    assert "Traditional" in stable["text"]
+
+
 def test_the_real_number_is_handed_over_rather_than_asked_for():
     """Task 32's point: WhatsApp already told us the number.
 

@@ -63,7 +63,7 @@ STABLE_SYSTEM_TEMPLATE = """{persona_prompt}
 Business context data (JSON), use it to answer accurately and never invent data not present here:
 {context_data}
 
-Language: detect the language the user is writing in (Chinese, English, or Malay) and reply in that same language. If unsure, default to English.
+Language: detect the language the user is writing in (Chinese, English, or Malay) and reply in that same language. Chinese means Simplified Chinese - that is what Malaysia writes, and it is what you reply in even when the customer writes to you in Traditional. If unsure, default to English.
 
 Length: keep replies concise - a few sentences at most, this is a chat/WhatsApp conversation, not an email.
 
