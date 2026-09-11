@@ -536,6 +536,36 @@ def test_a_photo_rides_on_this_turns_message_with_the_caption_after_it():
     assert content[1]["text"] == "[photo] is this covered by warranty?"
 
 
+def test_a_photo_reaches_a_bot_that_has_tools_as_well():
+    """A bot with tools never touches `messages.create`: it goes to the beta tool
+    runner, which validates a request of its own. That is the path the flagship
+    retail bot takes and therefore the one scene 2a runs on, and it was an
+    assumption rather than an assertion until a live call proved it out."""
+    bot = get_bot("retail")
+    history = [Message(role="user", content="[photo] what model is this?")]
+
+    @beta_tool
+    def erp_search_sku(query: str) -> str:
+        """Search the product catalogue.
+
+        Args:
+            query: The name or code to look for.
+        """
+        return "no results"
+
+    final = _assistant_message([BetaTextBlock(type="text", text="SP-1001.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[erp_search_sku]):
+        with patch.object(llm._client.beta.messages, "parse", return_value=final) as mock_parse:
+            llm.get_reply(
+                bot, _customer(), history, image=llm.Image(PNG_BYTES, media_type="image/png")
+            )
+
+    content = mock_parse.call_args.kwargs["messages"][-1]["content"]
+    assert [block["type"] for block in content] == ["image", "text"]
+    assert content[0]["source"]["media_type"] == "image/png"
+
+
 def test_only_the_newest_turn_carries_the_picture():
     """An earlier photo is gone by the next turn -- that is the whole point of
     keeping it out of the history -- so nothing below the last message may be

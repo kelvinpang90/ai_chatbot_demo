@@ -772,7 +772,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 >
 > 2b 是这一批真正的销售武器。2a 证明「它认得懂」，2b 证明「**这是你的资料**」——客户不用想象，他手里就有东西可以立刻试。
 
-- [x] **任务 14：图片消息接入**——**2026-09-11 代码完成，真机那一枪留给任务 17**
+- [x] **任务 14：图片消息接入**——**2026-09-11 完成，含真实模型实测**（真机那一枪仍留给任务 17）
   文件：`backend/app/routers/whatsapp_webhook.py`（`dispatch_message` 的 `image` 分支）、`backend/app/services/llm.py`（`Image` + image content block）、`backend/app/services/audit.py`（`IMAGE` 来源）、测试
   目标：收到图片 → 用 `fetch_media()` 下载 → 转成 Claude 的 image content block 塞进对话；去掉现在的「只支持文本」提示
   验收：pytest 覆盖 image 分支；真机发一张商品照片，bot 能描述它
@@ -788,10 +788,17 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - `UNSUPPORTED_TYPE_MESSAGE` 改成「文字、语音、图片」；原来那条「只支持文本和语音」的测试改成拿 sticker 来打——它现在才是真正没人接的类型
 
   **验证到什么程度**
-  - 单测：容器里 **569 passed / 7 skipped**（新增 14 条）。webhook 侧 9 条：图片+说明文字到达模型、无说明文字也不会变成空 turn、history 里留的是说明文字不是图、按 `image` 块上的 id 去下载、导演台两条 span 的形状、下载失败、格式读不了（两条都验了 `get_reply` 根本没被调用）、没有 media id 就不下载、带 `menu` 说明文字的图不重置 demo。llm 侧 5 条：图块的 base64/顺序、**只有最后一轮被改写成 blocks**（更早那轮的图早就没了）、没有图的时候消息体仍然是纯字符串（这条是给其余所有消息路径的回归绳）、media_type 去参数、不认识的格式
+  - 单测：容器里 **570 passed / 7 skipped**（新增 15 条）。webhook 侧 9 条：图片+说明文字到达模型、无说明文字也不会变成空 turn、history 里留的是说明文字不是图、按 `image` 块上的 id 去下载、导演台两条 span 的形状、下载失败、格式读不了（两条都验了 `get_reply` 根本没被调用）、没有 media id 就不下载、带 `menu` 说明文字的图不重置 demo。llm 侧 6 条：图块的 base64/顺序、**只有最后一轮被改写成 blocks**（更早那轮的图早就没了）、没有图的时候消息体仍然是纯字符串（这条是给其余所有消息路径的回归绳）、media_type 去参数、不认识的格式
   - 改了 6 处既有测试替身的签名（`def capture(bot, customer, history)` → 加 `image=None`）——`get_reply` 多了一个参数，替身就得跟着变
   - **踩了一个坑，记下来**：新写的 `test_a_download_that_fails_is_answered_rather_than_thrown` 和语音那节的同名函数**在同一个文件里撞名**，Python 直接用后定义的覆盖前面的，语音那条测试就**无声无息地消失了**——pytest 全绿，只是少跑一条。是因为对了一下总数（预期 569 实得 568）才发现的。`grep -oh "^def test_[a-z_0-9]*" tests/*.py | sort | uniq -d` 可以查，以后同一个文件里加同类测试先跑一下
-  - ⚠️ **没有一次真实的模型调用**：本地 `backend/.env` 的 `ANTHROPIC_API_KEY` 是空的（key 只在 VPS 上），和任务 12.2 同一个处境。代码侧能证明的是「图的字节和 media_type 按 Anthropic 的格式进了请求」，**证明不了 Claude 真的看懂了那张图**——那是任务 17 剧本 2a 第一步的事
+  - ✅ **真实模型调用：当天用户补上本地 key 后打了四枪，全过**。没有真机（没人拿手机发图），但**「Claude 真的看懂了那张图」这件事已经被证明了**，剩给任务 17 的只是手机端那一跳。做法：容器里手写一张 PNG（540×246：大字 `SP-1001` + 左下红方块 + 右下绿圆点；容器里没 Pillow，用 zlib 直接编码），把 `fetch_media` 换成它，**走完整的 `dispatch_message`**，模型是真的：
+    1. **retail / 工具关掉**（走 `messages.create`）：「The image shows the text "SP-1001" … a red square on the left and a green circle on the right」——**逐项对得上，一个没错**
+    2. **同一会话第二轮，不带图**，问「刚才那张图上的编号是什么」：答 `SP-1001`。这正好实测了上面那条取舍——图没了，它靠自己上一轮的描述接住了
+    3. **retail / 工具开着**（走 beta `tool_runner`；只挂只读工具，故意不给写工具，免得在 CRM/ERP 留脏数据，见阻塞项 D）：读出型号和两个图形后**真的去调了 `erp_search_sku`**，查 `SP-1001` 和 `1001` 都没结果，于是照实说「系统里查不到」并请用户拍品牌名或条码——**没编**。中文提问中文答。这一枪同时验掉三件事：beta 端点吃图片块、图片能触发真实工具调用、`NEVER_INVENT` 在图片路径上照样生效
+    4. **hotel**（也带工具，但工具全在本地记录里、不碰后台）：读出了 `SP-1001`
+  - ⚠️ **实测顺手挖出一个单测缺口，已补**：带工具的 bot 根本不走 `messages.create`，走的是 beta `tool_runner`——**那是另一条会自己校验请求的路径，而 retail 正是带工具的**。原来 5 条 llm 测试全在无工具那条路上，「beta 端点接不接受图片块」一直是个假设。补了 `test_a_photo_reaches_a_bot_that_has_tools_as_well`，现在 **570 passed / 7 skipped**
+  - 📌 **一个记下来但没改的观察**：hotel bot 第一次被问「房间里这块牌子写了什么」时回了「I can't read or verify images」——**这是句关于自己能力的假话**。但换成切题的问法（「前台给我的卡上是哪个预订号」）它就正常读图了，所以触发的是 `NEVER_INVENT` 里「超出本业务的问题不归你答」那条；规则本身没错，只是理由编歪了。**没为此改提示词**：那是所有 bot 共用的缓存前缀，而演示时客户发的图一定是切题的。真在客户面前撞见了再说
+  - ⚠️ **本地 `backend/.env` 里 `ANTHROPIC_API_KEY` 有两行**（第 1 行空、第 27 行有值）。dotenv 取后出现的那个，所以跑得通——但这是个定时炸弹，谁碰到谁把空的那行删掉
   - 边角：客户在**还没选 demo** 的时候发图，图会照样下载完再被丢掉（回的是 demo 列表）。语音那条线一模一样的行为，保持一致没动
   - 边角：`whatsapp_media_max_bytes` 默认 5MB，正好压在 Anthropic 单图 5MB 的线上；WhatsApp 自己的入站图片上限也是 5MB，所以没有再加第二道尺寸检查
   - 网页聊天（`routers/chat.py`）**没有接图片**，它没有上传入口。本任务只动 WhatsApp 这条线
