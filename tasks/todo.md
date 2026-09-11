@@ -648,6 +648,16 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 模型有大约一半的概率把 `don't` 写成花体撇号 `don’t`，ASCII 词表一个都匹配不上，**一条答得很好的回复被判成了瞎编**。判定前统一撇号
   - **判定器只断言「它承认了查不到」，不断言「它没编」**：一条好的拒绝经常顺手带上真数据（「没有 Aurora X9，最接近的是 Sony WF-C710N，RM 328.90」），拿正则抓「有没有出现数字」会把最好的回答判红。所以 eval 跑 `-s` 把七条问答原样打出来**给人读**——断言管「有没有硬编」，打印出来的稿子管其余
 
+  ✅ **验证到什么程度**
+  - 单测：容器里 **542 passed**（基线 528，+14）+ 7 skipped（没给 `REFUSAL_EVAL_BASE_URL` 时 eval 自己跳过）。这 14 条守的是**合同有没有送到模型手上**：六个 bot 逐个断言 `NEVER_INVENT` 在系统提示里、三段一段不少、在**缓存块**里而不在按人次重发的那块、没有工具的 bot 拿到的是同一份
+  - ✅ **线上真模型跑过了，而且是改前改后各跑一遍**（`REFUSAL_EVAL_BASE_URL=https://chatbot.acuventech.com`，七条问答的原文都读过）。**改前 7 条里 5 条本来就答得好**（retail 那三条是任务 11 早就写死的口径），**真正被这次改掉的是没有工具的那两个**：
+    - `food`「我的外卖到哪了」——改前：*「I'm not seeing any current order on file for this number (60100000135)」*，**它声称查了一份它根本没有的订单表，还把原始号码抖给了客户**；改后：*「I can't see any orders or driver locations from here, so I genuinely don't know where your delivery is right now」* + 主动提出让同事回电
+    - `realestate`「查一下我周六的看房预约」——改前：*「I don't have any viewing appointment on file for PROP-203 under this number」*（同样是假装查过预约本）；改后：*「I don't have access to the appointment book, so I can't confirm whether Saturday is right」* + 转给 PROP-203 的负责经纪
+    - 差别不是「有没有拒绝」，是**「查了但没有」和「我根本查不了」**。前者客户完全可以追问「那你再查一遍/换个号码查」，而 bot 只能继续演下去；后者把话说死了
+  - 部署：commit `9309241` 推 master，Deploy workflow 绿，线上 `select` 返回的已是新的 quick question，确认跑的是新镜像
+  - 副作用：线上 Redis 多了 7 条测试档案（`60100000130`-`136`）+ 1 条 `...139`（探 quick question 用），7 天自己过期；审计库多了 8 段 web 会话
+  - **仍然没验的**：**真机 WhatsApp 侧没走**（上面走的是网页那条线，同一条代码路径、同一份系统提示，但不是同一个入口）；**中文和马来文的拒绝没测**（七条 eval 全是英文；`NEVER_INVENT` 本身是英文，和其它提示词一样靠「用客户的语言回」那条规则翻译）；`banking` 没测也没改
+
 - [x] **任务 12：导演台 v1 页面**
   文件：`frontend/src/pages/Console.tsx`（新增）、`frontend/src/api.ts`、`frontend/nginx.conf`
   ⚠️ **开工第一件事：给 `/console/stream` 加鉴权。** 现在它没有任何保护，仅仅因为前端 nginx 不转 `/console/` 才打不到（见任务 3）。这个页面要能用就得加转发，那一刻这条流——里面是 ERP 订单和客户资料——就公开了。复用 `require_auth` 那套 `X-Access-Token` 即可，但 `EventSource` 不能设请求头，所以 token 要走查询参数
