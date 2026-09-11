@@ -982,9 +982,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     2. 英文 `1 photo or file you sent, read` 夹在逗号列表里断句混乱 → 改成 `1 photo or file of yours read`
     3. 马来文同样的逗号问题 → 同样改法
     - 这条记下来：**面向客户的文案，单测只能守住结构，读一遍才能守住它是不是人话**
-  - ⚠️ **没验的**：
+  - ⚠️ **部署之后又抓到两件事，都已修，记在这里因为两件都是「只有看真东西才看得见」**：
+    1. **那颗按钮部署了但打不到**。`frontend/nginx.conf` 是一条路由一条地列的，`/console/demo-summary` 不在里面，POST 落到 SPA 上被 nginx 答 405。是部署后 curl 线上才发现的。已加 location，并补了 `backend/tests/test_console_routing.py`——它读真实的 `nginx.conf` 和 `vite.config.ts`，比对后端声明的每一条 console 路由，把新加的 location 改掉会变红（验过）。**这条守卫第一次跑就又抓到一个**：`/console/history` 从任务 37.2 起就不在 vite 的 dev proxy 里
+    2. **时长算错了，而且错得离谱**。第一条真实会话 `a1317265` 从 16:34 跨到 19:25——同一个 `conversation_id` 活了 171 分钟，因为 demo 是下午选的、照片是晚上发的。原来用 `MIN/MAX(created_at)`，于是总结会说「刚才这 171 分钟里」。改成**按「久坐」算**：从最新一条消息往回走，遇到超过 30 分钟的间隔就停，工具调用也只数这一段。变异测试 6 处全红，其中一处是补出来的——**「长间隔正好在最后一条消息之前」**（客户隔三小时只发一张照片）这个真实形状，第一版逻辑答错而没有测试发现
+  - ⚠️ **仍然没验的**：
     - **真机**——没有往任何真实号码发过消息（同任务 19）
-    - **真实审计数据**——所有计数测试都是打桩的 SQL 结果。线上那套 MySQL 里真跑一次 `tally()` 没做过，**所以「那两条 SQL 在真实表上返回什么形状」是个假设**，尤其是 `MIN/MAX(created_at)` 回来的是不是 datetime 对象（代码按 datetime 用）
+    - **`tally()` 没有对着真实 MySQL 跑过**。但 `MIN/MAX(created_at)` 那个疑问已经排除：线上 `/console/history` 返回的时间戳是经 `_at()` 的 `.isoformat()` 出来的且没报错，**所以驱动返回的确实是 datetime 对象**
     - 导演台那颗按钮**没有在浏览器里点过**，只有 build + lint
 
   **顺带发现，没修**：`frontend/vite.config.ts` 的 dev proxy 是一条路由一条地列的，`/console/history` **不在里面**（任务 37.2 加查询页时漏了）。只影响 `npm run dev`，不影响线上（nginx 转发的是整个 `/console/`）。我只加了自己这条 `/console/demo-summary`，没顺手改成 `/console` 一条通配——那是旁边的代码。要修就一行的事。

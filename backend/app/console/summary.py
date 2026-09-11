@@ -30,6 +30,17 @@ MAX_REFERENCES = 3
 # day, and "0 minutes" reads as a bug rather than as brevity.
 MIN_MINUTES = 1
 
+# How long a silence ends the sitting. A conversation_id lives from the moment a
+# demo is picked off the menu until the customer types "menu" again, which can be
+# most of a day: the first real one on file ran from 16:34 to 19:25, because
+# somebody chose the retail bot in the afternoon and sent it a photo that
+# evening. Summarising that as "in the last 171 minutes I..." is not a rounding
+# error, it is a different claim -- so the sitting is the run of messages with no
+# long gap in it, and the counts are drawn from the same stretch. Thirty minutes
+# because a demo is watched continuously; a customer who has been away half an
+# hour is in a new conversation whatever the id says.
+IDLE_GAP_SECONDS = 30 * 60
+
 # Pushes are left out on purpose: this message is one, and a summary that counted
 # itself would be strange. Anything not listed below is simply not mentioned --
 # the message is a sales artefact and not an audit, and the audit page has
@@ -150,6 +161,22 @@ def _reference(output: str | None, key: str) -> str | None:
     return str(value) if value else None
 
 
+def _sitting_began(stamps: list) -> object:
+    """When the exchange being closed off actually started.
+
+    Walked backwards from the newest message rather than taken from the oldest:
+    what is being summarised is the sitting the room has just watched, and the
+    conversation it belongs to may have started hours earlier. The first gap
+    longer than `IDLE_GAP_SECONDS` is where it began.
+    """
+    started = stamps[-1]
+    for earlier, later in zip(reversed(stamps[:-1]), reversed(stamps[1:])):
+        if (later - earlier).total_seconds() > IDLE_GAP_SECONDS:
+            break
+        started = earlier
+    return started
+
+
 def tally(conversation_id: str) -> Tally | None:
     """Count up one conversation, or None if there is no record of it.
 
@@ -161,25 +188,28 @@ def tally(conversation_id: str) -> Tally | None:
         logger.warning("asked to summarise %s with no audit log configured", conversation_id)
         return None
 
-    spans = audit_store.query(
-        "SELECT MIN(created_at) AS started, MAX(created_at) AS ended, COUNT(*) AS messages"
-        " FROM chat_messages WHERE conversation_id = %s",
-        (conversation_id,),
-    )
-    span = spans[0] if spans else {}
-    if not span.get("messages"):
+    stamps = [
+        row["created_at"]
+        for row in audit_store.query(
+            "SELECT created_at FROM chat_messages WHERE conversation_id = %s ORDER BY id",
+            (conversation_id,),
+        )
+        if row.get("created_at")
+    ]
+    if not stamps:
         return None
 
+    started = _sitting_began(stamps)
+    minutes = max(MIN_MINUTES, round((stamps[-1] - started).total_seconds() / 60))
+
+    # Scoped to the same stretch the minutes are: an order placed this morning is
+    # not something "I just did", and counting it under a number drawn from the
+    # last ten minutes would put the two halves of the sentence at odds.
     calls = audit_store.query(
         "SELECT tool, output FROM tool_calls"
-        " WHERE conversation_id = %s AND status = 'ok' ORDER BY id",
-        (conversation_id,),
+        " WHERE conversation_id = %s AND status = 'ok' AND created_at >= %s ORDER BY id",
+        (conversation_id, started),
     )
-
-    minutes = MIN_MINUTES
-    started, ended = span.get("started"), span.get("ended")
-    if started and ended:
-        minutes = max(MIN_MINUTES, round((ended - started).total_seconds() / 60))
 
     lines = []
     counted = 0

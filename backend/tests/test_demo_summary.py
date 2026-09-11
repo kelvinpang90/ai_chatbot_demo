@@ -27,7 +27,9 @@ STARTED = datetime(2026, 9, 12, 14, 0, 0)
 
 
 def _messages(count: int = 6, minutes: float = 8) -> list[dict]:
-    return [{"started": STARTED, "ended": STARTED + timedelta(minutes=minutes), "messages": count}]
+    """One row per message, spread evenly over `minutes`, oldest first."""
+    step = timedelta(minutes=minutes) / max(count - 1, 1)
+    return [{"created_at": STARTED + step * n} for n in range(count)]
 
 
 def _call(tool: str, output: str | None = None) -> dict:
@@ -171,8 +173,61 @@ def test_a_twelve_second_conversation_is_still_a_minute(_audit):
 def test_a_conversation_nothing_was_recorded_for_is_not_summarised(_audit):
     """Different from a demo in which nothing happened, and only one of the two
     is worth a message."""
-    with patch.object(audit_store, "query", side_effect=_answers([{"messages": 0}], [])):
+    with patch.object(audit_store, "query", side_effect=_answers([], [])):
         assert summary.tally(CONVERSATION) is None
+
+
+def test_a_demo_picked_up_hours_later_is_not_counted_from_the_morning(_audit):
+    """Found in the live audit log rather than written up front: the first real
+    conversation on file ran 16:34 to 19:25, because the demo was chosen in the
+    afternoon and the photo arrived that evening. One id, two sittings -- and
+    "in the last 171 minutes I..." is a different claim, not a rounded one."""
+    morning = [
+        {"created_at": STARTED},
+        {"created_at": STARTED + timedelta(minutes=2)},
+    ]
+    evening = [
+        {"created_at": STARTED + timedelta(hours=3)},
+        {"created_at": STARTED + timedelta(hours=3, minutes=6)},
+    ]
+
+    with patch.object(audit_store, "query", side_effect=_answers(morning + evening, [])) as query:
+        counted = summary.tally(CONVERSATION)
+
+    assert counted.minutes == 6
+    # And the calls are read off the same stretch, or the two halves of the
+    # sentence would be counting different things.
+    assert query.call_args_list[1].args[1][1] == evening[0]["created_at"]
+
+
+def test_a_single_message_hours_later_is_a_sitting_of_its_own(_audit):
+    """The shape the live log actually had: an afternoon of conversation, then
+    one photo that evening. The gap is immediately before the newest message, so
+    nothing is walked back over -- and where the count starts from decides
+    everything. Written after a mutation survived that changed exactly that."""
+    stamps = [
+        {"created_at": STARTED},
+        {"created_at": STARTED + timedelta(minutes=4)},
+        {"created_at": STARTED + timedelta(hours=3)},
+    ]
+
+    with patch.object(audit_store, "query", side_effect=_answers(stamps, [])):
+        counted = summary.tally(CONVERSATION)
+
+    assert counted.minutes == 1  # the floor, not 180
+
+
+def test_a_demo_with_ordinary_pauses_in_it_is_one_sitting(_audit):
+    """People think, and look things up on their phone. A gap has to be long
+    enough to mean they left."""
+    stamps = [
+        {"created_at": STARTED},
+        {"created_at": STARTED + timedelta(minutes=9)},
+        {"created_at": STARTED + timedelta(minutes=20)},
+    ]
+
+    with patch.object(audit_store, "query", side_effect=_answers(stamps, [])):
+        assert summary.tally(CONVERSATION).minutes == 20
 
 
 def test_without_an_audit_log_nothing_is_even_asked():
