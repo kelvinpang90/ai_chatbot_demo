@@ -79,6 +79,12 @@
   font-size: 12px;
 }
 
+/* The same line reports the demo summary having gone out, and that one is not a
+   failure -- red text next to a button that just worked reads as one. */
+.console-switch-note[data-ok='true'] {
+  color: var(--console-dim);
+}
+
 .console-control-banner {
   padding: 10px 20px;
   border-bottom: 1px solid var(--console-error);

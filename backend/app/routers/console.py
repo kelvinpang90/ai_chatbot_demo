@@ -9,15 +9,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
-from app.console import events
+from app.console import events, summary
 from app.models import (
     ConversationDetail,
     ConversationSummary,
+    DemoSummaryRequest,
+    DemoSummaryResult,
     HistoryPage,
     ToolCallRecord,
     ToolSwitch,
     TranscriptMessage,
 )
+from app.services import notify
 from app.services.audit import audit_store
 from app.services.user_store import identity, user_store
 from app.tools import registry as tool_registry
@@ -331,3 +334,71 @@ def read_conversation(conversation_id: str) -> ConversationDetail:
         api_turns=int(total.get("api_turns", 0)),
         cost_myr=float(total.get("cost_myr", 0)),
     )
+
+
+@router.post(
+    "/demo-summary",
+    response_model=DemoSummaryResult,
+    dependencies=[Depends(require_console_token)],
+)
+def send_demo_summary(request: DemoSummaryRequest) -> DemoSummaryResult:
+    """Close the demo off: count what really happened and send it to the customer.
+
+    The second endpoint under here that writes something, and the first that
+    writes something a customer reads. Worth saying plainly, because the note on
+    `require_console_token` was written when everything below it was read-only:
+    the console token can now put a message on somebody's phone. It is still the
+    right gate -- the person holding it is the person running the demo, standing
+    next to the phone -- but it is no longer only a viewing key.
+
+    Which conversation is deliberately answered from the audit log rather than
+    from the live feed. The feed carries no customer on it (see
+    `events.ConsoleEvent`), so the console screen genuinely does not know who is
+    being served; the log does.
+    """
+    key_id, conversation_id = _conversation_to_close(request.key_id)
+    built = summary.for_conversation(conversation_id)
+    if built is None:
+        raise HTTPException(status_code=404, detail="Nothing recorded for that conversation")
+    text, counted = built
+
+    profile = user_store.get(key_id)
+    if profile is None or not profile.phone:
+        # A record that has expired, or a customer who reached us behind a
+        # username. Neither is a number Meta will deliver to.
+        raise HTTPException(
+            status_code=409, detail="No phone number on file for that customer any more"
+        )
+
+    notify.send_now(profile.phone, text)
+    return DemoSummaryResult(
+        key_id=key_id,
+        display_name=profile.display_name,
+        conversation_id=conversation_id,
+        minutes=counted.minutes,
+        tool_calls=counted.counted,
+        text=text,
+    )
+
+
+def _conversation_to_close(key: str | None) -> tuple[str, str]:
+    """The customer and the conversation the summary is about.
+
+    Named explicitly where the operator names them, and otherwise the most recent
+    conversation on file -- which is the one that just happened, because the demo
+    that just happened is the one being closed.
+    """
+    where, params = "", ()
+    if key:
+        try:
+            where, params = "WHERE key_id = %s", (identity(key),)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Not a phone number") from None
+
+    rows = audit_store.query(
+        f"SELECT key_id, conversation_id FROM chat_messages {where} ORDER BY id DESC LIMIT 1",
+        params,
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="No conversation to summarise")
+    return rows[0]["key_id"], rows[0]["conversation_id"]

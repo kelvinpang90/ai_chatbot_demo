@@ -218,3 +218,26 @@ def test_the_clock_really_does_reach_the_send(_queue, _sent):
     payload = _sent.call_args.args[0]
     assert payload["to"] == PHONE
     assert payload["text"]["body"] == TEXT
+
+
+def test_send_now_goes_out_with_no_clock_in_between(_sent):
+    """The path a person triggers rather than an event: the closing summary,
+    thrown while the room is still in the room. Everything else is the timed
+    path's -- so a message a human sent and one the bot sent leave the same
+    console span, the same history entry and the same audit row behind."""
+    profile = user_store.get_or_create(PHONE)
+    profile.bot_id = "retail"
+    user_store.save(profile)
+    events.clear()
+
+    notify.send_now(PHONE, "📋 刚才这 8 分钟里…")
+
+    payload = _sent.call_args.args[0]
+    assert payload["to"] == PHONE
+    assert payload["text"]["body"] == "📋 刚才这 8 分钟里…"
+    # Filed, like any other push: asked "what did that say again?" the model has
+    # to be able to see it.
+    assert [m.content for m in user_store.get(PHONE).history] == ["📋 刚才这 8 分钟里…"]
+    spans = [e for e in events.since(0) if e.tool == notify.PUSH_TOOL]
+    assert [e.type for e in spans] == [events.TOOL_START, events.TOOL_END]
+    events.clear()

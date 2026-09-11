@@ -149,6 +149,23 @@ def dispatch(to: str) -> list[threading.Timer]:
     return timers
 
 
+def send_now(to: str, text: str) -> None:
+    """Say something to this customer immediately, with no clock in between.
+
+    For a push somebody asked for rather than one an event produced: the closing
+    summary a person throws at the end of a demo (task 19.1). Everything else is
+    the timed path's -- the console span, the history entry, the audit row -- so
+    the message a human sent and one the bot sent look alike where it matters.
+
+    The 24-hour window is stamped as now, which is a statement about when this is
+    used rather than a check: the button is pressed while the room is still in
+    the room. Pressed the next morning instead, Meta refuses the send and it
+    lands on the console as a failure -- which is the right way round, because
+    the alternative is a summary that silently went nowhere.
+    """
+    _send(to, Push(delay_seconds=0, text=text), window_opened_at=time.time())
+
+
 def _payload_for(to: str, push: Push, window_opened_at: float) -> dict | None:
     """The message to send, or None if there is nothing this channel will carry."""
     if time.time() - window_opened_at < CUSTOMER_SERVICE_WINDOW_SECONDS:

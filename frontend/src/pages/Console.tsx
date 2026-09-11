@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './Console.css'
 import {
+  ApiError,
   consoleStreamUrl,
   forgetToken,
   readToolSwitch,
   rememberToken,
+  sendDemoSummary,
   setToolSwitch,
   storedToken,
   type ConsoleEvent,
@@ -79,6 +81,11 @@ export default function Console() {
   // the switch cannot start out claiming a position it has not been told.
   const [toolsEnabled, setToolsEnabled] = useState<boolean | null>(null)
   const [switchNote, setSwitchNote] = useState('')
+  // Closing the demo off. In flight rather than a plain boolean's worth of
+  // "done", because the button sends a real message to a real phone and a
+  // nervous double-click would send two.
+  const [closing, setClosing] = useState(false)
+  const [closingNote, setClosingNote] = useState('')
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const feedRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
@@ -233,6 +240,27 @@ export default function Console() {
       .catch(() => setSwitchNote('开关没拨动，后端没接受'))
   }
 
+  function closeDemo() {
+    if (closing) return
+    setClosing(true)
+    setClosingNote('')
+    sendDemoSummary(token)
+      .then((sent) => {
+        const who = sent.display_name ?? sent.key_id
+        // Who it went to, said out loud: the feed carries no customer on it, so
+        // the screen genuinely does not know who is being served and the backend
+        // picked the most recent conversation. In a room with three customers in
+        // it, this line is the difference between right and lucky.
+        setClosingNote(`已发给 ${who} · ${sent.minutes} 分钟 · ${sent.tool_calls} 次真实调用`)
+      })
+      .catch((failure: unknown) => {
+        setClosingNote(
+          failure instanceof ApiError ? `没发出去：${failure.message}` : '没发出去，后端没接受',
+        )
+      })
+      .finally(() => setClosing(false))
+  }
+
   function saveToken() {
     const value = draftToken.trim()
     if (!value) return
@@ -285,6 +313,14 @@ export default function Console() {
           {toolsEnabled === false ? '工具已关闭 · 点此接回' : '工具已接通 · 点此关掉'}
         </button>
         {switchNote && <span className="console-switch-note">{switchNote}</span>}
+        <button className="console-switch" disabled={closing} onClick={closeDemo}>
+          {closing ? '正在发…' : '结束演示 · 发一份总结到他手机'}
+        </button>
+        {closingNote && (
+          <span className="console-switch-note" data-ok={!closingNote.startsWith('没发出去')}>
+            {closingNote}
+          </span>
+        )}
         <span className="console-cost">本次会话成本 {formatRinggit(costMyr)}</span>
       </header>
 

@@ -131,3 +131,26 @@ class ToolSwitch(BaseModel):
     """Whether the bots may call tools at all -- the console's control arm."""
 
     enabled: bool
+
+
+class DemoSummaryRequest(BaseModel):
+    """Who to close the demo off with.
+
+    `key_id` is a phone number in any of the ways one gets written. Left out, the
+    most recent conversation is taken -- which is the right answer in a room with
+    one customer in it and the wrong one in a room with three, so the reply says
+    who it actually went to rather than leaving the operator to assume.
+    """
+
+    key_id: str | None = None
+
+
+class DemoSummaryResult(BaseModel):
+    """What was sent, and to whom, so the operator can see before they wonder."""
+
+    key_id: str
+    display_name: str | None
+    conversation_id: str
+    minutes: int
+    tool_calls: int
+    text: str

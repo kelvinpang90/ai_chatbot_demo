@@ -247,3 +247,24 @@ export function setToolSwitch(token: string, enabled: boolean): Promise<ToolSwit
     body: JSON.stringify({ enabled }),
   })
 }
+
+/** What the demo amounted to, as it was sent to the customer's phone. */
+export interface DemoSummary {
+  key_id: string
+  display_name: string | null
+  conversation_id: string
+  minutes: number
+  tool_calls: number
+  text: string
+}
+
+// Closing the demo off (task 19.1). `keyId` is left out in the ordinary case -
+// one customer in the room - and the reply names whoever it actually went to, so
+// a room with three of them does not end on a guess.
+export function sendDemoSummary(token: string, keyId?: string): Promise<DemoSummary> {
+  return request<DemoSummary>('/console/demo-summary', {
+    method: 'POST',
+    headers: { 'X-Console-Token': token },
+    body: JSON.stringify({ key_id: keyId ?? null }),
+  })
+}
