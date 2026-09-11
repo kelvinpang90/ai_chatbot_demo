@@ -356,6 +356,8 @@ def test_every_tool_is_declared_with_a_schema_the_model_can_read():
         "erp_list_orders",
         "erp_create_sales_order",
         "erp_generate_einvoice",
+        "erp_find_order_by_sku",
+        "erp_create_credit_note",
     }
     for tool in erp.TOOLS:
         assert tool.input_schema["properties"]  # arguments made it into the schema
@@ -1479,3 +1481,352 @@ def test_one_customer_still_cannot_hold_two_accounts():
             erp.erp_create_customer("Kelvin Pang", "60173948123")
 
     post.assert_not_called()
+
+
+# -- returns (task 16) ---------------------------------------------------------
+#
+# Two tools with one hard fact behind them: erp_os indexes nothing by product,
+# and it credits invoice lines rather than orders. So the first tool opens the
+# customer's orders one at a time to find the product, and the second walks
+# order -> invoice -> invoice line before it writes anything. What these guard is
+# that neither walk ever crosses into somebody else's account, and that the one
+# write is the right line at the right quantity.
+
+FINAL_INVOICE = {
+    **DRAFT_INVOICE,
+    "status": "FINAL",
+    "uin": "MY-UIN-8891234",
+    # Not decoration: erp_os refuses to credit an invoice with no branch on it,
+    # because a return has to put the stock back somewhere.
+    "warehouse_id": 1,
+    "warehouse_name": "KL Main",
+    "lines": [
+        {
+            **DRAFT_INVOICE["lines"][0],
+            "id": 8801,
+            "sku_id": 12,
+            "sku_code": "SKU-00012",
+            "sku_name": "TWS Earbuds Pro",
+        }
+    ],
+}
+CREDIT_NOTE = {
+    "id": 41,
+    "document_no": "CN-2026-0003",
+    "status": "DRAFT",
+    "invoice_id": 9,
+    "invoice_no": "INV-2026-0007",
+    "customer_name": "Tan Ah Kau",
+    "currency": "MYR",
+    "total_incl_tax": "986.7000",
+    "lines": [{"id": 61, "invoice_line_id": 8801, "qty": "3.0000"}],
+}
+
+OTHER_SO_DETAIL = {
+    **SO_DETAIL,
+    "id": 78,
+    "document_no": "SO-2026-0041",
+    "lines": [
+        {
+            "id": 502,
+            "sku_code": "SKU-00099",
+            "sku_name": "Desk Fan 16 inch",
+            "qty_ordered": "1.0000",
+            "qty_shipped": "1.0000",
+        }
+    ],
+}
+
+
+def _orders_page(*rows: dict) -> dict:
+    return {"items": [{"id": row["id"], "document_no": row["document_no"]} for row in rows]}
+
+
+def _sku_search_gets(*orders: dict) -> list:
+    """One list call for the customer's orders, then one call per order opened."""
+    return [_response(_orders_page(*orders))] + [_response(order) for order in orders]
+
+
+def test_the_order_a_returned_item_came_on_is_found_by_its_code(_credentials):
+    gets = _sku_search_gets(OTHER_SO_DETAIL, SO_DETAIL)
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", side_effect=gets) as get:
+            payload = json.loads(erp.erp_find_order_by_sku(3, "SKU-00012"))
+
+    assert get.call_args_list[0].args[0].endswith("/api/sales-orders")
+    assert get.call_args_list[0].kwargs["params"]["customer_id"] == 3
+    assert [row["order_no"] for row in payload] == ["SO-2026-0042"]
+    assert payload[0]["item"] == {
+        "code": "SKU-00012",
+        "name": "TWS Earbuds Pro",
+        "qty": "3.0000",
+        "line_total_incl_tax": None,
+    }
+
+
+def test_a_product_named_the_way_a_customer_says_it_is_matched_too(_credentials):
+    """The photo gives the bot a code; the customer gives it words. Both have to
+    find the same order, or scene 2a only works when the label is readable."""
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", side_effect=_sku_search_gets(SO_DETAIL)):
+            payload = json.loads(erp.erp_find_order_by_sku(3, "earbuds pro"))
+
+    assert [row["order_no"] for row in payload] == ["SO-2026-0042"]
+
+
+def test_a_name_that_only_half_matches_is_not_that_product(_credentials):
+    """Every word has to be there. "sony earbuds" must not come back with
+    somebody else's earbuds because they share the second word."""
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", side_effect=_sku_search_gets(SO_DETAIL)):
+            answer = erp.erp_find_order_by_sku(3, "sony earbuds")
+
+    assert answer == erp.NO_ORDER_WITH_THAT_SKU
+
+
+def test_a_query_too_short_to_mean_anything_matches_nothing(_credentials):
+    """A single letter is in most catalogues. Matching on it would hand the
+    customer their most recent order and call it a search result."""
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", side_effect=_sku_search_gets(SO_DETAIL)):
+            answer = erp.erp_find_order_by_sku(3, "e")
+
+    assert answer == erp.NO_ORDER_WITH_THAT_SKU
+
+
+def test_the_search_stops_once_it_has_enough_orders_to_offer(_credentials):
+    """One HTTP call per order opened, and a customer who buys the same thing
+    monthly has a lot of them. Three is enough to ask "which one?"."""
+    many = [{**SO_DETAIL, "id": 70 + n, "document_no": f"SO-2026-00{40 + n}"} for n in range(6)]
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", side_effect=_sku_search_gets(*many)) as get:
+            payload = json.loads(erp.erp_find_order_by_sku(3, "SKU-00012"))
+
+    assert len(payload) == erp.MAX_SKU_ORDER_MATCHES
+    # The list call plus one per order opened, and it stopped opening them.
+    assert len(get.call_args_list) == 1 + erp.MAX_SKU_ORDER_MATCHES
+
+
+def test_an_order_that_could_not_be_read_is_never_reported_as_not_bought(_credentials):
+    """The one answer this tool must not give by accident: telling a customer
+    holding the thing that they never bought it. A half-read search says so."""
+    gets = [
+        _response(_orders_page(SO_DETAIL, OTHER_SO_DETAIL)),
+        httpx.ConnectError("erp is down"),
+    ]
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", side_effect=gets):
+            answer = erp.erp_find_order_by_sku(3, "SKU-99999")
+
+    assert answer == erp.UNAVAILABLE
+
+
+def test_a_customer_with_no_orders_at_all_is_told_that_not_shown_a_search(_credentials):
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", return_value=_response({"items": []})):
+            assert erp.erp_find_order_by_sku(3, "SKU-00012") == erp.NO_ORDERS
+
+
+def test_the_refund_note_is_raised_against_the_invoice_line_not_the_order_line(_credentials):
+    """The acceptance criterion, and the thing that made this task bigger than it
+    reads: erp_os credits `invoice_line_id`, so order line 501 is not what goes
+    in the payload -- invoice line 8801 is."""
+    posts = [_response(_LOGIN), _response(CREDIT_NOTE, 201)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            payload = json.loads(
+                erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012", "case arrived cracked")
+            )
+
+    write = post.call_args_list[1]
+    assert write.args[0].endswith("/api/credit-notes")
+    body = write.kwargs["json"]
+    assert body["invoice_id"] == 9
+    assert body["reason"] == "RETURN"
+    assert body["reason_description"] == "case arrived cracked"
+    assert body["lines"] == [{"invoice_line_id": 8801, "qty": "3.0"}]
+    assert payload["credit_note_no"] == "CN-2026-0003"
+    assert payload["invoice_no"] == "INV-2026-0007"
+    assert payload["item"]["qty_returned"] == 3.0
+
+
+def test_only_what_is_coming_back_is_credited_when_the_customer_says_a_number(_credentials):
+    posts = [_response(_LOGIN), _response(CREDIT_NOTE, 201)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012", "one is faulty", quantity=1)
+
+    assert post.call_args_list[1].kwargs["json"]["lines"] == [
+        {"invoice_line_id": 8801, "qty": "1.0"}
+    ]
+
+
+def test_more_than_was_invoiced_is_refused_before_anything_is_written(_credentials):
+    """Caught here rather than at the far end, while the customer is still
+    reading. erp_os has the last word -- it also knows what earlier credit notes
+    took -- but a return of five against an invoice for three is answerable now."""
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            answer = erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012", "", quantity=5)
+
+    assert answer == erp.BAD_RETURN_QUANTITY
+    assert len(post.call_args_list) == 1  # the login, and nothing else
+
+
+def test_an_order_that_was_never_invoiced_has_nothing_to_credit(_credentials):
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL)):
+            answer = erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012")
+
+    assert "not been invoiced" in answer
+    assert len(post.call_args_list) == 1
+
+
+@pytest.mark.parametrize("status", ["DRAFT", "SUBMITTED"])
+def test_an_invoice_still_going_through_lhdn_is_not_credited_yet(_credentials, status):
+    """erp_os credits VALIDATED and FINAL only. Sending it anything else is a 422
+    the customer waits for, so the answer is composed here instead."""
+    invoice = {**FINAL_INVOICE, "status": status}
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, invoice)):
+            answer = erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012")
+
+    assert status in answer and "validated" in answer
+    assert len(post.call_args_list) == 1
+
+
+@pytest.mark.parametrize("status", ["REJECTED", "CANCELLED"])
+def test_a_void_invoice_is_not_something_to_refund_against(_credentials, status):
+    """Different from the one above in what the customer is told: a bill on its
+    way through LHDN clears by itself, and one LHDN threw out never will."""
+    invoice = {**FINAL_INVOICE, "status": status}
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, invoice)):
+            answer = erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012")
+
+    assert status.lower() in answer and "colleague" in answer
+    assert len(post.call_args_list) == 1
+
+
+def test_a_product_that_was_not_on_that_invoice_is_refused(_credentials):
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            answer = erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00099")
+
+    assert "SKU-00099" in answer
+    assert len(post.call_args_list) == 1
+
+
+def test_an_order_number_that_belongs_to_nobody_here_refunds_nothing(_credentials):
+    """Same guard the invoice tool has, for a write that moves money the other
+    way: the order is looked up under this customer, so a number the model
+    invented finds nothing rather than refunding a stranger."""
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response({"items": []})):
+            answer = erp.erp_create_credit_note("SO-9999-9999", 3, "SKU-00012")
+
+    assert answer == erp.NO_SUCH_ORDER_TO_CREDIT
+    assert len(post.call_args_list) == 1
+
+
+def test_a_refund_that_may_have_landed_never_tells_the_model_to_try_again(_credentials):
+    """The one place where "try again" is the wrong instinct. A second credit
+    note for the same goods is a second refund, and the model is told to stop."""
+    posts = [_response(_LOGIN), httpx.ReadTimeout("no answer")]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            answer = erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012")
+
+    assert answer == erp.CREDIT_UNKNOWN
+    assert "Do not try again" in answer
+    assert answer != erp.CREDIT_FAILED
+
+
+def test_a_refund_erp_os_refused_says_so_without_suggesting_a_smaller_one(_credentials):
+    posts = [_response(_LOGIN), _response({"message": "already credited"}, 422)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts):
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            answer = erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012")
+
+    assert answer == erp.CREDIT_FAILED
+    assert "different quantity" in answer
+
+
+def test_the_refund_note_is_left_as_a_draft_rather_than_submitted(_credentials):
+    """Unlike the invoice one step upstream. erp_os will not cancel a submitted
+    credit note, so submitting would make every rehearsal permanent."""
+    posts = [_response(_LOGIN), _response(CREDIT_NOTE, 201)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            payload = json.loads(erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012"))
+
+    assert len(post.call_args_list) == 2  # the login and the credit note, nothing after
+    assert not any("submit" in call.args[0] for call in post.call_args_list)
+    assert payload["status"] == "DRAFT"
+
+
+def test_a_reason_nobody_gave_is_not_invented_into_the_document(_credentials):
+    posts = [_response(_LOGIN), _response(CREDIT_NOTE, 201)]
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012", reason="   ")
+
+    assert "reason_description" not in post.call_args_list[1].kwargs["json"]
+
+
+def test_a_reason_longer_than_the_column_is_cut_rather_than_losing_the_refund(_credentials):
+    posts = [_response(_LOGIN), _response(CREDIT_NOTE, 201)]
+    essay = "x" * (erp_client.MAX_CREDIT_REASON_CHARS + 200)
+
+    with patch.object(api_client.httpx, "post", side_effect=posts) as post:
+        with patch.object(
+            api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, FINAL_INVOICE)
+        ):
+            erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012", reason=essay)
+
+    written = post.call_args_list[1].kwargs["json"]["reason_description"]
+    assert len(written) == erp_client.MAX_CREDIT_REASON_CHARS
+
+
+def test_an_invoice_with_no_branch_on_it_says_so_rather_than_already_refunded(_credentials):
+    """Found on the live ERP on 2026-09-11, and the reason this check exists:
+    every seeded invoice has no warehouse, erp_os refuses to credit one, and
+    without this the customer is told their goods "have already been credited".
+    Only invoices this bot raised itself carry a branch -- which is a fact about
+    which orders scene 2a can be run against, recorded in tasks/todo.md."""
+    homeless = {**FINAL_INVOICE, "warehouse_id": None, "warehouse_name": None}
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)) as post:
+        with patch.object(api_client.httpx, "get", side_effect=_invoice_gets(SO_DETAIL, homeless)):
+            answer = erp.erp_create_credit_note("SO-2026-0042", 3, "SKU-00012")
+
+    assert "no branch recorded" in answer
+    assert "already" not in answer
+    assert len(post.call_args_list) == 1  # the login, and nothing written

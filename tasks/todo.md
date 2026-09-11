@@ -858,14 +858,49 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **网页聊天（`routers/chat.py`）没接文档**，它没有上传入口，也就永远不会有 footnote，所以那边没加 `without_sources`（加了是死代码）
   - 一份文件同名同 caption 发两次 → 标记相同 → `_index_of` 取**最后一条**，即最新那份，正确
 
-- [ ] **任务 16：退货剧情的工具**
-  文件：`backend/app/tools/erp.py`（扩展）、测试
+- [x] **任务 16：退货剧情的工具**——**2026-09-11 完成，线上真开了一张退款单（`CN-2026-00001`）**
+  文件：`backend/app/tools/erp.py`（两个新工具）、`backend/app/services/erp_client.py`（`create_credit_note` + 两个常量）、`backend/app/bots/data/retail.json`（挂工具 + 人设加一段）、测试
   目标：`erp_find_order_by_sku(customer_id, sku)`、`erp_create_credit_note(order_id, reason)`
   验收：调一次 credit note，`erp.kelvinpeng.com` 后台能看到那张退款单
+
+  **做了什么**
+
+  - **签名和计划里写的不一样，是接口逼的**。erp_os 的 `POST /api/credit-notes` 要的是 **`invoice_id` + 必填的 `lines[{invoice_line_id, qty}]`**，不是 `order_id`：它冲的是**发票行**，没有「退掉这张订单」这种调用。所以实际落地的是
+    `erp_create_credit_note(order_no, customer_id, sku, reason="", quantity=0)`：
+    - `order_no` 而不是 `order_id`——和 `erp_generate_einvoice` 一致，模型手里拿的一直是单号；客户 id 一起传，走的是 `sales_order_for_customer`，**模型编的单号只会查无此单，不会退到别人头上**（这条安全性质是从发票工具那儿继承的）
+    - `sku` 是必填的：一次退一个商品。全单退在这个 demo 里没有场景，而给一个裂了壳的耳机开 RM 3,745 的全单退款，客户盯着的那块屏上会很难看
+    - `quantity` 留空 = 退整行（客户说「退掉它」的意思），给了数就退那么多
+    - 工具内部自己走 **order → invoice → invoice line** 三跳，模型全程不碰 `invoice_line_id` 这种它没法核实的整数
+  - **`erp_find_order_by_sku` 是 N+1，没得选**。erp_os 的订单列表**不能按商品筛**（`repositories/sales_order.py:43-83` 只 LIKE 单号和备注，压根不碰行），而且列表响应里**不带行**，行只在单据详情里。所以只能把客户最近的单一张张打开读。上限 `ORDERS_SEARCHED_FOR_SKU = 10`，凑够 `MAX_SKU_ORDER_MATCHES = 3` 条就停——每开一张就是一次 HTTP，这个数是被延迟卡住的，不是口味问题
+    - 匹配吃两种写法：`erp_search_sku` 给的编码（整串相等）和客户嘴里的名字（**每个词都得在**，所以「sony earbuds」不会匹配到别人家的耳机）
+    - **读单失败时返回 `UNAVAILABLE`，不跳过继续**。半读的搜索报成「没找到」等于告诉一个手里正拿着那东西的客户「你没买过」——这是这个工具唯一不能误报的答案
+  - **退款单留在 DRAFT，不提交 MyInvois**。发票那边要提交是因为客户要拿走那份文件；退款单只要出现在演示指的那块屏上就够了，而 erp_os **不让取消已提交的退款单**（`services/credit_note.py:379-442`）——提交等于每次彩排都留下一张撤不掉的单
+  - **失败话术特意不给「再试一次」**。别的写工具分「失败了」和「不确定」两种口径，这里不确定时明确写 **Do not try again**：erp_os 会拒绝对同一批货二次冲红，而一个「好心」改小数量重试的模型，是能把第二次退款做进去的
+
+  **⚠️ 实测挖出的一件事，会直接影响任务 17 怎么走**
+
+  - **种子发票一张都开不了退款单**。第一次拿 `SO-SEED-00226` 试，erp_os 返回 `INVOICE_WAREHOUSE_MISSING`：**`INV-SEED-*` 上没有仓库**，而退货要把货入回某个仓，所以 erp_os 直接拒。**只有这个 bot 自己经 `erp_generate_einvoice` 开出来的发票才带仓库**，才能退
+  - 已经加了一道前置检查 `_no_warehouse_to_return_to`，读发票上的 `warehouse_id` 就能判。**不加的话客户听到的是「这批货已经退过款了」——一句不同而且不真的话**
+  - **对剧本 2a 的硬约束：退款那一步必须打在 bot 自己开的单上，不能指一张种子单。** 演示前先用真机让 bot 走一遍「下单 → 发票」，再演退货；或者接受在种子单上会得到「请同事人工处理」这个（诚实但不炫技的）回答
+
+  **验证到什么程度**
+
+  - 单测：容器里 **627 passed / 7 skipped**（基线 604，净增 23：21 条新测试 + 2 条花名册测试跟着改）
+  - **变异测试：9 处逐个改坏，9 处全部有测试变红**——冲的不是发票行 / 不校验发票状态 / 半读搜索当没找到 / 不卡退货数量 / 不在凑够时停 / 名字匹配从 all 改成 any / 单号不按客户作用域查 / reason code 不发 RETURN / 超长 reason 不截断。没有一处逃掉
+  - ✅ **线上真做了一遍，而且是剧本 2a 最后三步的完整彩排**（因为种子单退不了，只能自己造一条链）。客户用的是已在册的 `WA-` demo 账号（id 52），可被任务 34 的清理认领：
+    1. `erp_create_sales_order` → **`SO-2026-00001`** CONFIRMED，2 件 Sony 耳机，RM 657.80
+    2. `erp_generate_einvoice` → **`INV-2026-00001`** **VALIDATED**，带 LHDN UIN `AC915F281CC64E74`（PDF 没发，因为脚本里没有 WhatsApp 通道，符合预期）
+    3. `erp_find_order_by_sku(52, "SKU-ELE-0001")` → 找回 `SO-2026-00001`
+    4. `erp_create_credit_note(..., quantity=1)` → **`CN-2026-00001`** DRAFT，**RM 328.90**
+    5. 从 ERP 读回 `/api/credit-notes` → 在册，`total: 1`
+    - **金额自己对得上**：657.80 的一半，正是 2 件里退 1 件。不是我算的，是 erp_os 算的
+  - **线上留下的痕迹**（demo ERP，都在 `WA-` 客户名下）：1 张销售单、1 张出库单、1 张已验证发票、1 张 DRAFT 退款单。要清就跑 `POST /api/admin/demo-reset`
+  - ⚠️ **没验的**：真机（没人拿手机走这条线，属任务 17）；模型自己会不会在对话里正确地串起这两个工具——单测和线上验的都是工具本身，**「bot 看到照片后会不会想到先 find 再 credit」这一跳没验过**
 
 - [ ] **任务 17：批次 02 真机验收**（用户任务）
   目标：走完剧本 2a 和 2b
   验收：**2a** —— 拍一张破损商品照片发过去，走完「识别 → 找单 → 开退款单」，再用语音追问一句；全程不打字，五步全通，ERP 后台有退款单
+  ⚠️ **2a 有一个前置条件，任务 16 实测出来的**：退款只能开在**这个 bot 自己下过单并开过发票**的订单上——种子发票（`INV-SEED-*`）没有仓库，erp_os 一律拒绝冲红。所以走 2a 之前，先让 bot 真的下一单并生成 e-Invoice，退货再打在那张单上
   **2b** —— **拿一份你自己的 PDF**（不是我们准备的素材，现场随便找一份）发过去，问一个只有文件里才有的细节，回答正确且标出页码
 
 ---

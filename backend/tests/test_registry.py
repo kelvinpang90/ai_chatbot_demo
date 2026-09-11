@@ -60,6 +60,8 @@ def test_retail_is_wired_to_the_erp_and_crm_it_demonstrates():
         "erp_list_orders",
         "erp_create_sales_order",
         "erp_generate_einvoice",
+        "erp_find_order_by_sku",
+        "erp_create_credit_note",
         "crm_lookup_customer",
         "crm_create_lead",
     }

@@ -40,6 +40,22 @@ CUSTOMER_CODE_PREFIX = "WA-"
 # the length is checked before the write rather than discovered after it.
 MAX_SHIPPING_ADDRESS_CHARS = 500
 
+# The only two invoice states erp_os will credit against
+# (`services/credit_note.py:128-302`). A bill LHDN has not validated yet is not
+# something there is anything to refund, and a rejected or cancelled one was
+# never a bill -- a return raised against either is refused at the far end.
+CREDITABLE_INVOICE = ("VALIDATED", "FINAL")
+
+# erp_os has five reason codes and this is the one that means the goods came
+# back (`enums.py:82-87`). It is also the one that puts them back into stock,
+# which is what makes a return a return rather than a discount. Why the customer
+# sent them back goes in `reason_description` beside it, in their own words.
+CREDIT_NOTE_REASON = "RETURN"
+# erp_os caps that description (`schemas/credit_note.py:19-34`). Same reasoning
+# as the shipping address above: cut it here, where the text is, rather than
+# lose the whole refund to a 422.
+MAX_CREDIT_REASON_CHARS = 500
+
 
 class SkuMatches(NamedTuple):
     """One page of matching products, and how many the ERP found in all.
@@ -372,6 +388,40 @@ class ErpClient(JsonApiClient):
         than a second one, so calling this twice cannot bill the customer twice.
         """
         return self.post(f"/api/invoices/generate-from-so/{so_id}", json={})
+
+    def create_credit_note(
+        self,
+        *,
+        invoice_id: int,
+        lines: list[tuple[int, float]],
+        reason_description: str = "",
+    ) -> dict:
+        """Raise a credit note against an invoice, for (invoice_line_id, qty) pairs.
+
+        The lines are the invoice's, not the order's, and they are compulsory:
+        erp_os credits invoice lines (`schemas/credit_note.py:19-34`), so there
+        is no "refund this order" call to make and no way to leave the lines out.
+
+        Creating one puts the goods back into stock as well as onto paper
+        (`services/credit_note.py:271`), which is the whole reason a return is
+        this document rather than a note in somebody's remarks field.
+
+        Left as a DRAFT deliberately, unlike the invoice one step upstream.
+        Submitting to MyInvois is what makes an invoice the customer's own copy;
+        a credit note only has to be on the screen the demo is pointing at -- and
+        erp_os will not cancel one that has been submitted
+        (`services/credit_note.py:379-442`), so submitting would turn every
+        practice run into a document nobody can take back.
+        """
+        payload = {
+            "invoice_id": invoice_id,
+            "reason": CREDIT_NOTE_REASON,
+            "business_date": datetime.now(MALAYSIA_TIME).date().isoformat(),
+            "lines": [{"invoice_line_id": line_id, "qty": str(qty)} for line_id, qty in lines],
+        }
+        if reason_description:
+            payload["reason_description"] = reason_description[:MAX_CREDIT_REASON_CHARS]
+        return self.post("/api/credit-notes", json=payload)
 
     def submit_invoice(self, invoice_id: int) -> dict:
         """DRAFT -> VALIDATED, which is what puts an LHDN UIN on the document.

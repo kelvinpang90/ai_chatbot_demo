@@ -804,6 +804,309 @@ def erp_generate_einvoice(order_no: str, customer_id: int) -> str:
     )
 
 
+# -- returns (task 16) ---------------------------------------------------------
+#
+# The last two steps of scene 2a: the customer photographs something that came
+# back broken, and the bot has to find which of their orders it was on and raise
+# the refund note against it. Both are harder than they read, for the same
+# reason -- erp_os indexes neither orders nor invoices by product.
+
+# How many of the customer's orders a returns enquiry opens. The ERP cannot
+# search orders by product (`repositories/sales_order.py:43-83` filters on
+# document number and remarks, never on the lines), so every candidate order is
+# fetched and read here. One HTTP call each is what puts a ceiling on this
+# number, not taste.
+ORDERS_SEARCHED_FOR_SKU = 10
+# Enough to ask "which of these?" and stop. Somebody who has bought the same
+# thing five times is asking about a recent one.
+MAX_SKU_ORDER_MATCHES = 3
+# A one-character product name matches most catalogues. Below this the answer
+# would be "your first order", dressed up as a search result.
+MIN_SKU_QUERY_CHARS = 2
+
+NO_ORDER_WITH_THAT_SKU = (
+    "None of this customer's recent orders contain that product. Only their "
+    "most recent orders were searched, so check the product name with them, or "
+    "ask roughly when they bought it and tell them a colleague will dig further "
+    "back. Do not tell them they never bought it."
+)
+NO_SUCH_ORDER_TO_CREDIT = (
+    "No order with that number belongs to this customer, so nothing was "
+    "refunded. Use the order number erp_find_order_by_sku returned and the "
+    "customer_id from erp_find_customer -- do not guess either."
+)
+# Deliberately not the pair the order tool carries. A refund that may or may not
+# have been raised is the one case where trying again is the wrong instinct:
+# erp_os will refuse a second credit for goods already credited, and a model
+# that "helpfully" retries with a smaller quantity would get one through.
+CREDIT_UNKNOWN = (
+    "The refund note may or may not have been raised -- the ERP did not answer. "
+    "Do not try again. Tell the customer their return is recorded and a "
+    "colleague will confirm the refund today."
+)
+CREDIT_FAILED = (
+    "The refund note could not be raised. One reason this happens is that those "
+    "goods have already been credited. Do not retry with a different quantity "
+    "to get it through -- tell the customer a colleague will check the return "
+    "and come back to them."
+)
+BAD_RETURN_QUANTITY = (
+    "That is more of the item than the customer was invoiced for, so no refund "
+    "note was raised. Check how many are actually coming back and call this "
+    "again with that number."
+)
+
+
+def _matches_sku(line: dict, wanted: str) -> bool:
+    """Is this order or invoice line the product the customer means?
+
+    Two spellings arrive here from the model and both are honest: the code it
+    read off `erp_search_sku` ("SKU-ELE-0001"), and the words the customer used
+    ("sony earbuds"). The code is matched whole, because a code is either this
+    product or somebody else's. The name is matched on every word being present,
+    which finds "Sony WF-C710N Wireless Earbuds" from either spelling without
+    also matching every Sony product in the order once more was said.
+    """
+    query = " ".join(str(wanted or "").lower().split())
+    if len(query) < MIN_SKU_QUERY_CHARS:
+        return False
+    if query == str(line.get("sku_code") or "").strip().lower():
+        return True
+    name = str(line.get("sku_name") or "").lower()
+    return all(word in name for word in query.split())
+
+
+def _nothing_billed(order_no: str) -> str:
+    return (
+        f"Order {order_no} has not been invoiced, so there is nothing to credit "
+        "against it. Tell the customer the return is noted and a colleague will "
+        "sort the refund out -- do not quote them a refund amount."
+    )
+
+
+def _not_creditable(order_no: str, invoice_no: str, status: str) -> str:
+    """A bill that exists and cannot be refunded against.
+
+    erp_os credits VALIDATED and FINAL invoices only
+    (`services/credit_note.py:128-302`), which splits into two quite different
+    things to tell a customer: one is a document still on its way through LHDN,
+    the other is not a bill at all.
+    """
+    if status in VOID_INVOICE:
+        return (
+            f"Invoice {invoice_no} for order {order_no} was {status.lower()} and "
+            "is not a valid bill, so nothing can be credited against it. Do not "
+            "raise anything -- tell the customer a colleague will sort this out "
+            "and call them back."
+        )
+    return (
+        f"Invoice {invoice_no} for order {order_no} is still {status} and cannot "
+        "be credited until LHDN has validated it. Tell the customer their return "
+        "is accepted and the refund note follows once the invoice clears, which "
+        "is usually the same day."
+    )
+
+
+def _no_warehouse_to_return_to(order_no: str, invoice_no: str) -> str:
+    """A bill in a state no return can be booked against.
+
+    erp_os will not credit an invoice with no warehouse on it, because a return
+    puts stock back somewhere (`services/credit_note.py:128-302`). Found on the
+    live demo ERP on 2026-09-11: every seeded invoice is like this, and only the
+    ones this bot raised itself through erp_generate_einvoice carry a branch. It
+    reads as an ERP quirk and it is one -- but without this check it reaches the
+    customer as "that has already been refunded", which is a different and
+    untrue thing to be told.
+    """
+    return (
+        f"Invoice {invoice_no} for order {order_no} has no branch recorded on "
+        "it, so the ERP cannot book the goods back in and no refund note can be "
+        "raised against it. Tell the customer the return is accepted and a "
+        "colleague will process the refund by hand."
+    )
+
+
+def _not_on_the_invoice(order_no: str, sku: str) -> str:
+    return (
+        f"Order {order_no} was not invoiced for '{sku}', so there is nothing to "
+        "credit. Check which product the customer means, or which order it was "
+        "on, with erp_find_order_by_sku."
+    )
+
+
+@beta_tool
+def erp_find_order_by_sku(customer_id: int, sku: str) -> str:
+    """Find which of this customer's own orders contained a given product.
+
+    Use this when a customer wants to return, replace or ask about something
+    they already bought and you need the order it came on -- "this arrived
+    cracked", "when did I buy this one". Pass the product code from
+    erp_search_sku where you have one, otherwise the product name in the
+    customer's own words.
+
+    Only this customer's most recent orders are searched, newest first. Nothing
+    found means nothing found recently, which is not the same as never bought --
+    say so that way.
+
+    The customer_id must come from erp_find_customer. Never guess one: every
+    integer is somebody's real account, and a guessed id reads a stranger's
+    purchase history out loud in this chat.
+
+    Args:
+        customer_id: The ERP customer whose orders to search, as returned by
+            erp_find_customer.
+        sku: The product to look for -- the code from erp_search_sku, e.g.
+            "SKU-ELE-0001", or the name the customer used, e.g. "sony earbuds".
+    """
+    client = erp_client.client()
+    try:
+        orders = client.recent_orders(customer_id, limit=ORDERS_SEARCHED_FOR_SKU)
+    except ApiClientError:
+        logger.exception("erp_find_order_by_sku failed for customer %s", customer_id)
+        return UNAVAILABLE
+
+    if not orders:
+        return NO_ORDERS
+
+    matches = []
+    for order in orders:
+        try:
+            detail = client.sales_order(order["id"])
+        except (ApiClientError, KeyError):
+            # Not skipped. A half-read search reported as "no such order" tells a
+            # customer they never bought the thing in their hand, which is the
+            # one answer this tool must never give by accident.
+            logger.exception("could not read order %s while searching for a sku", order.get("id"))
+            return UNAVAILABLE
+
+        line = next((row for row in detail.get("lines", []) if _matches_sku(row, sku)), None)
+        if line is None:
+            continue
+        matches.append(
+            {
+                "order_no": detail.get("document_no"),
+                "status": detail.get("status"),
+                "ordered_on": detail.get("business_date"),
+                "currency": detail.get("currency"),
+                "item": {
+                    "code": line.get("sku_code"),
+                    "name": line.get("sku_name"),
+                    "qty": line.get("qty_ordered"),
+                    "line_total_incl_tax": line.get("line_total_incl_tax"),
+                },
+            }
+        )
+        if len(matches) >= MAX_SKU_ORDER_MATCHES:
+            break
+
+    return _as_json(matches) if matches else NO_ORDER_WITH_THAT_SKU
+
+
+@beta_tool
+def erp_create_credit_note(
+    order_no: str,
+    customer_id: int,
+    sku: str,
+    reason: str = "",
+    quantity: float = 0,
+) -> str:
+    """Raise the refund note for goods a customer is sending back.
+
+    This writes to the live back office and puts the goods back into stock, so
+    only call it once the customer has said what is wrong and what they are
+    returning. Find the order with erp_find_order_by_sku first.
+
+    What it creates is the credit note against the invoice -- the document the
+    accounts office refunds from. It is not the money arriving in their account,
+    so tell the customer their refund has been raised and will be processed,
+    never that they have been refunded.
+
+    Only call this once. If it fails, do not call it again with different
+    numbers: say a colleague will confirm the refund.
+
+    Args:
+        order_no: The order the goods came on, exactly as erp_find_order_by_sku
+            returned it, e.g. "SO-2026-0042".
+        customer_id: The ERP customer that order belongs to, from
+            erp_find_customer. The order is looked up under this customer, so a
+            wrong id finds nothing rather than refunding somebody else.
+        sku: Which product is coming back -- the code from erp_search_sku or the
+            name the customer used. One product per call.
+        reason: Why it is coming back, in the customer's own words, e.g.
+            "case arrived cracked". It is written onto the refund note, which is
+            what the office reads when they look at it. Leave it empty rather
+            than inventing a reason they did not give.
+        quantity: How many units are coming back. Leave it out to credit the
+            whole quantity that was invoiced, which is what a customer returning
+            "it" means.
+    """
+    client = erp_client.client()
+    try:
+        order = client.sales_order_for_customer(order_no, customer_id)
+        if order is None:
+            return NO_SUCH_ORDER_TO_CREDIT
+        # From here on the ERP's spelling of the number, not the model's.
+        order_no = order.get("document_no") or order_no
+        invoice = client.invoice_for_order(order["id"])
+    except (ApiClientError, KeyError):
+        logger.exception("could not look up order %r for customer %s", order_no, customer_id)
+        return UNAVAILABLE
+
+    if invoice is None:
+        return _nothing_billed(order_no)
+    status = str(invoice.get("status"))
+    invoice_no = str(invoice.get("document_no"))
+    if status not in erp_client.CREDITABLE_INVOICE:
+        return _not_creditable(order_no, invoice_no, status)
+    if not invoice.get("warehouse_id"):
+        return _no_warehouse_to_return_to(order_no, invoice_no)
+
+    line = next((row for row in invoice.get("lines", []) if _matches_sku(row, sku)), None)
+    if line is None:
+        return _not_on_the_invoice(order_no, sku)
+
+    try:
+        invoiced = float(line.get("qty") or 0)
+        coming_back = invoiced if float(quantity) <= 0 else float(quantity)
+    except (TypeError, ValueError):
+        logger.warning("erp_create_credit_note got an unusable quantity: %r", quantity)
+        return BAD_RETURN_QUANTITY
+
+    # The ERP has the last word here -- what is left creditable is the invoiced
+    # quantity less whatever earlier credit notes already took, which is not
+    # visible from this side. This catches the obvious case while the customer
+    # is still reading, rather than after a round trip.
+    if coming_back <= 0 or coming_back > invoiced:
+        return BAD_RETURN_QUANTITY
+
+    try:
+        note = client.create_credit_note(
+            invoice_id=invoice["id"],
+            lines=[(line["id"], coming_back)],
+            reason_description=str(reason or "").strip(),
+        )
+    except (ApiClientError, KeyError) as exc:
+        logger.exception("could not credit order %s for customer %s", order_no, customer_id)
+        unknown = isinstance(exc, ApiClientError) and exc.may_have_landed
+        return CREDIT_UNKNOWN if unknown else CREDIT_FAILED
+
+    return _as_json(
+        {
+            "credit_note_no": note.get("document_no"),
+            "status": note.get("status"),
+            "order_no": order_no,
+            "invoice_no": invoice.get("document_no"),
+            "currency": note.get("currency"),
+            "total_incl_tax": note.get("total_incl_tax"),
+            "item": {
+                "code": line.get("sku_code"),
+                "name": line.get("sku_name"),
+                "qty_returned": coming_back,
+            },
+        }
+    )
+
+
 TOOLS = [
     erp_search_sku,
     erp_get_inventory,
@@ -812,4 +1115,6 @@ TOOLS = [
     erp_list_orders,
     erp_create_sales_order,
     erp_generate_einvoice,
+    erp_find_order_by_sku,
+    erp_create_credit_note,
 ]
