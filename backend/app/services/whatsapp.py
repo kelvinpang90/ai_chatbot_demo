@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import re
+from collections.abc import Sequence
 
 import httpx
 
@@ -122,6 +123,34 @@ def build_text_message(to: str, text: str) -> dict:
         **_recipient(to),
         "type": "text",
         "text": {"body": _body(text, MAX_TEXT_BODY_CHARS)},
+    }
+
+
+def build_template_message(to: str, name: str, language: str, params: Sequence[str]) -> dict:
+    """One approved template, filled in. See docs/whatsapp-templates.md.
+
+    The only kind of message WhatsApp will carry once the customer's 24-hour
+    window has closed, which is why `notify` reaches for it rather than giving up.
+
+    The slots are positional -- `{{1}}` is `params[0]` -- and Meta holds the
+    wording, not us. That is what makes the order of the parameters in that
+    document a contract rather than a description of it: swap two there and
+    nothing here fails, the customer simply reads their order total where the
+    order number should be.
+    """
+    template: dict = {"name": name, "language": {"code": language}}
+    if params:
+        template["components"] = [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": str(value)} for value in params],
+            }
+        ]
+    return {
+        "messaging_product": "whatsapp",
+        **_recipient(to),
+        "type": "template",
+        "template": template,
     }
 
 

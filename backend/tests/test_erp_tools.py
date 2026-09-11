@@ -8,7 +8,7 @@ import httpx
 import pytest
 from pypdf import PdfReader
 
-from app.services import api_client, erp_client, outbox, whatsapp, whatsapp_media
+from app.services import api_client, erp_client, notify, outbox, whatsapp, whatsapp_media
 from app.services.api_client import ApiClientError
 from app.services.whatsapp_media import MediaError
 from app.tools import erp
@@ -1830,3 +1830,95 @@ def test_an_invoice_with_no_branch_on_it_says_so_rather_than_already_refunded(_c
     assert "no branch recorded" in answer
     assert "already" not in answer
     assert len(post.call_args_list) == 1  # the login, and nothing written
+
+
+# -- the phone buzzing afterwards (task 19) ------------------------------------
+
+
+@pytest.fixture
+def _push_queue():
+    """A WhatsApp turn. Without one a tool has nowhere to leave a follow-up."""
+    notify.begin()
+    yield
+    notify.close()
+
+
+def test_a_confirmed_order_leaves_the_phone_buzzing_afterwards(_credentials, _push_queue):
+    """Scene 3's opening move: nobody asked for this message. What the tool does
+    is queue it -- sending it here would put it in front of the reply that
+    explains the order."""
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+    queued = []
+
+    with patch.object(notify, "add", side_effect=queued.append) as add:
+        with patch.object(api_client.httpx, "post", side_effect=posts):
+            with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+                erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 3}])
+
+    assert add.call_count == 1
+    push = queued[0]
+    assert push.delay_seconds == erp.settings.push_delay_seconds
+    assert CONFIRMED_ORDER["document_no"] in push.text
+    # Three languages, because it is a line the model did not write -- the same
+    # rule test_whatsapp_webhook.py pins for every other canned message.
+    assert len(push.text.split(" / ")) == 3
+
+
+def test_the_template_parameters_are_in_the_order_the_document_promised(
+    _credentials, _push_queue
+):
+    """docs/whatsapp-templates.md says {{1}} is the name, {{2}} the order number,
+    {{3}} the total. Swap two and nothing here fails -- the customer just reads
+    their total where the order number should be."""
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+    queued = []
+
+    with patch.object(notify, "add", side_effect=queued.append):
+        with patch.object(api_client.httpx, "post", side_effect=posts):
+            with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+                erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 3}])
+
+    template = queued[0].template
+    assert template.name == notify.ORDER_CONFIRMED
+    name, order_no, total = template.params
+    assert name == CONFIRMED_ORDER["customer_name"]
+    assert order_no == CONFIRMED_ORDER["document_no"]
+    assert CONFIRMED_ORDER["total_incl_tax"] in total
+
+
+def test_an_order_the_erp_refused_to_confirm_promises_nothing(_credentials, _push_queue):
+    """The push says the order is confirmed. An order sitting as an unconfirmed
+    draft would have the customer's phone say so anyway, half a minute later."""
+    posts = [
+        _response(_LOGIN),
+        _response(DRAFT_ORDER, 201),
+        _response({"message": "insufficient stock"}, 422),
+    ]
+
+    with patch.object(notify, "add") as add:
+        with patch.object(api_client.httpx, "post", side_effect=posts):
+            with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+                erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 3}])
+
+    add.assert_not_called()
+
+
+def test_the_web_chat_is_never_promised_a_message_it_cannot_receive(_credentials):
+    """No queue open means no phone. A bot that says "I'll message you when it
+    ships" to somebody on a laptop has promised them nothing."""
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+
+    assert notify.available() is False
+    with patch.object(notify, "add") as add:
+        with patch.object(api_client.httpx, "post", side_effect=posts):
+            with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+                payload = json.loads(
+                    erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 3}])
+                )
+
+    # Asked before queuing rather than left to `notify.add` to refuse: the tool
+    # is the thing that knows a follow-up was never on the table, and a warning
+    # logged on every web order would be noise about a case that is normal.
+    add.assert_not_called()
+    # The order itself is unaffected -- only the follow-up is.
+    assert payload["order_no"] == CONFIRMED_ORDER["document_no"]

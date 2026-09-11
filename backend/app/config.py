@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # brochure is comfortably past five megabytes. Anthropic takes 32MB per
     # request, base64 costs a third on top, so sixteen raw lands safely inside it.
     whatsapp_document_max_bytes: int = 16 * 1024 * 1024
+    # How long after an order the customer's phone buzzes (task 19). A setting
+    # rather than a constant because it is a piece of stagecraft: too short and
+    # it looks like part of the reply, too long and the room has moved on. The
+    # number that reads as "it did that by itself" is found in front of an
+    # audience, not here.
+    push_delay_seconds: float = 30.0
 
     # 微信客服 (WeCom customer service). All four are secrets and all four default
     # to empty for the same reason the back-office passwords do -- this repository

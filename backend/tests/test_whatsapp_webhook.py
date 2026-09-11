@@ -24,8 +24,9 @@ from app.routers.whatsapp_webhook import (
     _resolve_quick_question,
     dispatch_message,
 )
-from app.services import doc_store, llm, outbox, transcribe, whatsapp, whatsapp_media
+from app.services import doc_store, llm, notify, outbox, transcribe, whatsapp, whatsapp_media
 from app.services.user_store import user_store
+from app.tools import erp as erp_tools
 
 client = TestClient(app)
 
@@ -50,6 +51,9 @@ def test_every_canned_reply_is_written_in_all_three_languages():
         "VOICE_UNREADABLE_MESSAGE": VOICE_UNREADABLE_MESSAGE,
         "IMAGE_UNREADABLE_MESSAGE": IMAGE_UNREADABLE_MESSAGE,
         "DOCUMENT_UNREADABLE_MESSAGE": DOCUMENT_UNREADABLE_MESSAGE,
+        # Not a router constant, but the same kind of line and the same trap:
+        # the customer reads it mid-conversation and the model did not write it.
+        "erp.ORDER_PUSH": erp_tools.ORDER_PUSH,
         # The one that set the shape, so the two files cannot drift apart.
         "llm.FALLBACK_REPLY": llm.FALLBACK_REPLY,
     }
@@ -1216,3 +1220,48 @@ def test_the_page_footnote_is_sent_to_the_customer_but_not_kept_in_the_history()
 
     assert sent[0]["text"]["body"] == footnoted
     assert user_store.get(phone).history[-1].content == "The TX-7742 is RM 287.50."
+
+
+# -- the clock on a follow-up (task 19) ----------------------------------------
+
+
+def test_a_queue_for_follow_ups_is_open_while_the_model_runs():
+    """A tool checks `notify.available()` to decide whether this is a
+    conversation with a phone in it. On WhatsApp it always is."""
+    phone = "60129997001"
+    _in_conversation(phone)
+    seen = {}
+
+    def capture(bot, customer, history, image=None, document=None):
+        seen["open"] = notify.available()
+        return "Done."
+
+    with patch.object(llm, "get_reply", side_effect=capture):
+        dispatch_message(_text_message(phone, "hello"))
+
+    assert seen["open"] is True
+
+
+def test_the_clock_starts_against_the_number_the_message_came_from():
+    """The tool queues a follow-up without ever learning who it is for. This is
+    the one place that knows, which is the same rule the outbox follows."""
+    phone = "60129997002"
+    _in_conversation(phone)
+
+    with patch.object(llm, "get_reply", return_value="Done."):
+        with patch.object(notify, "dispatch") as dispatch:
+            dispatch_message(_text_message(phone, "hello"))
+
+    assert dispatch.call_args.args == (phone,)
+
+
+def test_a_turn_that_queued_nothing_starts_no_clock():
+    """Which is nearly every turn. Left to itself `dispatch` is a no-op, and this
+    pins that it is reached rather than guarded by a condition somewhere."""
+    phone = "60129997003"
+    _in_conversation(phone)
+
+    with patch.object(llm, "get_reply", return_value="Done."):
+        dispatch_message(_text_message(phone, "hello"))
+
+    assert notify.dispatch(phone) == []

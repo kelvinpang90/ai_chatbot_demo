@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 from app.bots.registry import BotConfig, get_bot, list_bots
 from app.config import settings
 from app.console import events
-from app.services import audit, doc_store, llm, outbox, transcribe, whatsapp, whatsapp_media
+from app.services import audit, doc_store, llm, notify, outbox, transcribe, whatsapp, whatsapp_media
 from app.services.user_store import user_store
 from app.session_store import session_store
 from app.tools import erp
@@ -252,6 +252,11 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
     # rather than sending them. So a tool leaves the file here and it travels
     # with the reply. Opened per message, so nothing can leak into the next one.
     outbox.begin()
+    # And the same again for something a tool wants said a minute from now, when
+    # there is no reply left to put it in. Opened here rather than in
+    # `_handle_text_message` so that a tool can tell, from anywhere in the turn,
+    # whether this conversation is one that can be followed up at all.
+    notify.begin()
 
     if session_store.is_duplicate_message(message_id):
         logger.info("Skipping duplicate WhatsApp message %s", message_id)
@@ -605,6 +610,10 @@ def _handle_text_message(
         user_store.save(profile)
     finally:
         audit.close()
+    # After the turn, because this is where the recipient is known -- a tool
+    # queues a follow-up without ever learning who it is for. The clock starts
+    # now; the reply itself goes out a moment later, from the caller.
+    notify.dispatch(sender.key)
     logger.info("Sending LLM reply to %s for bot=%s", sender.key, bot.id)
     return payloads
 

@@ -246,3 +246,53 @@ def test_no_message_id_means_no_request_at_all():
         whatsapp.send_typing_indicator("")
 
     mock_post.assert_not_called()
+
+
+# -- templates (task 18/19) ----------------------------------------------------
+#
+# The only message WhatsApp carries once the customer's 24-hour window has shut.
+# Meta holds the wording and we hold the slots, which is why the shape below is
+# a contract with docs/whatsapp-templates.md rather than a detail.
+
+
+def test_a_template_message_carries_its_parameters_in_order():
+    payload = whatsapp.build_template_message(
+        "60123456789", "order_confirmed", "en", ("Kelvin", "SO-2026-00001", "RM 657.80")
+    )
+
+    assert payload["to"] == "60123456789"
+    assert payload["type"] == "template"
+    assert payload["template"]["name"] == "order_confirmed"
+    assert payload["template"]["language"] == {"code": "en"}
+    body = payload["template"]["components"][0]
+    assert body["type"] == "body"
+    assert [p["text"] for p in body["parameters"]] == [
+        "Kelvin",
+        "SO-2026-00001",
+        "RM 657.80",
+    ]
+
+
+def test_a_template_with_no_slots_sends_no_components_at_all():
+    """Meta refuses an empty `components` array, which is not the same as one it
+    was never given."""
+    payload = whatsapp.build_template_message("60123456789", "hello_world", "en", ())
+
+    assert "components" not in payload["template"]
+
+
+def test_a_number_that_is_a_value_still_arrives_as_text():
+    """Meta's parameters are typed, and a total that reached here as a Decimal off
+    the ERP would otherwise serialise as something their API refuses."""
+    payload = whatsapp.build_template_message("60123456789", "order_confirmed", "en", (1, 2.5))
+
+    assert [p["text"] for p in payload["template"]["components"][0]["parameters"]] == ["1", "2.5"]
+
+
+def test_a_customer_with_no_phone_number_is_addressed_the_way_meta_wants():
+    """The same seam `_recipient` draws for every other message type: a BSUID
+    goes in `recipient`, never in `to`."""
+    payload = whatsapp.build_template_message("US.1349120865", "order_confirmed", "en", ("x",))
+
+    assert payload["recipient"] == "US.1349120865"
+    assert "to" not in payload

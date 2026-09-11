@@ -7,7 +7,8 @@ from typing import TypedDict
 
 from anthropic import beta_tool
 
-from app.services import erp_client, invoice_pdf, outbox, whatsapp, whatsapp_media
+from app.config import settings
+from app.services import erp_client, invoice_pdf, notify, outbox, whatsapp, whatsapp_media
 from app.services import phone as phone_service
 from app.services.api_client import ApiClientError
 from app.services.whatsapp_media import MediaError
@@ -465,6 +466,16 @@ def erp_create_customer(
 
 NO_ORDERS = "This customer has no orders in the ERP system."
 
+# What the phone says half a minute after an order, with nobody having asked
+# (task 19). Three languages for the reason every canned line in this project is:
+# it is the one message in the conversation the model did not write, and an
+# English sentence arriving alone in a Chinese chat reads as the seam it is.
+ORDER_PUSH = (
+    "您的订单 {order_no} 已确认，合计 {total}，我们正在为您备货。 / "
+    "Your order {order_no} is confirmed, total {total}. We're getting it ready now. / "
+    "Pesanan anda {order_no} telah disahkan, jumlah {total}. Kami sedang menyediakannya."
+)
+
 
 @beta_tool
 def erp_list_orders(customer_id: int) -> str:
@@ -504,6 +515,37 @@ def erp_list_orders(customer_id: int) -> str:
             }
             for order in orders
         ]
+    )
+
+
+def _promise_an_update(order: dict) -> None:
+    """Queue the "your order is confirmed" push this turn will send afterwards.
+
+    Queued rather than sent. A tool that sent its own messages would put this one
+    in front of the reply that explains the order -- and would try to send it
+    from the web chat, which has no phone to buzz. `notify.available()` is how
+    this tool knows which of those it is in.
+
+    Only reached once the order is actually confirmed in the ERP, which is what
+    the push says. Nothing is promised for an order that failed on the way in.
+    """
+    if not notify.available():
+        return
+    order_no = str(order.get("document_no") or "")
+    total = f"{order.get('currency') or ''} {order.get('total_incl_tax') or ''}".strip()
+    if not order_no:
+        return
+    notify.add(
+        notify.Push(
+            delay_seconds=settings.push_delay_seconds,
+            text=ORDER_PUSH.format(order_no=order_no, total=total),
+            # For the day this fires outside the 24-hour window. The order of
+            # these three is docs/whatsapp-templates.md's, not ours.
+            template=notify.Template(
+                notify.ORDER_CONFIRMED,
+                (str(order.get("customer_name") or "there"), order_no, total),
+            ),
+        )
     )
 
 
@@ -583,6 +625,8 @@ def erp_create_sales_order(
         logger.exception("confirming sales order %s failed", document_no)
         unknown = isinstance(exc, ApiClientError) and exc.may_have_landed
         return _confirmation_unknown(document_no) if unknown else _not_confirmed(document_no)
+
+    _promise_an_update(order)
 
     return _as_json(
         {

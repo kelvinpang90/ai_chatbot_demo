@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from app.config import settings
-from app.services import audit, crm_client, doc_store, erp_client, outbox
+from app.services import audit, crm_client, doc_store, erp_client, notify, outbox
 from app.services.user_store import user_store
 
 
@@ -100,3 +100,18 @@ def _no_documents_on_file():
     doc_store.clear()
     yield
     doc_store.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_push_queue_left_open():
+    """Every test starts in a conversation that cannot be followed up.
+
+    The same ContextVar hazard the outbox has: a queue opened by any earlier test
+    stays open for the rest of the suite, and a tool that checks
+    `notify.available()` to decide whether it is on WhatsApp would then believe
+    it always is -- including in the web chat tests, which is exactly the case
+    that check exists to catch.
+    """
+    notify.close()
+    yield
+    notify.close()
