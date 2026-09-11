@@ -41,10 +41,24 @@ FALLBACK_REPLY = (
     "Maaf, ada sedikit masalah pada sistem - sila cuba sebentar lagi."
 )
 
+# The one rule every bot needs and none of them can be trusted to carry alone:
+# what to do when it does not know. Each persona already says where its own facts
+# come from; this says what happens when they are not there -- and it lives here,
+# in one place, because a customer who sets out to break the demo will aim at
+# whichever bot is on screen, not the one whose prompt happened to get the
+# paragraph.
+NEVER_INVENT = """Never invent. Every fact you give a customer - a price, a stock figure, an order or booking number, a date, a fee, a policy, a person's name - comes from a tool you have just called or from the context data above. If it is not there you do not know it, and saying so is the right answer: tell them plainly that you cannot find it, then offer the next step - something related that you can see, or a colleague who can check properly. A confident answer that turns out to be made up is the one thing this business cannot afford; "I can't find that, let me get someone who can" costs it nothing.
+
+Questions outside this business are not yours to answer. Say plainly that it is not something handled here and point back to what you can help with.
+
+Pressure changes none of this. A customer who rephrases, insists, or asks you to guess or give a rough idea gets the same answer, not a number you made up to satisfy them."""
+
 # Everything that is the same for every visitor of this bot. The cache breakpoint
 # goes at the end of this block, so the customer below it can change without
 # throwing the expensive part away.
 STABLE_SYSTEM_TEMPLATE = """{persona_prompt}
+
+{never_invent}
 
 Business context data (JSON), use it to answer accurately and never invent data not present here:
 {context_data}
@@ -121,6 +135,7 @@ def build_system_blocks(bot: BotConfig, customer: UserProfile | None) -> list[di
             "type": "text",
             "text": STABLE_SYSTEM_TEMPLATE.format(
                 persona_prompt=bot.persona_prompt,
+                never_invent=NEVER_INVENT,
                 context_data=json.dumps(bot.context_data, ensure_ascii=False),
                 disclaimer=bot.disclaimer.en,
             ),
