@@ -659,7 +659,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - ✅ **真机 + 中文当天就补上了**（2026-09-11，用户拿手机对着 `retail` 发「帮我查一下订单 111」）。回的是：*「我在 ERP 系統裡找不到您的帳戶（用這個號碼和 Acuven Technology 都查不到），所以也查不到「訂單 111」這筆訂單」*，然后给两条出路（换公司名/名字再查一次，或当场开户下单）。三点都对：没给订单 111 编状态；**说清了它查过哪两个条件**，客户能判断它是真查了，而不是一句含糊的「查不到」；给了下一步而不是把人晾着。边界上有一句「您目前還沒有正式下過訂單」——依据是「ERP 里没这个账户」+ 那张单一直卡在等 TIN，在当时语境下准确，而且它自己紧接着留了口子（「如果帳戶是用其他公司或名字開的，告訴我我再查一次」），判定为可接受
   - **仍然没验的**：**马来文的拒绝没测**（七条 eval 全英文，真机那条是中文；`NEVER_INVENT` 本身是英文，和其它提示词一样靠「用客户的语言回」那条规则翻译）；`banking` 没测也没改
 
-  **真机验收顺手带出的一个修复（不属于本任务范围，用户当场拍板要修）**：上面那条中文回复**是繁体**，而用户输入的是简体。**马来西亚写简体**，回繁体在演示里读起来像一个从别处搬来的 bot——正是本地化 demo 最不该给人的印象。`STABLE_SYSTEM_TEMPLATE` 的 Language 那一行原来只说「用客户写的那种语言回」，没区分简繁。加一句「Chinese means Simplified Chinese…even when the customer writes to you in Traditional」，并在 `test_llm.py` 加一条断言守着（`test_chinese_means_the_simplified_kind`）。**注意这是提示词约束，不是转换器**——模型绝大多数时候会照办，但不保证 100%，真出现繁体只能再加压或做后处理，不要以为这条已经锁死
+  **真机验收顺手带出的一个修复（不属于本任务范围，用户当场拍板要修）**：上面那条中文回复**是繁体**，而用户输入的是简体。**马来西亚写简体**，回繁体在演示里读起来像一个从别处搬来的 bot——正是本地化 demo 最不该给人的印象。`STABLE_SYSTEM_TEMPLATE` 的 Language 那一行原来只说「用客户写的那种语言回」，没区分简繁。加一句「Chinese means Simplified Chinese…even when the customer writes to you in Traditional」，并在 `test_llm.py` 加一条断言守着（`test_chinese_means_the_simplified_kind`）。**注意这是提示词约束，不是转换器**——模型绝大多数时候会照办，但不保证 100%，真出现繁体只能再加压或做后处理，不要以为这条已经锁死。
+  **线上实测通过**（部署后走网页线路问 `retail`：「帮我查一下订单 111，还有那个降噪耳机多少钱？」）：回的是简体，**而且两条规矩同时成立**——耳机给了真 SKU 和真价格（`SKU-ELE-0001`，RM 328.90 含税），订单 111 明说「您的号码在我们系统里查不到客户账户，所以我无法查到这张订单」，再给换名字重查 / 转同事两条路。⚠️ 用 `curl -d` 直接带中文会发成乱码（bot 回「message didn't come through clearly」，**看起来像 bot 坏了，其实是终端编码**），要用 UTF-8 文件 `--data-binary @file`
 
 - [x] **任务 12：导演台 v1 页面**
   文件：`frontend/src/pages/Console.tsx`（新增）、`frontend/src/api.ts`、`frontend/nginx.conf`
