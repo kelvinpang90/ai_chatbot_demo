@@ -708,11 +708,26 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **重新验证**：全套 **438 passed**；本地 docker 起前后端，浏览器里实测「连上 → 停后端 30 秒 → 起后端」：期间红字「连接中断，重试中…」、**没有**被踢回输入框、历史和成本都留着，恢复后自动重连、事件继续滚、行正确配对成 ok/error。线上 `chatbot.acuventech.com/console` 打开即「● 实时」
 
-- [ ] **任务 12.1：WhatsApp 端「正在输入」状态**
+- [x] **任务 12.1：WhatsApp 端「正在输入」状态**——**2026-09-11 代码完成，⚠️ 真机那一枪没打（我没有手机，见下）**
   文件：`backend/app/services/whatsapp.py`（加 typing indicator）、`backend/app/routers/whatsapp_webhook.py`
   目标：收到消息立刻发 typing indicator，回复发出后停止
   **这不是锦上添花，是防止前面所有工作被误解。** 接了真 ERP 之后一次回复要串好几个工具调用，延迟明显变长——没有输入提示，客户看到的是「卡住了」，**你辛苦做的真实调用反而变成了性能差的观感**。原本挂在可选项里，因此提为正式任务
   验收：真机发一条会触发多个工具调用的消息，对话框顶部先出现「正在输入…」，回复到达后消失
+
+  **做了什么**
+  - `whatsapp.build_typing_indicator(message_id)` + `send_typing_indicator(message_id)`。**没有「停止」这个动作**——Meta 把它折进了 mark-as-read 那一跳（`status: "read"` + `message_id` + `typing_indicator`），一个请求同时把客户的对勾变蓝、把「正在输入」点亮；**回复一到它自己消失**，没回复的话约 25 秒后自己消失。任务描述里「回复发出后停止」因此不是我们要写的代码，是 Meta 的既定行为
+  - 调用点放在 `_handle_incoming_message` 的**最前面**，在 `dispatch_message` 之外。两个理由：① 必须在慢活之前发，发在后面就只是装饰；② `dispatch_message` 的契约是「自己不发任何东西、只返回 payload」（网关那条线靠它），而输入提示是个生命周期跟回复不一样的副作用，塞不进返回值
+  - **这是本模块唯一一个吞掉自己失败的 send**，专门写了 docstring 说明：它站在回复前面，抛出去就是客户拿不到答案——一个因为装饰品挂了而丢掉的回复，比没有装饰品严格更糟。Meta 的原话进 WARNING 日志
+
+  **验证到什么程度**
+  - 单测：容器里 **549 passed / 7 skipped**（新增 6 条：payload 形状、Meta 拒绝时不外抛、连接超时时不外抛、没有 message_id 就根本不发请求、**typing 排在 LLM 调用之前**、typing 被拒后客户照样拿到回复且导演台不报 SEND_FAILED）
+  - 改了 1 条既有断言：`test_end_to_end.py` 的 `_walk_up_to_the_question` 数「发了几条」，现在过滤掉 typing 再数——typing 不是客户读得到的消息
+  - **没验的**：真机、真 Graph API。下面那条是这次唯一真正的不确定性
+
+  **⚠️ 唯一的风险：Graph API 版本**。`GRAPH_API_BASE` 全仓库只有一处，是 `v20.0`（任务 1 的媒体链路就是在这个版本上实测通的）。而 `typing_indicator` 这个字段 Meta 文档上标的是 v21+。**没有为此动那个常量**——它同时管着 media 的上传/下载，为一个装饰品去动一条已经验过的链路不划算。真被拒了的表现是：日志一条 WARNING 带着 Meta 的错误码，回复照常发出，客户只是看不到「正在输入」。**真机验收时请顺手看一眼后端日志有没有 `Could not show a typing indicator`**——有的话就是这个版本问题，那时候再决定要不要把 base 升到 v22 并重验一遍 media
+  - 另一处已知但接受的边角：重复投递、认不出发件人这类**不产生回复**的消息也会点亮输入提示，然后挂在那儿约 25 秒。重复投递的原件回复会把它顺手掐掉；剩下的是错误路径。没为此加判断
+  - 还有一处权衡：每条入站消息现在多一次同步 HTTP 往返（`REQUEST_TIMEOUT_SECONDS = 10`）排在 LLM 之前。正常 Meta 几百毫秒，但网络抽风时它会**给回复加延迟**——正好是这个功能想解决的东西。没做短超时，因为同样的抽风也会打到发回复那一跳
+  - 网关那条线（`/internal/whatsapp/inbound`）**没有输入提示**，它只返回 payload、由网关去发。demo 线 2026-08-30 起直连 Meta，不走网关，所以不影响
 
 - [ ] **任务 12.2：对照组开关 —— 把核心主张变成当场可验证的实验**
   文件：`frontend/src/pages/Console.tsx`、`backend/app/routers/console.py`、`backend/app/services/llm.py`
@@ -724,6 +739,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - [ ] **任务 13：批次 01 真机验收**（用户任务）
   目标：用户拿手机走完整段旗舰剧本的八步，笔记本开着导演台
   验收：八步全通（**含「改成 3 个」那一步，订单金额要跟着变**）；ERP 后台刷出真单；PDF 发票能打开；大屏上每一步都有对应事件；对照组开关拨两次效果如预期
+  **顺带替任务 12.1 打那一枪**（它做不了）：会触发多个工具调用的那一步，对话框顶部先出现「正在输入…」、回复到达后消失；再看一眼后端日志有没有 `Could not show a typing indicator`——有就是 Graph API 版本问题，详见任务 12.1 的记录
   **并发验证**：请在场三个人**同时**给这个号码发消息，三条对话各自独立推进、不串台。这条是破除「它一次只能应付一个人吧」这个很常见的直觉——**可能零代码**（`session_store` 本来就按手机号分键），但必须现场之前验过，别到客户面前才发现有共享状态的 bug
 
 ---

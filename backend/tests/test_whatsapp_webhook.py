@@ -347,6 +347,50 @@ def test_a_message_that_blows_up_is_never_answered_with_silence_in_the_log():
     events.clear()
 
 
+def test_the_customer_sees_typing_before_the_slow_work_rather_than_after_it():
+    """Sent afterwards it would be decoration. The whole point is that it covers
+    the seconds the real tool calls take, so the order is the feature."""
+    phone = "60129992004"
+    _in_conversation(phone)
+    order = []
+
+    def note_reply(*_args, **_kwargs) -> str:
+        order.append("llm")
+        return "We have three."
+
+    def note_send(payload: dict) -> None:
+        order.append("typing" if "typing_indicator" in payload else payload.get("type"))
+
+    with patch.object(llm, "get_reply", side_effect=note_reply):
+        with patch.object(whatsapp, "send_raw", side_effect=note_send):
+            _handle_incoming_message(_text_message(phone, "do you have earbuds"))
+
+    assert order == ["typing", "llm", "text"]
+
+
+def test_a_refused_typing_indicator_still_leaves_the_customer_with_an_answer():
+    """The failure is contained in `send_typing_indicator`, not caught by the
+    blanket handler around the whole turn -- which would have dropped the reply."""
+    phone = "60129992005"
+    _in_conversation(phone)
+    events.clear()
+    sent = []
+
+    def refuse_only_the_indicator(payload: dict) -> None:
+        if "typing_indicator" in payload:
+            raise whatsapp.WhatsAppSendError("WhatsApp refused a ? message (HTTP 400): ...")
+        sent.append(payload)
+
+    with patch.object(llm, "get_reply", return_value="We have three."):
+        with patch.object(whatsapp, "send_raw", side_effect=refuse_only_the_indicator):
+            _handle_incoming_message(_text_message(phone, "do you have earbuds"))
+
+    assert [p["type"] for p in sent] == ["text"]
+    # Nothing the customer or the room needs to know about: they got the answer.
+    assert [e for e in events.since(0) if e.type == events.SEND_FAILED] == []
+    events.clear()
+
+
 # -- a customer who has hidden their phone number (Meta, 2026) -----------------
 #
 # Meta now lets a WhatsApp user keep their number to themselves and be reached by

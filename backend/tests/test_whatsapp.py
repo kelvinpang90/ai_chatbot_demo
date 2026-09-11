@@ -207,3 +207,42 @@ def test_a_button_title_is_cut_to_what_meta_accepts():
     )["interactive"]["action"]["buttons"]
 
     assert len(buttons[0]["reply"]["title"]) == whatsapp.MAX_BUTTON_TITLE_CHARS
+
+
+# -- "typing…" ----------------------------------------------------------------
+#
+# The one send in this module that is allowed to fail quietly, and the tests say
+# why: it stands in front of the reply, so anything it raises is paid for by the
+# customer, who gets silence instead of an answer.
+
+
+def test_the_typing_indicator_is_addressed_by_the_message_it_answers():
+    built = whatsapp.build_typing_indicator("wamid.abc")
+
+    assert built == {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": "wamid.abc",
+        "typing_indicator": {"type": "text"},
+    }
+
+
+def test_a_refused_typing_indicator_never_reaches_the_caller():
+    refusal = httpx.Response(400, text='{"error":{"message":"(#100) typing_indicator"}}')
+
+    with patch.object(whatsapp.httpx, "post", return_value=refusal):
+        assert whatsapp.send_typing_indicator("wamid.abc") is None
+
+
+def test_a_typing_indicator_that_cannot_even_be_sent_never_reaches_the_caller():
+    """A timeout on the decoration must not take the reply behind it with it."""
+    with patch.object(whatsapp.httpx, "post", side_effect=httpx.ConnectTimeout("no route")):
+        assert whatsapp.send_typing_indicator("wamid.abc") is None
+
+
+def test_no_message_id_means_no_request_at_all():
+    """There is nothing to address it to, and Meta would answer 400."""
+    with _ok() as mock_post:
+        whatsapp.send_typing_indicator("")
+
+    mock_post.assert_not_called()

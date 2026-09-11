@@ -142,6 +142,14 @@ def _identify(message: dict, contact: dict) -> Sender | None:
 
 def _handle_incoming_message(message: dict, contact: dict | None = None) -> None:
     try:
+        # Before the work, not after it: a reply that strings together several
+        # real ERP calls takes long enough that a silent chat reads as a hung
+        # one, and the honest tool calls this project exists to show off would
+        # be mistaken for the thing being slow. Deliberately outside
+        # `dispatch_message`, which is contracted to send nothing itself --
+        # under the gateway path it only returns payloads, and the indicator is
+        # a side effect with a different lifetime from a reply.
+        whatsapp.send_typing_indicator(str(message.get("id") or ""))
         for payload in dispatch_message(message, contact):
             whatsapp.send_raw(payload)
     except Exception as failure:

@@ -257,3 +257,37 @@ def send_interactive_list(
 
 def send_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> httpx.Response:
     return send_raw(build_quick_reply_buttons(to, body_text, buttons))
+
+
+def build_typing_indicator(message_id: str) -> dict:
+    """Show "typing…" under our name, in answer to the message just received.
+
+    Addressed by the incoming message id rather than by recipient: Meta folds
+    this into the mark-as-read call, so the one request both turns the
+    customer's ticks blue and starts the indicator. There is deliberately no
+    matching "stop" -- Meta dismisses it the moment our reply arrives, and
+    otherwise after about 25 seconds.
+    """
+    return {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {"type": "text"},
+    }
+
+
+def send_typing_indicator(message_id: str) -> None:
+    """Start the indicator if we can, and never let it cost the customer a reply.
+
+    The only send in this module that swallows its failure, because it is the
+    only one the customer is not waiting for: a reply that never arrives because
+    the decoration in front of it raised would be strictly worse than no
+    decoration at all. Meta's refusal is logged with its own words -- which is
+    also how we would find out that this Graph API version lacks the field.
+    """
+    if not message_id:
+        return
+    try:
+        send_raw(build_typing_indicator(message_id))
+    except (WhatsAppSendError, httpx.HTTPError) as failure:
+        logger.warning("Could not show a typing indicator for %s: %s", message_id, failure)

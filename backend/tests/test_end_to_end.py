@@ -198,8 +198,10 @@ def _walk_up_to_the_question(customer: Customer, sent: list) -> None:
     customer.says("hi")
     customer.chooses("retail")
 
-    # The menu, then the greeting and its quick-reply buttons.
-    assert len(sent) == 3
+    # The menu, then the greeting and its quick-reply buttons. Each is now
+    # preceded by a typing indicator, which is not a message the customer reads
+    # and so is not one of the three counted here.
+    assert len([call for call in sent if "typing_indicator" not in call.args[0]]) == 3
 
 
 def _tool_results_fed_back(parse_mock) -> list[str]:
