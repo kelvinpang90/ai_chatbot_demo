@@ -17,22 +17,42 @@ from app.tools import erp
 router = APIRouter(prefix="/webhook/whatsapp")
 logger = logging.getLogger(__name__)
 
-RATE_LIMIT_MESSAGE = "You've reached today's message limit for this demo. Please try again tomorrow."
+# The canned replies, in all three languages the demo is sold in.
+#
+# These are the only things a customer reads that the model did not write, and
+# they turn up mid-conversation -- so they cannot be answered in the language the
+# customer is writing in the way every other reply is. Seen on a real phone on
+# 2026-09-11: a conversation in Chinese about a helmet, and then one flat English
+# sentence, which reads as the seam it is. `llm.FALLBACK_REPLY` had already
+# settled the shape for this; these follow it. Anything added here follows it too.
+RATE_LIMIT_MESSAGE = (
+    "您今天在这个 demo 的消息次数已用完，请明天再试。 / "
+    "You've reached today's message limit for this demo - please try again tomorrow. / "
+    "Anda telah mencapai had mesej harian untuk demo ini - sila cuba lagi esok."
+)
 UNSUPPORTED_TYPE_MESSAGE = (
+    "抱歉，这个 demo 只能读文字、语音和图片，请直接打字告诉我。 / "
     "Sorry, I can only read text, voice and photo messages in this demo - "
-    "please type your question instead."
+    "please type your question instead. / "
+    "Maaf, demo ini hanya boleh membaca teks, suara dan gambar - "
+    "sila taip soalan anda."
 )
 # One line for both ways a voice note can come to nothing, because the customer's
 # next move is the same either way. Which of the two it was is on the console.
 VOICE_UNREADABLE_MESSAGE = (
-    "Sorry, I couldn't make out that voice message - please type your question instead."
+    "抱歉，这条语音我没听清，请直接打字告诉我。 / "
+    "Sorry, I couldn't make out that voice message - please type your question instead. / "
+    "Maaf, saya tidak dapat menangkap mesej suara itu - sila taip soalan anda."
 )
 # Same posture for a photo. Three ways it can come to nothing -- the download
 # failed, the file was over the cap, or it is a format the model cannot read --
 # and one thing left for the customer to do about any of them.
 IMAGE_UNREADABLE_MESSAGE = (
+    "抱歉，这张照片我打不开，麻烦再发一次，或者直接说说您看到的是什么。 / "
     "Sorry, I couldn't open that photo - please try sending it again, "
-    "or describe what you're seeing."
+    "or describe what you're seeing. / "
+    "Maaf, saya tidak dapat membuka gambar itu - sila hantar semula, "
+    "atau ceritakan apa yang anda lihat."
 )
 GREETING_SUFFIX_EN = "How can I help you today?"
 # Not a tool the model called, but the same thing to the person watching the

@@ -11,6 +11,7 @@ from app.console import events
 from app.main import app
 from app.routers.whatsapp_webhook import (
     IMAGE_UNREADABLE_MESSAGE,
+    RATE_LIMIT_MESSAGE,
     UNSUPPORTED_TYPE_MESSAGE,
     VOICE_UNREADABLE_MESSAGE,
     Sender,
@@ -31,6 +32,33 @@ client = TestClient(app)
 # Row and button lengths used to be cut here, by a local `_truncate`. They are
 # cut in `whatsapp.list_row` and `build_quick_reply_buttons` now, where the rest
 # of Meta's limits already live -- see test_whatsapp.py.
+
+
+def test_every_canned_reply_is_written_in_all_three_languages():
+    """The only lines a customer reads that the model did not write.
+
+    Every other reply comes back in whatever language they wrote in, so an
+    English-only canned line lands mid-conversation as the seam it is -- seen on
+    a real phone on 2026-09-11, in the middle of a Chinese conversation. This
+    guards the shape rather than the wording: a fourth canned message added in a
+    year's time should fail here rather than on someone's screen.
+    """
+    canned = {
+        "RATE_LIMIT_MESSAGE": RATE_LIMIT_MESSAGE,
+        "UNSUPPORTED_TYPE_MESSAGE": UNSUPPORTED_TYPE_MESSAGE,
+        "VOICE_UNREADABLE_MESSAGE": VOICE_UNREADABLE_MESSAGE,
+        "IMAGE_UNREADABLE_MESSAGE": IMAGE_UNREADABLE_MESSAGE,
+        # The one that set the shape, so the two files cannot drift apart.
+        "llm.FALLBACK_REPLY": llm.FALLBACK_REPLY,
+    }
+    for name, message in canned.items():
+        parts = [part.strip() for part in message.split(" / ")]
+        assert len(parts) == 3, f"{name} is not in three languages"
+        assert any("一" <= ch <= "鿿" for ch in parts[0]), f"{name} has no Chinese first"
+        assert parts[1].isascii(), f"{name} has no English second"
+        assert parts[2].isascii(), f"{name} has no Malay third"
+        # WhatsApp refuses a text body over 4096 characters.
+        assert len(message) <= 4096, f"{name} is too long for WhatsApp"
 
 
 def test_extract_messages_reads_nested_meta_payload():
