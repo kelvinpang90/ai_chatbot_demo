@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       '/api': 'http://localhost:8000',
       '/console/stream': 'http://localhost:8000',
+      '/console/tools': 'http://localhost:8000',
     },
   },
 })

@@ -132,13 +132,14 @@ export function forgetToken(): void {
 export interface ConsoleEvent {
   seq: number
   at: number
-  type: 'tool_start' | 'tool_end' | 'send_failed' | 'usage'
+  type: 'tool_start' | 'tool_end' | 'send_failed' | 'usage' | 'tools_switched'
   tool: string
   tool_use_id: string
   input: Record<string, unknown> | null
   output: string | null
   duration_ms: number | null
-  status: 'ok' | 'error' | null
+  // 'ok' | 'error' on tool_end; 'on' | 'off' on tools_switched.
+  status: 'ok' | 'error' | 'on' | 'off' | null
   model: string | null
   tokens: Record<string, number> | null
   cost_myr: number | null
@@ -224,4 +225,25 @@ export async function listConversations(search: string, offset = 0): Promise<His
 
 export async function readConversation(id: string): Promise<ConversationDetail> {
   return consoleRequest<ConversationDetail>(`/console/history/${encodeURIComponent(id)}`)
+}
+
+/** Whether the bots may call tools at all - the console's control arm. */
+export interface ToolSwitch {
+  enabled: boolean
+}
+
+// Both of these take the token rather than reading it back out of storage: this
+// is the one screen that may be holding a token localStorage refused to keep (a
+// private window, a token that arrived in the URL), and a switch that 401s while
+// the feed beside it is live would read as the switch being broken.
+export function readToolSwitch(token: string): Promise<ToolSwitch> {
+  return request<ToolSwitch>('/console/tools', { headers: { 'X-Console-Token': token } })
+}
+
+export function setToolSwitch(token: string, enabled: boolean): Promise<ToolSwitch> {
+  return request<ToolSwitch>('/console/tools', {
+    method: 'POST',
+    headers: { 'X-Console-Token': token },
+    body: JSON.stringify({ enabled }),
+  })
 }

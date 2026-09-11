@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './Console.css'
-import { consoleStreamUrl, forgetToken, rememberToken, storedToken, type ConsoleEvent } from '../api'
+import {
+  consoleStreamUrl,
+  forgetToken,
+  readToolSwitch,
+  rememberToken,
+  setToolSwitch,
+  storedToken,
+  type ConsoleEvent,
+} from '../api'
 
 // How many times to let a stream that has never opened fail before giving up on
 // it. Once it has opened, failures are the backend's, not the token's.
@@ -33,7 +41,10 @@ interface ToolRow {
   input: Record<string, unknown> | null
   output: string | null
   durationMs: number | null
-  status: 'ok' | 'error' | 'running'
+  // 'note' is not a call at all: it is the control switch being thrown, which
+  // earns a line because the stretch of demo where nothing is called has to be
+  // told apart from the stretch where nothing was asked.
+  status: 'ok' | 'error' | 'running' | 'note'
 }
 
 function formatTime(at: number): string {
@@ -64,6 +75,10 @@ export default function Console() {
   const [connection, setConnection] = useState<Connection>('connecting')
   const [rows, setRows] = useState<ToolRow[]>([])
   const [costMyr, setCostMyr] = useState(0)
+  // Whether the bots still have their tools. `null` until the backend says, so
+  // the switch cannot start out claiming a position it has not been told.
+  const [toolsEnabled, setToolsEnabled] = useState<boolean | null>(null)
+  const [switchNote, setSwitchNote] = useState('')
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const feedRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
@@ -108,6 +123,14 @@ export default function Console() {
       if (event.type === 'usage') {
         setCostMyr((total) => total + (event.cost_myr ?? 0))
         return
+      }
+
+      // The switch may have been thrown from another screen, or by this one;
+      // either way the stream is what says where it now stands. The event also
+      // gets a line in the feed below, so read it and carry on.
+      if (event.type === 'tools_switched') {
+        setToolsEnabled(event.status === 'on')
+        setSwitchNote('')
       }
 
       setRows((current) => mergeEvent(current, event))
@@ -155,7 +178,7 @@ export default function Console() {
       }
     }
     source.addEventListener('hello', hello as EventListener)
-    for (const type of ['tool_start', 'tool_end', 'send_failed', 'usage']) {
+    for (const type of ['tool_start', 'tool_end', 'send_failed', 'usage', 'tools_switched']) {
       source.addEventListener(type, apply as EventListener)
     }
 
@@ -166,6 +189,20 @@ export default function Console() {
     // `attempt` is not read here - bumping it is how a dropped stream asks for
     // a whole new EventSource, since a closed one cannot be revived.
   }, [token, attempt])
+
+  useEffect(() => {
+    // Where the switch stands right now. The stream only carries it being
+    // thrown, so a screen opened after the fact would otherwise have to guess -
+    // and guessing "on" while the bots are gagged is the one wrong answer.
+    if (!token) return
+    let stale = false
+    readToolSwitch(token)
+      .then(({ enabled }) => !stale && setToolsEnabled(enabled))
+      .catch(() => !stale && setSwitchNote('读不到工具开关的状态'))
+    return () => {
+      stale = true
+    }
+  }, [token])
 
   useEffect(() => {
     // Newest at the bottom, like every other console; follow it down.
@@ -181,6 +218,20 @@ export default function Console() {
       })[connection],
     [connection],
   )
+
+  function flipTools() {
+    if (toolsEnabled === null) return
+    const next = !toolsEnabled
+    // Not set optimistically: a switch that snaps across and then quietly snaps
+    // back is worse than one that takes a moment, and this one is thrown in
+    // front of a customer who is being asked to trust what the screen says.
+    setToolSwitch(token, next)
+      .then(({ enabled }) => {
+        setToolsEnabled(enabled)
+        setSwitchNote('')
+      })
+      .catch(() => setSwitchNote('开关没拨动，后端没接受'))
+  }
 
   function saveToken() {
     const value = draftToken.trim()
@@ -225,8 +276,24 @@ export default function Console() {
         <span className="console-compare">
           同样这通询问，人工客服约 {HUMAN_MINUTES} 分钟
         </span>
+        <button
+          className="console-switch"
+          data-off={toolsEnabled === false}
+          disabled={toolsEnabled === null}
+          onClick={flipTools}
+        >
+          {toolsEnabled === false ? '工具已关闭 · 点此接回' : '工具已接通 · 点此关掉'}
+        </button>
+        {switchNote && <span className="console-switch-note">{switchNote}</span>}
         <span className="console-cost">本次会话成本 {formatRinggit(costMyr)}</span>
       </header>
+
+      {toolsEnabled === false && (
+        <div className="console-control-banner">
+          对照组：所有工具已关闭。同一个 bot、同一个问题，现在它只能从提示词里的 JSON 里答——
+          <strong>听起来一样自信，但没有一个数字是查来的。</strong>
+        </div>
+      )}
 
       <div className="console-feed" ref={feedRef}>
         {rows.length === 0 ? (
@@ -274,6 +341,24 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
         output: event.output,
         durationMs: null,
         status: 'error',
+      },
+    ]
+  }
+
+  if (event.type === 'tools_switched') {
+    const off = event.status === 'off'
+    return [
+      ...rows,
+      {
+        key: nextRowKey++,
+        id: `switch:${event.seq}`,
+        seq: event.seq,
+        at: event.at,
+        tool: off ? '工具已关闭 —— 对照组开始' : '工具已接回 —— 对照组结束',
+        input: null,
+        output: null,
+        durationMs: null,
+        status: 'note',
       },
     ]
   }
@@ -327,7 +412,7 @@ function Row({
   expanded: boolean
   onToggle: () => void
 }) {
-  const badge = { running: '运行中', ok: 'ok', error: 'error' }[row.status]
+  const badge = { running: '运行中', ok: 'ok', error: 'error', note: '开关' }[row.status]
 
   return (
     <div className="console-row" data-status={row.status} onClick={onToggle}>

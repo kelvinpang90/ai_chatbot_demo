@@ -15,10 +15,12 @@ from app.models import (
     ConversationSummary,
     HistoryPage,
     ToolCallRecord,
+    ToolSwitch,
     TranscriptMessage,
 )
 from app.services.audit import audit_store
 from app.services.user_store import identity, user_store
+from app.tools import registry as tool_registry
 
 router = APIRouter(prefix="/console")
 
@@ -110,6 +112,31 @@ async def stream(replay: bool = False) -> StreamingResponse:
             "X-Accel-Buffering": "no",  # nginx must not sit on the chunks
         },
     )
+
+
+@router.get("/tools", response_model=ToolSwitch, dependencies=[Depends(require_console_token)])
+def read_tool_switch() -> ToolSwitch:
+    return ToolSwitch(enabled=tool_registry.tools_enabled())
+
+
+@router.post("/tools", response_model=ToolSwitch, dependencies=[Depends(require_console_token)])
+def flip_tool_switch(switch: ToolSwitch) -> ToolSwitch:
+    """Turn every bot's tools off, or back on, for everyone at once.
+
+    The one endpoint under here that writes something. What it writes is a flag
+    in this process, not data: the same question asked twice, once with the back
+    offices attached and once without, is the demo's own argument put to the
+    customer as an experiment rather than a claim.
+
+    The event is emitted only when the answer actually changes, so a second
+    screen re-asserting the position it already holds does not put a line on the
+    feed that reads as the operator having done something.
+    """
+    changed = switch.enabled != tool_registry.tools_enabled()
+    enabled = tool_registry.set_tools_enabled(switch.enabled)
+    if changed:
+        events.emit(type=events.TOOLS_SWITCHED, status="on" if enabled else "off")
+    return ToolSwitch(enabled=enabled)
 
 
 def _at(value) -> str:

@@ -28,6 +28,11 @@ SEND_FAILED = "send_failed"
 # that runs a tool loop makes several, and only counting the last one would put a
 # figure on the screen that is a fraction of what was actually spent.
 USAGE = "usage"
+# The control-arm switch being thrown (task 12.2). Not a tool call, but it belongs
+# in the same feed and at the same point in time: without it, the stretch of the
+# demo where the bot answers from nothing looks identical to a stretch where
+# nothing happened to be asked. `status` carries "on" or "off".
+TOOLS_SWITCHED = "tools_switched"
 
 
 class ConsoleEvent(BaseModel):
@@ -41,7 +46,8 @@ class ConsoleEvent(BaseModel):
     input: dict | None = None
     output: str | None = None
     duration_ms: int | None = None
-    status: str | None = None  # "ok" | "error", set on TOOL_END
+    # "ok" | "error" on TOOL_END; "on" | "off" on TOOLS_SWITCHED.
+    status: str | None = None
     model: str | None = None  # USAGE only
     tokens: dict | None = None  # USAGE only: input / output / cache_write / cache_read
     cost_myr: float | None = None  # USAGE only

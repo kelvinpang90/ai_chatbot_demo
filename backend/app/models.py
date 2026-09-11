@@ -125,3 +125,9 @@ class HistoryPage(BaseModel):
     # What the caller asked for, echoed so a page knows whether to offer "more".
     limit: int
     offset: int
+
+
+class ToolSwitch(BaseModel):
+    """Whether the bots may call tools at all -- the console's control arm."""
+
+    enabled: bool

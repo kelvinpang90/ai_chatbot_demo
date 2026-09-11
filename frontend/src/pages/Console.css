@@ -51,6 +51,46 @@
   color: var(--console-error);
 }
 
+/* The control arm. Deliberately a plain button rather than a toggle drawn to
+   look like a setting: it is thrown once, in front of someone, and what matters
+   is that the room can read its position from across the table. */
+.console-switch {
+  font: inherit;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid var(--console-line);
+  background: var(--console-panel);
+  color: var(--console-dim);
+}
+
+.console-switch[data-off='true'] {
+  border-color: var(--console-error);
+  color: var(--console-error);
+}
+
+.console-switch:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.console-switch-note {
+  color: var(--console-error);
+  font-size: 12px;
+}
+
+.console-control-banner {
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--console-error);
+  background: rgba(255, 123, 114, 0.12);
+  color: var(--console-error);
+  line-height: 1.5;
+}
+
+.console-control-banner strong {
+  color: var(--console-text);
+}
+
 .console-cost {
   margin-left: auto;
   color: var(--console-money);
@@ -93,6 +133,14 @@
 
 .console-row[data-status='running'] {
   border-left-color: var(--console-accent);
+}
+
+.console-row[data-status='note'] {
+  border-left-color: var(--console-money);
+}
+
+.console-row[data-status='note'] .console-tool {
+  color: var(--console-money);
 }
 
 .console-row-head {

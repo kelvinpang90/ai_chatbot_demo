@@ -9,6 +9,7 @@ from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock, B
 from app.bots.registry import get_bot
 from app.console import events
 from app.services import llm, whatsapp
+from app.tools import registry as tool_registry
 from app.services.user_store import UserProfile
 
 PHONE = "60173948123"
@@ -467,3 +468,34 @@ def test_a_customer_who_gave_a_number_is_not_asked_for_it_again():
 
     assert "Ask them for their phone number early" not in text
     assert llm.PHONE_ON_FILE in text
+
+
+def test_the_control_switch_takes_even_a_tooled_bot_down_the_plain_path():
+    """Task 12.2, at the layer where the claim is actually settled.
+
+    The endpoints and the console feed are worth their own tests, but neither
+    proves the thing the demo rests on: that with the switch thrown, the bot with
+    the fullest tool belt in the catalogue reaches the model with no tools at all
+    and answers out of its prompt. It never touches the beta endpoint, so it
+    cannot call anything even if it wanted to -- and the console stays empty,
+    which is the half of the comparison the customer is looking at.
+    """
+    bot = get_bot("retail")
+    assert tool_registry.get_tools(bot.id)  # the switch has something to take away
+    events.clear()
+    response = _assistant_message([BetaTextBlock(type="text", text="有货的，库存充足。")], "end_turn")
+
+    tool_registry.set_tools_enabled(False)
+    try:
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            with patch.object(llm._client.beta.messages, "parse") as mock_parse:
+                reply = llm.get_reply(bot, _customer(), history=[])
+    finally:
+        tool_registry.set_tools_enabled(True)
+
+    assert reply == "有货的，库存充足。"
+    mock_parse.assert_not_called()
+    assert "tools" not in mock_create.call_args.kwargs
+    assert _tool_events() == []
+
+    events.clear()
