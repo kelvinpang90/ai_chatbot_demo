@@ -26,7 +26,14 @@ class Settings(BaseSettings):
     whatsapp_daily_msg_limit: int = 100
     # Meta will hand us documents up to 100MB; anything past this is bigger than we
     # can put in front of the model, so refuse it before pulling it into memory.
+    # Five is Anthropic's own ceiling for a single image, which is what this cap
+    # was sized against.
     whatsapp_media_max_bytes: int = 5 * 1024 * 1024
+    # A PDF is not an image and does not belong under the same number: scene 2b
+    # asks the customer to pull out a file of their own on the spot, and a scanned
+    # brochure is comfortably past five megabytes. Anthropic takes 32MB per
+    # request, base64 costs a third on top, so sixteen raw lands safely inside it.
+    whatsapp_document_max_bytes: int = 16 * 1024 * 1024
 
     # 微信客服 (WeCom customer service). All four are secrets and all four default
     # to empty for the same reason the back-office passwords do -- this repository

@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 from app.bots.registry import BotConfig, get_bot, list_bots
 from app.config import settings
 from app.console import events
-from app.services import audit, llm, outbox, transcribe, whatsapp, whatsapp_media
+from app.services import audit, doc_store, llm, outbox, transcribe, whatsapp, whatsapp_media
 from app.services.user_store import user_store
 from app.session_store import session_store
 from app.tools import erp
@@ -31,10 +31,10 @@ RATE_LIMIT_MESSAGE = (
     "Anda telah mencapai had mesej harian untuk demo ini - sila cuba lagi esok."
 )
 UNSUPPORTED_TYPE_MESSAGE = (
-    "抱歉，这个 demo 只能读文字、语音和图片，请直接打字告诉我。 / "
-    "Sorry, I can only read text, voice and photo messages in this demo - "
+    "抱歉，这个 demo 只能读文字、语音、图片和 PDF，请直接打字告诉我。 / "
+    "Sorry, I can only read text, voice, photo and PDF messages in this demo - "
     "please type your question instead. / "
-    "Maaf, demo ini hanya boleh membaca teks, suara dan gambar - "
+    "Maaf, demo ini hanya boleh membaca teks, suara, gambar dan PDF - "
     "sila taip soalan anda."
 )
 # One line for both ways a voice note can come to nothing, because the customer's
@@ -54,6 +54,16 @@ IMAGE_UNREADABLE_MESSAGE = (
     "Maaf, saya tidak dapat membuka gambar itu - sila hantar semula, "
     "atau ceritakan apa yang anda lihat."
 )
+# A file has one more way to come to nothing than a photo does -- it can be a
+# type the model cannot read at all -- and that one is worth naming, because
+# unlike a failed download it tells the customer something they can act on.
+DOCUMENT_UNREADABLE_MESSAGE = (
+    "抱歉，这个文件我打不开，这个 demo 目前只能读 PDF，麻烦转成 PDF 再发一次。 / "
+    "Sorry, I couldn't open that file - this demo can only read PDFs, "
+    "so please export it as a PDF and send it again. / "
+    "Maaf, saya tidak dapat membuka fail itu - demo ini hanya boleh membaca PDF, "
+    "sila hantar semula dalam bentuk PDF."
+)
 GREETING_SUFFIX_EN = "How can I help you today?"
 # Not a tool the model called, but the same thing to the person watching the
 # console: a step that took time, against an input, producing an output worth
@@ -69,6 +79,12 @@ IMAGE_TOOL = "image.download"
 # reads as if the customer had sent the caption on its own, or, where there was
 # no caption, as if they had sent nothing at all.
 PHOTO_MARKER = "[photo]"
+# Same reasoning again for a download the customer waits on.
+DOCUMENT_TOOL = "document.download"
+# The document's stand-in in the history -- and, unlike the photo's, also the
+# address the file is filed under: `llm` finds this exact line again on every
+# later turn and hangs the PDF back on it. Which is why the filename is in it.
+DOCUMENT_MARKER = "[document]"
 MENU_KEYWORDS = {"menu", "菜单"}
 
 
@@ -273,6 +289,17 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
             image=photo,
         )
 
+    if msg_type == "document":
+        block = message.get("document") or {}
+        document = _fetch_document(block)
+        if document is None:
+            return [whatsapp.build_text_message(sender.key, DOCUMENT_UNREADABLE_MESSAGE)]
+        # Filed before the turn runs, because this is not a one-turn attachment:
+        # every message from here on hangs it back on the line below until the
+        # customer sends another file or starts the demo over.
+        doc_store.remember(sender.key, document)
+        return _handle_text_message(sender, document.marker, source=audit.DOCUMENT)
+
     if msg_type != "text":
         logger.info("Ignoring unsupported message type '%s' from %s", msg_type, sender.key)
         return [whatsapp.build_text_message(sender.key, UNSUPPORTED_TYPE_MESSAGE)]
@@ -394,6 +421,84 @@ def _fetch_photo(image: dict) -> llm.Image | None:
     return llm.Image(data=media.content, media_type=media_type)
 
 
+def _document_text(filename: str, caption: str) -> str:
+    """A file as the line that stands in for it in the transcript.
+
+    The filename is in it because this line has a second job the photo marker
+    does not have: it is what the PDF is hung back on every turn afterwards, so
+    two different files cannot share it. It also reads as what happened -- "the
+    customer sent price-list.pdf" -- to anyone reading the transcript later.
+    """
+    return " ".join(part for part in (DOCUMENT_MARKER, filename, caption.strip()) if part)
+
+
+def _fetch_document(document: dict) -> llm.Document | None:
+    """The file the customer sent, or None if we cannot put it before the model.
+
+    Held to its own size cap rather than the photo's: see
+    `settings.whatsapp_document_max_bytes`.
+    """
+    media_id = document.get("id")
+    if not media_id:
+        logger.error("Document message arrived with no media id: keys=%s", sorted(document))
+        events.emit(
+            type=events.SEND_FAILED,
+            tool=DOCUMENT_TOOL,
+            tool_use_id="",
+            output="document message carried no media id",
+            status="error",
+        )
+        return None
+
+    filename = str(document.get("filename") or "").strip()
+    events.emit(
+        type=events.TOOL_START,
+        tool=DOCUMENT_TOOL,
+        tool_use_id=media_id,
+        input={"mime_type": document.get("mime_type", ""), "filename": filename},
+    )
+    started = time.monotonic()
+    try:
+        media = whatsapp_media.fetch_media(
+            media_id, max_bytes=settings.whatsapp_document_max_bytes
+        )
+    except whatsapp_media.MediaError as failure:
+        logger.exception("Could not download document %s", media_id)
+        _end_document_span(media_id, started, f"{type(failure).__name__}: {failure}", "error")
+        return None
+
+    # After the download, for the same reason a photo's type is: what Meta put on
+    # the webhook and what the bytes actually are can differ, and the second one
+    # is what the API answers to.
+    if not llm.document_media_type(media.mime_type):
+        logger.error("Document %s is of unreadable type '%s'", media_id, media.mime_type)
+        _end_document_span(
+            media_id, started, f"cannot read a document of type '{media.mime_type}'", "error"
+        )
+        return None
+
+    # A file Meta sent us with no name still has to be called something: the
+    # citations under the reply are labelled with it.
+    filename = filename or f"{media_id}.pdf"
+    _end_document_span(media_id, started, f"{filename}, {len(media.content)} bytes", "ok")
+    return llm.Document(
+        data=media.content,
+        filename=filename,
+        marker=_document_text(filename, str(document.get("caption") or "")),
+    )
+
+
+def _end_document_span(media_id: str, started: float, output: str, status: str) -> None:
+    events.emit(
+        type=events.TOOL_END,
+        tool=DOCUMENT_TOOL,
+        tool_use_id=media_id,
+        output=output[: llm.MAX_CONSOLE_OUTPUT_CHARS],
+        duration_ms=int((time.monotonic() - started) * 1000),
+        status=status,
+    )
+
+
 def _end_image_span(media_id: str, started: float, output: str, status: str) -> None:
     events.emit(
         type=events.TOOL_END,
@@ -413,6 +518,9 @@ def _start_over(sender: Sender) -> None:
     someone we have never seen, so a stranger who opens with "menu" still leaves
     no record behind.
     """
+    # Not part of the record, so it has to be dropped by name. A fresh demo that
+    # could still quote the last one's PDF is not a fresh demo.
+    doc_store.forget(sender.key)
     profile = user_store.get(sender.key)
     if profile is None:
         return
@@ -474,14 +582,22 @@ def _handle_text_message(
         # whether we managed to answer it -- and a turn that produced nothing is
         # precisely the kind a transcript is opened to explain.
         audit.record_message("user", text, source)
-        reply = llm.get_reply(bot, profile, profile.history, image=image)
+        # Whatever file this customer last sent, on every turn until they send
+        # another -- `llm` hangs it back on the line it arrived as, and drops it
+        # once that line has rolled out of the history window.
+        reply = llm.get_reply(
+            bot, profile, profile.history, image=image, document=doc_store.get(sender.key)
+        )
         # Built before it is recorded, deliberately. A reply WhatsApp will not carry
         # must not become part of this customer's history either: the turn is
         # dropped whole and the next message starts from the last good exchange,
         # rather than from one the model cannot be shown again.
         # Anything a tool produced goes out after the words explaining it.
         payloads = [whatsapp.build_text_message(sender.key, reply), *outbox.drain(sender.key)]
-        profile.add_message("assistant", reply)
+        # What the model wrote, without the page footnote rendered under it --
+        # see `llm.without_sources`. The audit log below keeps the whole
+        # thing, because that is what the customer was sent.
+        profile.add_message("assistant", llm.without_sources(reply))
         audit.record_message("assistant", reply)
         # Saved after the reply, so the exchange survives a restart and is still
         # there when they write again days later - this is what "the bot remembers

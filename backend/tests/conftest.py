@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from app.config import settings
-from app.services import audit, crm_client, erp_client, outbox
+from app.services import audit, crm_client, doc_store, erp_client, outbox
 from app.services.user_store import user_store
 
 
@@ -86,3 +86,17 @@ def _no_customers_on_file():
     user_store.reset()
     yield
     user_store.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_documents_on_file():
+    """Every test starts with nobody having sent a file.
+
+    `doc_store` lives in the process rather than in Redis -- which is the whole
+    point of it -- so a PDF filed by one test is still attached to that customer
+    in the next one. Distinct phone numbers per test hide this until the day two
+    tests share one.
+    """
+    doc_store.clear()
+    yield
+    doc_store.clear()

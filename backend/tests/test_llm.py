@@ -5,7 +5,13 @@ from unittest.mock import patch
 import anthropic
 import httpx
 from anthropic import beta_tool
-from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock, BetaUsage
+from anthropic.types.beta import (
+    BetaCitationPageLocation,
+    BetaMessage,
+    BetaTextBlock,
+    BetaToolUseBlock,
+    BetaUsage,
+)
 
 from app.bots.registry import get_bot
 from app.console import events
@@ -617,3 +623,282 @@ def test_a_format_the_model_cannot_read_is_refused_here_rather_than_by_the_api()
     assert llm.image_media_type("image/tiff") is None
     assert llm.image_media_type("application/pdf") is None
     assert llm.image_media_type("") is None
+
+
+# -- documents (task 15.1) -----------------------------------------------------
+#
+# A PDF is the one attachment that outlives its turn, so what these guard is
+# where it goes back to on every turn after the first: onto the exact line the
+# router left in the history, not onto the newest message. That is what keeps it
+# cacheable, and it is what makes it expire on its own once the line rolls away.
+
+PDF_BYTES = b"%PDF-1.7-pretend-a-price-list"
+PDF_MARKER = "[document] price-list.pdf what does the deluxe room cost?"
+
+
+def _pdf(marker: str = PDF_MARKER) -> llm.Document:
+    return llm.Document(data=PDF_BYTES, filename="price-list.pdf", marker=marker)
+
+
+def _cited(text: str, page: int, quote: str, title: str = "price-list.pdf") -> BetaTextBlock:
+    return BetaTextBlock(
+        type="text",
+        text=text,
+        citations=[
+            BetaCitationPageLocation(
+                type="page_location",
+                cited_text=quote,
+                document_index=0,
+                document_title=title,
+                start_page_number=page,
+                end_page_number=page + 1,
+            )
+        ],
+    )
+
+
+def test_a_pdf_reaches_the_model_as_a_document_with_citations_turned_on():
+    """The acceptance criterion. Citations are what make the answer checkable:
+    without them a page number in the reply would be the model's own invention,
+    which is the one thing this demo exists to disprove."""
+    bot = get_bot("retail")
+    history = [Message(role="user", content=PDF_MARKER)]
+    response = _assistant_message([BetaTextBlock(type="text", text="RM 320.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(bot, _customer(), history, document=_pdf())
+
+    content = mock_create.call_args.kwargs["messages"][-1]["content"]
+    assert [block["type"] for block in content] == ["document", "text"]
+    assert content[0]["source"] == {
+        "type": "base64",
+        "media_type": "application/pdf",
+        "data": base64.b64encode(PDF_BYTES).decode("ascii"),
+    }
+    assert content[0]["citations"] == {"enabled": True}
+    assert content[0]["title"] == "price-list.pdf"
+    assert content[1]["text"] == PDF_MARKER
+
+
+def test_the_pdf_is_cached_rather_than_re_read_on_every_follow_up_question():
+    """It is re-sent on every turn of the conversation that follows it, and a
+    twenty-page file is tens of thousands of input tokens. Pinned where it
+    arrived, the prefix stops changing and the pages are charged once."""
+    bot = get_bot("retail")
+    history = [Message(role="user", content=PDF_MARKER)]
+    response = _assistant_message([BetaTextBlock(type="text", text="RM 320.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(bot, _customer(), history, document=_pdf())
+
+    document = mock_create.call_args.kwargs["messages"][-1]["content"][0]
+    assert document["cache_control"] == {"type": "ephemeral"}
+
+
+def test_the_pdf_goes_back_where_it_arrived_not_onto_the_newest_turn():
+    """Two questions in, the file is three messages up. Moving it down to the
+    latest turn would change the prefix every time and throw the cache away -- and
+    would tell the model the customer had just sent it again."""
+    bot = get_bot("retail")
+    history = [
+        Message(role="user", content=PDF_MARKER),
+        Message(role="assistant", content="RM 320 a night."),
+        Message(role="user", content="and the family room?"),
+    ]
+    response = _assistant_message([BetaTextBlock(type="text", text="RM 480.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(bot, _customer(), history, document=_pdf())
+
+    sent = mock_create.call_args.kwargs["messages"]
+    assert [block["type"] for block in sent[0]["content"]] == ["document", "text"]
+    assert sent[2]["content"] == "and the family room?"
+
+
+def test_a_pdf_whose_line_has_rolled_out_of_the_history_is_simply_not_sent():
+    """The history is a rolling window. Once the line the file arrived as has
+    gone, there is nothing to hang it on -- and a file nobody has mentioned in
+    forty messages is not what the current question is about."""
+    bot = get_bot("retail")
+    history = [Message(role="user", content="do you have parking?")]
+    response = _assistant_message([BetaTextBlock(type="text", text="We do.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(bot, _customer(), history, document=_pdf())
+
+    assert mock_create.call_args.kwargs["messages"] == [
+        {"role": "user", "content": "do you have parking?"}
+    ]
+
+
+def test_a_pdf_reaches_a_bot_that_has_tools_as_well():
+    """The flagship bot has tools, so it never touches `messages.create` -- it
+    goes to the beta tool runner, which validates a request of its own. Task 14
+    learned this the hard way about images."""
+    bot = get_bot("retail")
+    history = [Message(role="user", content=PDF_MARKER)]
+
+    @beta_tool
+    def erp_search_sku(query: str) -> str:
+        """Search the product catalogue.
+
+        Args:
+            query: The name or code to look for.
+        """
+        return "no results"
+
+    final = _assistant_message([BetaTextBlock(type="text", text="RM 320.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[erp_search_sku]):
+        with patch.object(llm._client.beta.messages, "parse", return_value=final) as mock_parse:
+            llm.get_reply(bot, _customer(), history, document=_pdf())
+
+    content = mock_parse.call_args.kwargs["messages"][-1]["content"]
+    assert [block["type"] for block in content] == ["document", "text"]
+
+
+def test_a_photo_and_a_file_already_on_the_table_can_both_be_in_one_request():
+    """They attach to different messages and must not overwrite one another: the
+    customer photographing something while their price list is still open is an
+    ordinary turn, not a special case."""
+    bot = get_bot("retail")
+    history = [
+        Message(role="user", content=PDF_MARKER),
+        Message(role="assistant", content="RM 320 a night."),
+        Message(role="user", content="[photo] is this the same room?"),
+    ]
+    response = _assistant_message([BetaTextBlock(type="text", text="It is.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(
+                bot,
+                _customer(),
+                history,
+                image=llm.Image(PNG_BYTES, media_type="image/png"),
+                document=_pdf(),
+            )
+
+    sent = mock_create.call_args.kwargs["messages"]
+    assert [block["type"] for block in sent[0]["content"]] == ["document", "text"]
+    assert [block["type"] for block in sent[2]["content"]] == ["image", "text"]
+
+
+def test_the_answer_comes_back_with_the_page_it_was_read_off():
+    """Scene 2b as the customer sees it: the answer, and under it the file and
+    the page to go and check it against.
+
+    Page numbers and no quotation, which is less than the scene was written
+    hoping for -- `_sources` has why, and a live probe on 2026-09-11 has the
+    measurements behind it."""
+    bot = get_bot("retail")
+    response = _assistant_message(
+        [_cited("The deluxe room is RM 320 a night.", 4, "Deluxe  \n  RM 320 / night")],
+        "end_turn",
+    )
+
+    reply = llm._reply_text(bot, response)
+
+    assert reply == "The deluxe room is RM 320 a night.\n\n\U0001F4C4 price-list.pdf · p.4"
+
+
+def test_a_page_cited_twice_is_named_once_and_the_list_does_not_run_away():
+    """The footnote is evidence, not the answer. An answer drawn off eight pages
+    is the model working; a reply ending in a paragraph of page numbers is not a
+    chat message, so the list is cut and says that it was."""
+    bot = get_bot("retail")
+    response = _assistant_message(
+        [
+            _cited("First.", 2, "page two"),
+            _cited(" Second.", 2, "a different sentence on the same page"),
+            *[_cited(f" {n}.", n, f"page {n}") for n in range(3, 9)],
+        ],
+        "end_turn",
+    )
+
+    reply = llm._reply_text(bot, response)
+
+    assert reply.splitlines()[-1] == (
+        "\U0001F4C4 price-list.pdf · p.2, p.3, p.4, p.5, p.6, …"
+    )
+    assert reply.startswith("First. Second. 3. 4. 5. 6. 7. 8.")
+
+
+def test_a_citation_that_spans_a_page_break_names_both_pages():
+    """`end_page_number` is exclusive. Reading it as a page number would name a
+    page the answer was not on, which is worse than naming none."""
+    bot = get_bot("retail")
+    block = BetaTextBlock(
+        type="text",
+        text="Breakfast runs until 10:30.",
+        citations=[
+            BetaCitationPageLocation(
+                type="page_location",
+                cited_text="...",
+                document_index=0,
+                document_title="price-list.pdf",
+                start_page_number=6,
+                end_page_number=8,
+            )
+        ],
+    )
+
+    reply = llm._reply_text(bot, _assistant_message([block], "end_turn"))
+
+    assert reply.splitlines()[-1] == "\U0001F4C4 price-list.pdf · p.6, p.7"
+
+
+def test_a_reply_with_nothing_cited_is_sent_exactly_as_written():
+    """Every reply in this project that is not about a document, and the honest
+    answer to a question the file does not cover: no citations, no footnote."""
+    bot = get_bot("retail")
+    response = _assistant_message(
+        [BetaTextBlock(type="text", text="That is not in the document you sent.")], "end_turn"
+    )
+
+    assert llm._reply_text(bot, response) == "That is not in the document you sent."
+
+
+def test_only_a_pdf_is_a_document_the_model_can_be_handed():
+    """A .docx is a 400 from Anthropic that arrives after the customer has
+    already waited out the download."""
+    assert llm.document_media_type("application/pdf") == "application/pdf"
+    assert llm.document_media_type("application/PDF; charset=binary") == "application/pdf"
+    assert (
+        llm.document_media_type(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        is None
+    )
+    assert llm.document_media_type("image/jpeg") is None
+    assert llm.document_media_type("") is None
+
+
+def test_the_footnote_is_sent_but_not_remembered():
+    """Caught by a live probe on 2026-09-11, not by anything written up front:
+    the model, shown its own last answer signed off with a page reference, wrote
+    one of its own on the next turn -- a page number off its previous message
+    rather than off the file -- and ours was appended under it. So what is
+    remembered is what the model actually wrote."""
+    assert llm.without_sources(
+        "The deluxe room is RM 320 a night.\n\n\U0001F4C4 price-list.pdf · p.4"
+    ) == "The deluxe room is RM 320 a night."
+
+
+def test_a_reply_that_was_never_footnoted_is_remembered_whole():
+    """Every reply in this project that is not about a document. Nothing to cut,
+    and cutting anything would be losing the message."""
+    assert llm.without_sources("We close at 6pm.") == "We close at 6pm."
+    assert llm.without_sources("") == ""
+
+
+def test_an_answer_that_mentions_a_page_itself_is_left_alone():
+    """The cut is made at the seam `_reply_text` joined, not at the first page
+    number in the text: the model talking about page 4 is still the model."""
+    written = "Page 4 covers the warranty, and I've quoted from it above."
+
+    assert llm.without_sources(written) == written

@@ -10,6 +10,7 @@ from app.config import settings
 from app.console import events
 from app.main import app
 from app.routers.whatsapp_webhook import (
+    DOCUMENT_UNREADABLE_MESSAGE,
     IMAGE_UNREADABLE_MESSAGE,
     RATE_LIMIT_MESSAGE,
     UNSUPPORTED_TYPE_MESSAGE,
@@ -23,7 +24,7 @@ from app.routers.whatsapp_webhook import (
     _resolve_quick_question,
     dispatch_message,
 )
-from app.services import llm, outbox, transcribe, whatsapp, whatsapp_media
+from app.services import doc_store, llm, outbox, transcribe, whatsapp, whatsapp_media
 from app.services.user_store import user_store
 
 client = TestClient(app)
@@ -48,6 +49,7 @@ def test_every_canned_reply_is_written_in_all_three_languages():
         "UNSUPPORTED_TYPE_MESSAGE": UNSUPPORTED_TYPE_MESSAGE,
         "VOICE_UNREADABLE_MESSAGE": VOICE_UNREADABLE_MESSAGE,
         "IMAGE_UNREADABLE_MESSAGE": IMAGE_UNREADABLE_MESSAGE,
+        "DOCUMENT_UNREADABLE_MESSAGE": DOCUMENT_UNREADABLE_MESSAGE,
         # The one that set the shape, so the two files cannot drift apart.
         "llm.FALLBACK_REPLY": llm.FALLBACK_REPLY,
     }
@@ -203,7 +205,7 @@ def test_tapping_a_product_reaches_the_model_as_the_order_it_is():
     _in_conversation(phone)
     seen = {}
 
-    def capture(bot, customer, history, image=None):
+    def capture(bot, customer, history, image=None, document=None):
         seen["said"] = history[-1].content
         return "How many would you like?"
 
@@ -234,7 +236,7 @@ def test_the_model_is_handed_the_number_that_actually_wrote_in():
     _in_conversation(phone)
     seen = {}
 
-    def capture(bot, customer, history, image=None):
+    def capture(bot, customer, history, image=None, document=None):
         seen["customer"] = customer
         return "Sure."
 
@@ -270,7 +272,7 @@ def test_writing_in_again_continues_where_they_left_off():
 
     seen = {}
 
-    def capture(bot, customer, history, image=None):
+    def capture(bot, customer, history, image=None, document=None):
         seen["bot"] = bot.id
         seen["history"] = [m.content for m in history]
         return "Ten in KL."
@@ -606,7 +608,7 @@ def test_a_voice_note_reaches_the_model_as_the_sentence_that_was_spoken():
     spoken = "Boleh tak you check ada stock tak, 那个 earbuds?"
     seen = {}
 
-    def capture(bot, customer, history, image=None):
+    def capture(bot, customer, history, image=None, document=None):
         seen["said"] = history[-1].content
         return "Let me check the stock."
 
@@ -750,8 +752,8 @@ def test_an_audio_message_with_no_media_id_is_answered_without_a_download():
 
 
 def test_a_message_type_nobody_handles_is_still_answered_with_the_type_it_instead():
-    """Text, voice and photos are handled. A sticker is not, and must not look
-    like it was: the customer has to be told to type."""
+    """Text, voice, photos and PDFs are handled. A sticker is not, and must not
+    look like it was: the customer has to be told to type."""
     phone = "60129994010"
     _in_conversation(phone)
     sticker = {**_voice_message(phone), "type": "sticker", "sticker": {"id": "media-stk-1"}}
@@ -796,7 +798,7 @@ def test_a_photo_reaches_the_model_as_an_image_alongside_its_caption():
     _in_conversation(phone)
     seen = {}
 
-    def capture(bot, customer, history, image=None):
+    def capture(bot, customer, history, image=None, document=None):
         seen["said"] = history[-1].content
         seen["image"] = image
         return "Those are the SP-1001 earbuds."
@@ -817,7 +819,7 @@ def test_a_photo_with_no_caption_is_still_a_turn_and_not_an_empty_one():
     _in_conversation(phone)
     seen = {}
 
-    def capture(bot, customer, history, image=None):
+    def capture(bot, customer, history, image=None, document=None):
         # Read inside the call: the reply is appended to this same list on the
         # way out, so by the time `call_args` is inspected the last turn is the
         # bot's, not the customer's.
@@ -942,3 +944,275 @@ def test_a_photo_captioned_menu_does_not_start_the_demo_over():
 
     assert [message["type"] for message in sent] == ["text"]
     assert user_store.get(phone).bot_id is not None
+
+
+# -- documents (task 15.1) -----------------------------------------------------
+#
+# The one attachment that has to survive its own turn. Nobody sends a price list
+# to ask a single question about it, so what most of these guard is the second
+# question: the file is still there, and it is still there without the bytes
+# having gone anywhere near the customer's stored history.
+
+PDF_MIME = "application/pdf"
+PDF_BYTES = b"%PDF-1.7-pretend-a-price-list"
+
+
+def _document_message(
+    phone: str,
+    media_id: str = "media-doc-1",
+    filename: str | None = "price-list.pdf",
+    caption: str | None = None,
+    seq: int = 11,
+) -> dict:
+    document = {"id": media_id, "mime_type": PDF_MIME, "sha256": "abc"}
+    if filename is not None:
+        document["filename"] = filename
+    if caption is not None:
+        document["caption"] = caption
+    return {
+        "id": f"wamid.{phone}.{seq}",
+        "from": phone,
+        "type": "document",
+        "document": document,
+    }
+
+
+@contextmanager
+def _receives(mime_type: str = PDF_MIME):
+    media = whatsapp_media.Media(content=PDF_BYTES, mime_type=mime_type)
+    with patch.object(whatsapp_media, "fetch_media", return_value=media) as fetch:
+        yield fetch
+
+
+def test_a_pdf_reaches_the_model_as_a_document_alongside_its_caption():
+    """The acceptance criterion, first half: the file the customer pulled out of
+    their own phone is what the bot is now being asked about."""
+    phone = "60129996001"
+    _in_conversation(phone)
+    seen = {}
+
+    def capture(bot, customer, history, image=None, document=None):
+        seen["said"] = history[-1].content
+        seen["document"] = document
+        return "RM 320 a night."
+
+    with _receives():
+        with patch.object(llm, "get_reply", side_effect=capture):
+            sent = dispatch_message(_document_message(phone, caption="how much is the deluxe?"))
+
+    assert seen["said"] == "[document] price-list.pdf how much is the deluxe?"
+    assert seen["document"].data == PDF_BYTES
+    assert seen["document"].filename == "price-list.pdf"
+    assert seen["document"].marker == seen["said"]
+    assert [message["type"] for message in sent] == ["text"]
+
+
+def test_the_file_is_still_in_front_of_the_model_on_the_question_after_it():
+    """The acceptance criterion's second half, and the reason a document is kept
+    where a photo is not. "And what about the family room?" is the second thing
+    every customer says, and it must not be answered with "I cannot see it"."""
+    phone = "60129996002"
+    _in_conversation(phone)
+    seen = []
+
+    def capture(bot, customer, history, image=None, document=None):
+        seen.append(document)
+        return "RM 320 a night."
+
+    with _receives():
+        with patch.object(llm, "get_reply", side_effect=capture):
+            dispatch_message(_document_message(phone, caption="how much is the deluxe?"))
+    with patch.object(llm, "get_reply", side_effect=capture):
+        dispatch_message(_text_message(phone, "and the family room?"))
+
+    assert [document.filename for document in seen] == ["price-list.pdf", "price-list.pdf"]
+    assert seen[1].data == PDF_BYTES
+
+
+def test_the_line_is_what_gets_remembered_not_the_file():
+    """The stored history is read and rewritten on every message and lives for a
+    week. A PDF inside it would cross the wire twice a turn for days."""
+    phone = "60129996003"
+    _in_conversation(phone)
+
+    with _receives():
+        with patch.object(llm, "get_reply", return_value="RM 320 a night."):
+            dispatch_message(_document_message(phone, caption="how much is the deluxe?"))
+
+    stored = user_store.get(phone)
+    assert [m.content for m in stored.history] == [
+        "[document] price-list.pdf how much is the deluxe?",
+        "RM 320 a night.",
+    ]
+
+
+def test_a_pdf_with_no_caption_still_leaves_a_line_naming_the_file():
+    """Most files arrive with nothing written under them, and the line is not
+    decoration: it is the address the PDF is hung back on every turn after this."""
+    phone = "60129996004"
+    _in_conversation(phone)
+    seen = {}
+
+    def capture(bot, customer, history, image=None, document=None):
+        seen["said"] = history[-1].content
+        return "Got it."
+
+    with _receives():
+        with patch.object(llm, "get_reply", side_effect=capture):
+            dispatch_message(_document_message(phone))
+
+    assert seen["said"] == "[document] price-list.pdf"
+
+
+def test_a_file_meta_sent_us_with_no_name_is_still_called_something():
+    """Two files that both came through as "" would share a line, and the second
+    one would answer questions about the first."""
+    phone = "60129996005"
+    _in_conversation(phone)
+    seen = {}
+
+    def capture(bot, customer, history, image=None, document=None):
+        seen["said"] = history[-1].content
+        return "Got it."
+
+    with _receives():
+        with patch.object(llm, "get_reply", side_effect=capture):
+            dispatch_message(_document_message(phone, media_id="media-doc-9", filename=None))
+
+    assert seen["said"] == "[document] media-doc-9.pdf"
+
+
+def test_a_pdf_is_held_to_its_own_size_cap_rather_than_the_photos():
+    """Five megabytes is Anthropic's ceiling for one image and nowhere near its
+    ceiling for a PDF. Scene 2b asks the customer for a file of their own on the
+    spot, and a scanned brochure is comfortably past it."""
+    phone = "60129996006"
+    _in_conversation(phone)
+
+    with _receives() as fetch:
+        with patch.object(llm, "get_reply", return_value="Got it."):
+            dispatch_message(_document_message(phone, media_id="media-doc-42"))
+
+    assert fetch.call_args.args[0] == "media-doc-42"
+    assert fetch.call_args.kwargs["max_bytes"] == settings.whatsapp_document_max_bytes
+    assert settings.whatsapp_document_max_bytes > settings.whatsapp_media_max_bytes
+
+
+def test_the_console_shows_the_file_arriving_with_its_name_and_size():
+    phone = "60129996007"
+    _in_conversation(phone)
+    events.clear()
+
+    with _receives():
+        with patch.object(llm, "get_reply", return_value="Got it."):
+            dispatch_message(_document_message(phone))
+
+    spans = [e for e in events.since(0) if e.tool == "document.download"]
+    assert [e.type for e in spans] == [events.TOOL_START, events.TOOL_END]
+    assert spans[0].input == {"mime_type": PDF_MIME, "filename": "price-list.pdf"}
+    assert spans[1].status == "ok"
+    assert spans[1].output == f"price-list.pdf, {len(PDF_BYTES)} bytes"
+    assert spans[1].duration_ms is not None
+    events.clear()
+
+
+def test_a_file_that_will_not_download_is_answered_rather_than_thrown():
+    """`fetch_media` raises for a file over the cap as well as for a dead
+    network, and both reach here as a customer waiting on a reply."""
+    phone = "60129996008"
+    _in_conversation(phone)
+    events.clear()
+
+    with patch.object(
+        whatsapp_media, "fetch_media", side_effect=whatsapp_media.MediaTooLargeError("too big")
+    ):
+        with patch.object(llm, "get_reply") as get_reply:
+            sent = dispatch_message(_document_message(phone))
+
+    get_reply.assert_not_called()
+    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE
+    ended = [e for e in events.since(0) if e.type == events.TOOL_END]
+    assert ended[0].status == "error" and "too big" in ended[0].output
+    events.clear()
+
+
+def test_a_word_file_never_becomes_an_api_call():
+    """A .docx is a 400 from Anthropic that arrives only after the customer has
+    waited out the whole download. The reply says to export a PDF, which is
+    something they can actually do."""
+    phone = "60129996009"
+    _in_conversation(phone)
+    events.clear()
+    docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    with _receives(mime_type=docx):
+        with patch.object(llm, "get_reply") as get_reply:
+            sent = dispatch_message(_document_message(phone))
+
+    get_reply.assert_not_called()
+    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE
+    ended = [e for e in events.since(0) if e.type == events.TOOL_END]
+    assert ended[0].status == "error" and "wordprocessingml" in ended[0].output
+    events.clear()
+
+
+def test_a_document_message_with_no_media_id_is_answered_without_a_download():
+    phone = "60129996010"
+    _in_conversation(phone)
+    events.clear()
+    no_id = {**_document_message(phone), "document": {"mime_type": PDF_MIME}}
+
+    with patch.object(whatsapp_media, "fetch_media") as fetch:
+        sent = dispatch_message(no_id)
+
+    fetch.assert_not_called()
+    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE
+    failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
+    assert len(failures) == 1 and "no media id" in failures[0].output
+    events.clear()
+
+
+def test_a_pdf_captioned_menu_does_not_start_the_demo_over():
+    """The marker earns its keep here as well: `menu` resets the demo, and a
+    customer captioning their menu PDF with the word is not asking for the list."""
+    phone = "60129996011"
+    _in_conversation(phone)
+
+    with _receives():
+        with patch.object(llm, "get_reply", return_value="That's your menu."):
+            sent = dispatch_message(_document_message(phone, caption="menu"))
+
+    assert [message["type"] for message in sent] == ["text"]
+    assert user_store.get(phone).bot_id is not None
+
+
+def test_starting_the_demo_over_forgets_the_file():
+    """A fresh demo that could still quote the last one's PDF is not a fresh
+    demo -- and the file is not in the record, so clearing the record misses it."""
+    phone = "60129996012"
+    _in_conversation(phone)
+
+    with _receives():
+        with patch.object(llm, "get_reply", return_value="Got it."):
+            dispatch_message(_document_message(phone))
+    dispatch_message(_text_message(phone, "menu"))
+
+    assert doc_store.get(phone) is None
+
+
+def test_the_page_footnote_is_sent_to_the_customer_but_not_kept_in_the_history():
+    """The customer reads the pages the answer came off; the model is never
+    shown having written them. A probe on 2026-09-11 caught it copying its own
+    previous footnote -- a page number off the transcript rather than off the
+    file, which is `NEVER_INVENT` broken in the one place it looks most
+    trustworthy."""
+    phone = "60129996013"
+    _in_conversation(phone)
+    footnoted = "The TX-7742 is RM 287.50.\n\n\U0001F4C4 price-list.pdf · p.1"
+
+    with _receives():
+        with patch.object(llm, "get_reply", return_value=footnoted):
+            sent = dispatch_message(_document_message(phone, caption="how much is the TX-7742?"))
+
+    assert sent[0]["text"]["body"] == footnoted
+    assert user_store.get(phone).history[-1].content == "The TX-7742 is RM 287.50."

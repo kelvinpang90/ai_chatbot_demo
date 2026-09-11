@@ -43,6 +43,19 @@ MAX_CONSOLE_OUTPUT_CHARS = 2000
 # caller answers for it.
 IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 
+# The only thing a base64 document block carries. Claude reads a PDF natively --
+# text and page images both, up to 32MB -- which is why task 15.1 needs no
+# retrieval of any kind behind it.
+DOCUMENT_MEDIA_TYPE = "application/pdf"
+
+# How many pages get named under an answer. The footnote is evidence, not the
+# answer, and a reply that ends in a paragraph of page numbers has stopped being
+# a chat message. Past this the list is cut and says so.
+MAX_CITED_PAGES = 5
+
+# What the footnote opens with, and the seam `without_sources` cuts back off.
+SOURCE_MARK = "\U0001F4C4"
+
 
 class Image(NamedTuple):
     """A picture to put in front of the model for this turn and no other.
@@ -58,14 +71,52 @@ class Image(NamedTuple):
     media_type: str
 
 
+class Document(NamedTuple):
+    """A file the customer sent, kept in front of the model for as long as it is
+    being talked about.
+
+    The opposite call from `Image`, and for a plain reason: nobody sends a price
+    list to ask one question about it. A document that expired with its turn
+    would answer the second question with "I cannot see it", which is the exact
+    moment scene 2b is built around.
+
+    So it comes back on every request, pinned to `marker` -- the line the router
+    left in the history where the file arrived. Pinning it there rather than to
+    the newest turn is what makes it cacheable: the prefix up to and including it
+    stops changing, so the pages are read once and charged at cache rates after.
+    It also dates the file honestly, and it expires the file for free -- once
+    that line has rolled out of the history window there is nothing to attach to.
+    """
+
+    data: bytes
+    filename: str
+    marker: str
+
+
 def image_media_type(mime_type: str) -> str | None:
     """The media_type an image block can carry, or None if the model cannot read it.
 
     WhatsApp reports types the way a header spells them (`image/jpeg; charset=...`
     does turn up), and the parameters after the semicolon are not part of the type.
     """
-    base = mime_type.split(";")[0].strip().lower()
+    base = _base_media_type(mime_type)
     return base if base in IMAGE_MEDIA_TYPES else None
+
+
+def document_media_type(mime_type: str) -> str | None:
+    """Likewise for an attached file, which in this demo means a PDF or nothing.
+
+    Deliberately the one type. A base64 document block accepts no other, and a
+    customer who sends a .docx is better told to export it than met with a 400
+    from Anthropic after waiting out the download.
+    """
+    base = _base_media_type(mime_type)
+    return base if base == DOCUMENT_MEDIA_TYPE else None
+
+
+def _base_media_type(mime_type: str) -> str:
+    return mime_type.split(";")[0].strip().lower()
+
 
 FALLBACK_REPLY = (
     "抱歉，我这边出了点问题，请稍后再试。 / "
@@ -331,29 +382,87 @@ def _record_usage(bot: BotConfig, model: str, response) -> None:
     )
 
 
-def _as_messages(history: list[Message], image: Image | None) -> list[dict]:
-    """The conversation as the API wants it, with this turn's photo attached to it.
+def _as_messages(
+    history: list[Message], image: Image | None, document: Document | None
+) -> list[dict]:
+    """The conversation as the API wants it, with the customer's files attached to it.
 
-    The image rides on the last user message rather than one of its own: a bare
+    An attachment rides on a user message rather than one of its own: a bare
     image turn reads as a message with no question in it, and the caption that
-    came with the photo belongs in the same breath as the photo. Image first,
-    then the words -- Anthropic's own guidance for a single attachment.
+    came with it belongs in the same breath. File first, then the words --
+    Anthropic's own guidance for a single attachment.
+
+    The photo goes on the newest turn because that is the only turn it exists
+    for. The document goes back where it came in, which is usually further up.
     """
     messages = [{"role": m.role, "content": m.content} for m in history]
-    if image is None or not messages or messages[-1]["role"] != "user":
-        return messages
-    messages[-1]["content"] = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": image.media_type,
-                "data": base64.b64encode(image.data).decode("ascii"),
-            },
-        },
-        {"type": "text", "text": messages[-1]["content"]},
-    ]
+
+    if document is not None:
+        index = _index_of(messages, document.marker)
+        if index is not None:
+            messages[index]["content"] = [
+                _document_block(document),
+                *_as_blocks(messages[index]["content"]),
+            ]
+
+    if image is not None and messages and messages[-1]["role"] == "user":
+        messages[-1]["content"] = [_image_block(image), *_as_blocks(messages[-1]["content"])]
+
     return messages
+
+
+def _index_of(messages: list[dict], marker: str) -> int | None:
+    """Where in the conversation the file arrived, newest first.
+
+    Matched on the line the router wrote in its place, not on a position: the
+    history is a rolling window, so an index taken when the file arrived would
+    point at someone else's sentence a dozen turns later. Newest first because a
+    customer who sends the same file twice means the second one.
+    """
+    for index in reversed(range(len(messages))):
+        if messages[index]["role"] == "user" and messages[index]["content"] == marker:
+            return index
+    return None
+
+
+def _as_blocks(content) -> list[dict]:
+    return content if isinstance(content, list) else [{"type": "text", "text": content}]
+
+
+def _image_block(image: Image) -> dict:
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": image.media_type,
+            "data": base64.b64encode(image.data).decode("ascii"),
+        },
+    }
+
+
+def _document_block(document: Document) -> dict:
+    """The file, with citations on and a cache breakpoint under it.
+
+    `citations` is what turns "it read your PDF" into something a customer can
+    check: the answer comes back carrying the page it was read off, which
+    `_sources` puts under the reply. `title` is the name the customer knows the
+    file by, and the name those citations come back under.
+
+    `cache_control` because this block is re-sent on every turn of the
+    conversation that follows it. A twenty-page PDF is tens of thousands of input
+    tokens; read once and cached, the follow-up questions cost a tenth of that.
+    """
+    return {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": DOCUMENT_MEDIA_TYPE,
+            "data": base64.b64encode(document.data).decode("ascii"),
+        },
+        "title": document.filename,
+        "citations": {"enabled": True},
+        "cache_control": {"type": "ephemeral"},
+    }
 
 
 def get_reply(
@@ -361,10 +470,11 @@ def get_reply(
     customer: UserProfile | None,
     history: list[Message],
     image: Image | None = None,
+    document: Document | None = None,
 ) -> str:
     model = model_for(bot)
     system = build_system_blocks(bot, customer)
-    messages = _as_messages(history, image)
+    messages = _as_messages(history, image, document)
     tools = get_tools(bot.id)
 
     try:
@@ -419,4 +529,74 @@ def _reply_text(bot: BotConfig, response) -> str:
     if not text:
         logger.error("bot=%s produced no text to send (stop_reason=%s)", bot.id, stop_reason)
         return FALLBACK_REPLY
-    return text
+
+    # Appended to what goes out, and deliberately not to what is remembered --
+    # see `without_sources`.
+    sources = _sources(response)
+    return f"{text}\n\n{sources}" if sources else text
+
+
+def without_sources(reply: str) -> str:
+    """A reply as the model actually wrote it, for the history to keep.
+
+    The footnote under an answer is rendered from the API's citation metadata;
+    the model did not write it and must not be shown having written it. Filed
+    as part of its own last message it becomes a format to copy -- a probe on
+    2026-09-11 caught exactly that on the second question, an answer signed off
+    with a page reference the model had taken off its own previous message
+    rather than off the file, with the real one appended underneath. A page
+    number nobody can check is precisely what `NEVER_INVENT` exists to prevent,
+    and that one would have been wearing the uniform of one that could.
+
+    The audit log keeps the whole thing, footnote included: that is the record
+    of what the customer was actually sent.
+    """
+    spoken, separator, _ = reply.rpartition(f"\n\n{SOURCE_MARK} ")
+    return spoken if separator else reply
+
+
+def _sources(response) -> str:
+    """The pages an answer came off, as a footnote under it -- or "" if none.
+
+    This is the whole of scene 2b that the customer actually sees. An answer out
+    of their own PDF is impressive; an answer that names the page it came off is
+    checkable, and checkable is what separates this from a bot that sounds
+    confident. Only the model can produce these: they come back on the text
+    blocks themselves, pointing into the file rather than being guessed at.
+
+    Page numbers and nothing else, which is less than scene 2b was written
+    hoping for. `cited_text` is there, but for a PDF it is the whole page the
+    answer was found on -- 149 and 269 characters for the two pages of a probe
+    whose lines are one sentence each -- so a quotation cut to fit a phone screen
+    would show the top of the page rather than the line that was used, which
+    reads as the wrong quote rather than as a short one.
+
+    Deliberately not a sentence. Every other canned line in this project is
+    written in three languages because it reads as prose in a conversation; a
+    filename and a page number read the same in all three, and a label in front
+    of them would only need translating.
+    """
+    title = ""
+    pages: set[int] = set()
+    for block in response.content:
+        if block.type != "text":
+            continue
+        for citation in getattr(block, "citations", None) or []:
+            start = getattr(citation, "start_page_number", None)
+            if start is None:
+                continue
+            title = title or (getattr(citation, "document_title", None) or "")
+            # `end_page_number` is exclusive, and a citation may span pages. The
+            # ceiling is only there so a citation covering a 600-page manual
+            # cannot turn into 600 numbers on the way to a phone.
+            end = getattr(citation, "end_page_number", None) or start + 1
+            pages.update(range(start, max(min(end, start + MAX_CITED_PAGES + 1), start + 1)))
+
+    if not pages:
+        return ""
+    listed = sorted(pages)
+    numbers = ", ".join(f"p.{page}" for page in listed[:MAX_CITED_PAGES])
+    if len(listed) > MAX_CITED_PAGES:
+        numbers += ", …"
+    label = f"{SOURCE_MARK} {title}" if title else SOURCE_MARK
+    return f"{label} · {numbers}"

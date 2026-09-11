@@ -62,18 +62,24 @@ def _json(response: httpx.Response) -> dict:
         raise MediaError(f"media endpoint did not answer with JSON: {exc}") from exc
 
 
-def fetch_media(media_id: str) -> Media:
-    """Download an inbound attachment. Two hops: metadata for the URL, then the bytes."""
+def fetch_media(media_id: str, max_bytes: int | None = None) -> Media:
+    """Download an inbound attachment. Two hops: metadata for the URL, then the bytes.
+
+    `max_bytes` defaults to the cap a photo is held to, because what the model
+    will accept differs by kind: five megabytes is Anthropic's limit for one
+    image and nowhere near its limit for a PDF, and holding a customer's own
+    price list to the picture cap would refuse the very file scene 2b is about.
+    """
+    limit = settings.whatsapp_media_max_bytes if max_bytes is None else max_bytes
     meta = _json(_get(f"{GRAPH_API_BASE}/{media_id}"))
     download_url = meta.get("url")
     if not download_url:
         raise MediaError(f"media {media_id} has no download url")
 
     file_size = int(meta.get("file_size") or 0)
-    if file_size > settings.whatsapp_media_max_bytes:
+    if file_size > limit:
         raise MediaTooLargeError(
-            f"media {media_id} is {file_size} bytes, over the "
-            f"{settings.whatsapp_media_max_bytes} byte limit"
+            f"media {media_id} is {file_size} bytes, over the {limit} byte limit"
         )
 
     # The lookup URL is short-lived and, unlike a normal CDN link, still wants the token.

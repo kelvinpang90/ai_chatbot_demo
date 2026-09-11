@@ -25,12 +25,13 @@ WEB = "web"
 # spoke it" and "they tapped it off a list" are two of the things a demo is
 # meant to prove, and by the time a message is recorded they all look alike --
 # a voice note is transcribed into plain text before anything downstream sees
-# it, a list tap is resolved into the sentence it stands for, and a photo is
-# left behind as the caption that came with it.
+# it, a list tap is resolved into the sentence it stands for, and a photo or a
+# PDF is left behind as the line that stood in for it.
 TEXT = "text"
 VOICE = "voice"
 INTERACTIVE = "interactive"
 IMAGE = "image"
+DOCUMENT = "document"
 
 # The console's ring buffer holds 200 events and forgets them on restart; this is
 # the copy that outlives the demo. Long values are still capped, because one
