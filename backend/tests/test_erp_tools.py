@@ -1922,3 +1922,35 @@ def test_the_web_chat_is_never_promised_a_message_it_cannot_receive(_credentials
     add.assert_not_called()
     # The order itself is unaffected -- only the follow-up is.
     assert payload["order_no"] == CONFIRMED_ORDER["document_no"]
+
+
+def test_the_push_quotes_a_total_the_way_a_shop_would(_credentials, _push_queue):
+    """Seen on a real phone on 2026-09-12: the bot said "RM 328.90" and then its
+    own push said "MYR 986.7000" a minute later -- the one line in the
+    conversation that read like a database."""
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+    queued = []
+
+    with patch.object(notify, "add", side_effect=queued.append):
+        with patch.object(api_client.httpx, "post", side_effect=posts):
+            with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+                erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 3}])
+
+    assert "RM 986.70" in queued[0].text
+    assert "MYR" not in queued[0].text
+    assert "986.7000" not in queued[0].text
+
+
+def test_a_total_in_some_other_currency_keeps_its_own_name():
+    """RM is what Malaysia writes. Anything else is left as the ERP called it
+    rather than relabelled into a currency it is not."""
+    assert erp._money("SGD", "1234.5") == "SGD 1,234.50"
+    assert erp._money("MYR", "986.7000") == "RM 986.70"
+    assert erp._money("myr", 1321.744) == "RM 1,321.74"
+
+
+def test_a_total_that_is_not_a_number_does_not_take_the_push_down():
+    """The push is worth sending without a figure in it; a traceback on a timer
+    thread half a minute after the order is not."""
+    assert erp._money("MYR", None) == ""
+    assert erp._money("MYR", "not money") == ""

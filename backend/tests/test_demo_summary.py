@@ -387,3 +387,45 @@ def test_the_button_is_behind_the_console_token(_console_token):
 
     assert response.status_code == 401
     sent.assert_not_called()
+
+
+def test_only_the_back_offices_that_were_written_to_are_named(_audit):
+    """The first real run said "written into a real ERP and CRM" on a demo where
+    nothing had gone anywhere near the CRM -- a small lie in the one message
+    whose entire job is being checkable."""
+    calls = [_call("erp_create_sales_order", '{"order_no": "SO-1"}')]
+
+    with patch.object(audit_store, "query", side_effect=_answers(_messages(), calls)):
+        text = summary.compose(summary.tally(CONVERSATION))
+
+    assert "真实的 ERP，" in text
+    assert "a real ERP," in text
+    assert "CRM" not in text
+
+
+def test_both_are_named_when_both_were_written_to(_audit):
+    calls = [
+        _call("erp_create_sales_order", '{"order_no": "SO-1"}'),
+        _call("crm_create_lead"),
+    ]
+
+    with patch.object(audit_store, "query", side_effect=_answers(_messages(), calls)):
+        text = summary.compose(summary.tally(CONVERSATION))
+
+    assert "真实的 ERP 和 CRM" in text
+    assert "a real ERP and CRM" in text
+    assert "ERP dan CRM sebenar" in text
+
+
+def test_a_demo_that_only_read_things_claims_no_system_at_all(_audit):
+    """A photo read and a voice note understood are worth saying and are not
+    writes. "All of it written into a real ERP" would be untrue of both."""
+    calls = [_call("image.download"), _call("voice.transcribe")]
+
+    with patch.object(audit_store, "query", side_effect=_answers(_messages(), calls)):
+        text = summary.compose(summary.tally(CONVERSATION))
+
+    assert "ERP" not in text and "CRM" not in text
+    assert "写进" not in text
+    assert "听懂了 1 条语音" in text
+    assert "留在您手机里" in text

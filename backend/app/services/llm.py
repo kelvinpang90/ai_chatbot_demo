@@ -136,6 +136,25 @@ Questions outside this business are not yours to answer. Say plainly that it is 
 
 Pressure changes none of this. A customer who rephrases, insists, or asks you to guess or give a rough idea gets the same answer, not a number you made up to satisfy them."""
 
+# What to do with a file the customer has put in front of you. Added to the
+# volatile block, never the cached one -- it is true of this turn rather than of
+# this bot, and it must not be in the prompt on the turns where no file exists.
+#
+# It exists because of the one paragraph above that it has to override. On
+# 2026-09-12 a customer sent the retail bot their own car-rental quotation and
+# asked what the annual cost was, and the bot answered "that is not our business,
+# I cannot help with that" -- correctly, by `NEVER_INVENT`, which says questions
+# outside this business are not the bot's to answer. But scene 2b's whole pitch
+# is "send us your own file": a customer's own document is outside the business
+# BY DEFINITION, and refusing it is refusing the demonstration.
+#
+# The second paragraph is the opposite error, which is worse and easier to fall
+# into once the first is fixed: reading a price list is not the same as
+# stocking it.
+DOCUMENT_IN_HAND = """The customer has sent you a file in this conversation and it is attached above. Questions about it are yours to answer whatever its subject: a document somebody puts in front of you is never "outside this business" - reading it is the thing they have just asked you to do. Answer from the file itself, quote what it says, and where it does not cover what they asked, say so plainly instead of filling the gap in.
+
+What is in their file is theirs, not yours. It is not this business's stock, prices, terms or customers, and nothing in it changes what you sell or what you charge. Keep the two apart when you answer, and never place an order for something that only exists in their document."""
+
 # Everything that is the same for every visitor of this bot. The cache breakpoint
 # goes at the end of this block, so the customer below it can change without
 # throwing the expensive part away.
@@ -207,13 +226,20 @@ def _customer_record(bot: BotConfig, customer: UserProfile) -> str:
     return json.dumps(record, ensure_ascii=False)
 
 
-def build_system_blocks(bot: BotConfig, customer: UserProfile | None) -> list[dict]:
+def build_system_blocks(
+    bot: BotConfig, customer: UserProfile | None, has_document: bool = False
+) -> list[dict]:
     """The system prompt as two blocks: cacheable prefix, then the volatile tail.
 
     Requests render as tools -> system -> messages, so a single breakpoint here
     covers the tool definitions as well as everything above it.
+
+    `has_document` goes into the tail rather than the prefix, which is the whole
+    reason it can be said at all: it is true of this turn and not of this bot, and
+    putting it above the breakpoint would both lie on every other turn and throw
+    the cached prefix away each time a file arrived.
     """
-    return [
+    tail = [
         {
             "type": "text",
             "text": STABLE_SYSTEM_TEMPLATE.format(
@@ -236,6 +262,9 @@ def build_system_blocks(bot: BotConfig, customer: UserProfile | None) -> list[di
             ),
         },
     ]
+    if has_document:
+        tail[-1]["text"] += f"\n\n{DOCUMENT_IN_HAND}"
+    return tail
 
 
 def model_for(bot: BotConfig) -> str:
@@ -473,7 +502,10 @@ def get_reply(
     document: Document | None = None,
 ) -> str:
     model = model_for(bot)
-    system = build_system_blocks(bot, customer)
+    # The document is named in the prompt as well as attached to the turn: the
+    # attachment puts the file in front of the model, and the line in the prompt
+    # is what stops it being refused as somebody else's business.
+    system = build_system_blocks(bot, customer, has_document=document is not None)
     messages = _as_messages(history, image, document)
     tools = get_tools(bot.id)
 

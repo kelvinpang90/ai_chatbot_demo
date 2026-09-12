@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import TypedDict
 
 from anthropic import beta_tool
@@ -518,6 +519,23 @@ def erp_list_orders(customer_id: int) -> str:
     )
 
 
+def _money(currency: str, amount) -> str:
+    """A total the way the customer will read it back.
+
+    The ERP keeps four decimal places and calls the currency MYR. The bot says
+    "RM 328.90" in the same breath, because that is what a price looks like in
+    Malaysia -- so a push that said "MYR 986.7000" was the one line in the
+    conversation that read like a database instead of like a shop. Seen on a
+    real phone on 2026-09-12.
+    """
+    try:
+        value = f"{Decimal(str(amount)).quantize(Decimal('0.01')):,}"
+    except (InvalidOperation, TypeError, ValueError):
+        logger.warning("could not format %r as money", amount)
+        return ""
+    return f"RM {value}" if str(currency or "").upper() == "MYR" else f"{currency} {value}".strip()
+
+
 def _promise_an_update(order: dict) -> None:
     """Queue the "your order is confirmed" push this turn will send afterwards.
 
@@ -532,7 +550,7 @@ def _promise_an_update(order: dict) -> None:
     if not notify.available():
         return
     order_no = str(order.get("document_no") or "")
-    total = f"{order.get('currency') or ''} {order.get('total_incl_tax') or ''}".strip()
+    total = _money(order.get("currency"), order.get("total_incl_tax"))
     if not order_no:
         return
     notify.add(

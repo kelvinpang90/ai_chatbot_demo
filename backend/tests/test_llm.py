@@ -902,3 +902,67 @@ def test_an_answer_that_mentions_a_page_itself_is_left_alone():
     written = "Page 4 covers the warranty, and I've quoted from it above."
 
     assert llm.without_sources(written) == written
+
+
+# -- what a real phone found (2026-09-12) --------------------------------------
+#
+# Four things the suite was green through. Each of these is here because it
+# happened in front of a person holding a phone, not because it was imagined.
+
+
+def test_a_file_the_customer_sent_is_never_outside_this_business():
+    """The one that mattered. A customer sent the retail bot their own car
+    rental quotation and asked what the annual cost was; the bot said "that is
+    not our business" and never read it -- correctly, by `NEVER_INVENT`, and
+    fatally, because "send us your own file" is the whole of scene 2b."""
+    volatile = llm.build_system_blocks(get_bot("retail"), _customer(), has_document=True)[1]
+
+    assert llm.DOCUMENT_IN_HAND in volatile["text"]
+    assert "never \"outside this business\"" in volatile["text"]
+
+
+def test_nothing_is_said_about_a_file_on_a_turn_without_one():
+    """Which is nearly every turn. A standing instruction to answer from a file
+    would be an instruction about a file that is not there."""
+    volatile = llm.build_system_blocks(get_bot("retail"), _customer())[1]
+
+    assert llm.DOCUMENT_IN_HAND not in volatile["text"]
+
+
+def test_the_file_note_stays_out_of_the_cached_half():
+    """It is true of this turn, not of this bot. Above the breakpoint it would
+    both be wrong on every other turn and throw the cached prefix away each time
+    a file arrived."""
+    stable, volatile = llm.build_system_blocks(get_bot("retail"), _customer(), has_document=True)
+
+    assert llm.DOCUMENT_IN_HAND not in stable["text"]
+    assert llm.DOCUMENT_IN_HAND in volatile["text"]
+    # Byte-identical to the prefix on a turn with no file, which is what "the
+    # cache survives a document" means.
+    assert stable == llm.build_system_blocks(get_bot("retail"), _customer())[0]
+
+
+def test_reading_their_price_list_is_not_stocking_it():
+    """The opposite error, and the easier one to fall into once the first is
+    fixed: a bot that has just read a quotation must not start selling from it."""
+    volatile = llm.build_system_blocks(get_bot("retail"), _customer(), has_document=True)[1]
+
+    assert "not this business's stock" in volatile["text"]
+    assert "never place an order for something that only exists in their document" in (
+        volatile["text"]
+    )
+
+
+def test_a_document_turn_carries_the_note_as_well_as_the_file():
+    """Attached and announced. The attachment puts the file in front of the
+    model; the note is what stops it being handed back unread."""
+    bot = get_bot("retail")
+    history = [Message(role="user", content=PDF_MARKER)]
+    response = _assistant_message([BetaTextBlock(type="text", text="RM 320.")], "end_turn")
+
+    with patch.object(llm, "get_tools", return_value=[]):
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(bot, _customer(), history, document=_pdf())
+
+    system = mock_create.call_args.kwargs["system"]
+    assert llm.DOCUMENT_IN_HAND in system[1]["text"]

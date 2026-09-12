@@ -65,6 +65,11 @@ class Activity(NamedTuple):
     # for emphasis, which a count already provides.
     en: tuple[str, str]
     ms: str
+    # Which back office this wrote to, if any. The closing line names the systems
+    # that were actually touched: the first real run of this said "written into a
+    # real ERP and CRM" on a demo where nothing had gone anywhere near the CRM,
+    # which is a small lie in the one message whose whole job is being checkable.
+    system: str = ""
 
 
 ACTIVITIES = (
@@ -74,6 +79,7 @@ ACTIVITIES = (
         "查了 {n} 次商品和库存",
         ("{n} live stock lookup", "{n} live stock lookups"),
         "{n} semakan stok langsung",
+        "ERP",
     ),
     Activity(
         ("erp_create_customer",),
@@ -84,6 +90,7 @@ ACTIVITIES = (
         "开了 {n} 个客户账户",
         ("{n} customer account opened", "{n} customer accounts opened"),
         "{n} akaun pelanggan dibuka",
+        "ERP",
     ),
     Activity(
         ("erp_create_sales_order",),
@@ -91,6 +98,7 @@ ACTIVITIES = (
         "下了 {n} 张真实订单",
         ("{n} real order placed", "{n} real orders placed"),
         "{n} pesanan sebenar dibuat",
+        "ERP",
     ),
     Activity(
         ("erp_generate_einvoice",),
@@ -98,6 +106,7 @@ ACTIVITIES = (
         "开了 {n} 张 e-Invoice",
         ("{n} e-Invoice issued", "{n} e-Invoices issued"),
         "{n} e-Invois dikeluarkan",
+        "ERP",
     ),
     Activity(
         ("erp_create_credit_note",),
@@ -105,6 +114,7 @@ ACTIVITIES = (
         "开了 {n} 张退款单",
         ("{n} refund note raised", "{n} refund notes raised"),
         "{n} nota kredit dikeluarkan",
+        "ERP",
     ),
     Activity(
         ("crm_create_lead",),
@@ -112,6 +122,7 @@ ACTIVITIES = (
         "留了 {n} 条 CRM 线索",
         ("{n} CRM lead recorded", "{n} CRM leads recorded"),
         "{n} petunjuk CRM direkodkan",
+        "CRM",
     ),
     Activity(
         ("voice.transcribe",),
@@ -259,16 +270,33 @@ def compose(tally: Tally) -> str:
     en = ", ".join(_phrase(*line, "en") for line in tally.lines)
     ms = ", ".join(_phrase(*line, "ms") for line in tally.lines)
 
-    if tally.lines:
-        head_zh = f"📋 刚才这 {tally.minutes} 分钟里，我{zh}——全部写进了真实的 ERP 和 CRM，不是演示数据。"
+    # Only the back offices something was actually written to. Saying "ERP and
+    # CRM" on a demo that never touched the CRM is a small lie in the one message
+    # whose entire job is to be checkable -- and the first real run made it.
+    systems = []
+    for activity, _, _ in tally.lines:
+        if activity.system and activity.system not in systems:
+            systems.append(activity.system)
+
+    if tally.lines and systems:
+        head_zh = (
+            f"📋 刚才这 {tally.minutes} 分钟里，我{zh}"
+            f"——全部写进了真实的 {' 和 '.join(systems)}，不是演示数据。"
+        )
         head_en = (
             f"📋 In the last {tally.minutes} minutes I did {en} - all of it written into a "
-            "real ERP and CRM, not a mock-up."
+            f"real {' and '.join(systems)}, not a mock-up."
         )
         head_ms = (
             f"📋 Dalam {tally.minutes} minit tadi saya buat {ms} - semuanya ditulis ke dalam "
-            "ERP dan CRM sebenar, bukan data palsu."
+            f"{' dan '.join(systems)} sebenar, bukan data palsu."
         )
+    elif tally.lines:
+        # Something happened, but nothing that wrote to a back office: a photo
+        # read, a voice note understood. Worth saying, not worth dressing up.
+        head_zh = f"📋 刚才这 {tally.minutes} 分钟里，我{zh}。"
+        head_en = f"📋 In the last {tally.minutes} minutes I did {en}."
+        head_ms = f"📋 Dalam {tally.minutes} minit tadi saya buat {ms}."
     else:
         # Nothing was called, which happens in a conversation that stayed on
         # questions. Claiming otherwise is the one thing this message must not do.

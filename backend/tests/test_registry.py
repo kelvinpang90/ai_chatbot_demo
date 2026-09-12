@@ -68,6 +68,17 @@ def test_retail_is_wired_to_the_erp_and_crm_it_demonstrates():
     assert [tool.name for tool in tool_registry.get_tools("retail")] == retail.tools
 
 
+def test_a_sale_is_told_to_reach_the_crm_as_well_as_the_erp():
+    """Scene 1 shows two back-office screens and promises both light up. The
+    persona used to send a customer who ordered straight past the CRM, so on a
+    real run on 2026-09-12 the ERP grew an order and the pipeline board stayed
+    exactly as it was. Pinned here because it is a sentence in a prompt and
+    nothing else would notice it going missing."""
+    persona = registry.get_bot("retail").persona_prompt
+
+    assert "once an order is placed, call crm_create_lead for it too" in persona
+
+
 def test_the_light_tier_bots_run_on_tools_too():
     """The point of task 11.2: five industries on the menu, one shell behind them.
 
