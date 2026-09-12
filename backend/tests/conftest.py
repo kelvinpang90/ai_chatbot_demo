@@ -19,6 +19,7 @@ import pytest
 from app.config import settings
 from app.services import audit, crm_client, doc_store, erp_client, notify, outbox
 from app.services.user_store import user_store
+from app.verticals import db as verticals_db
 
 
 def _with_credentials(name, module):
@@ -71,6 +72,20 @@ def _no_audit_turn_left_open():
     yield
     audit.close()
     audit.audit_store.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_verticals_connection_left_open():
+    """The shared verticals store starts every test cold.
+
+    It holds a connection and an open-or-closed circuit across calls, so a test
+    that knocked it offline would otherwise decide what the next file sees --
+    and that store raises, so the symptom is an unrelated test erroring rather
+    than quietly reading nothing.
+    """
+    verticals_db.store.reset()
+    yield
+    verticals_db.store.reset()
 
 
 @pytest.fixture(autouse=True)

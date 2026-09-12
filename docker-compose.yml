@@ -13,6 +13,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - MYSQL_URL=mysql://chatbot:chatbot@mysql:3306/ai_chatbot
+      - VERTICALS_MYSQL_URL=mysql://chatbot:chatbot@mysql:3306/ai_chatbot_verticals
       # Same clock as production, so a timestamp read here means what it will
       # mean there.
       - TZ=Asia/Kuala_Lumpur
@@ -25,8 +26,10 @@ services:
   redis:
     image: redis:7-alpine
 
-  # Likewise for infra_mysql. The audit tables create themselves on first write,
-  # so an empty database is all this has to provide.
+  # Likewise for infra_mysql. Both sets of tables create themselves on first
+  # use, so empty databases are all this has to provide -- but the image makes
+  # only the one named below, and the verticals want their own, so the second is
+  # created by the init script.
   mysql:
     image: mysql:8
     environment:
@@ -34,6 +37,8 @@ services:
       MYSQL_DATABASE: ai_chatbot
       MYSQL_USER: chatbot
       MYSQL_PASSWORD: chatbot
+    volumes:
+      - ./deploy/mysql-init:/docker-entrypoint-initdb.d:ro
 
   frontend:
     build: ./frontend

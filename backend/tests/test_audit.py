@@ -83,37 +83,7 @@ def _turn(**kwargs) -> Turn:
 
 
 # --- the connection string ---------------------------------------------------
-
-
-def test_dsn_reads_host_port_and_database():
-    dsn = audit._dsn("mysql://user:secret@infra_mysql:3307/ai_chatbot")
-    assert dsn["host"] == "infra_mysql"
-    assert dsn["port"] == 3307
-    assert dsn["user"] == "user"
-    assert dsn["password"] == "secret"
-    assert dsn["database"] == "ai_chatbot"
-
-
-def test_dsn_defaults_the_port():
-    assert audit._dsn("mysql://u:p@host/db")["port"] == 3306
-
-
-def test_dsn_decodes_a_percent_encoded_password():
-    """provision-project.sh generates hex, but a hand-set password need not be.
-
-    A password with an `@` or a `/` in it has to be encoded to survive the URL,
-    and handing MySQL the still-encoded form fails as a wrong password -- which
-    reads like a credentials problem rather than a parsing one.
-    """
-    assert audit._dsn("mysql://u:p%40ss%2Fword@host/db")["password"] == "p@ss/word"
-
-
-@pytest.mark.parametrize(
-    "url",
-    ["postgres://u:p@host/db", "not a url", "mysql://u:p@host", "mysql://u:p@host/"],
-)
-def test_dsn_refuses_anything_it_cannot_use(url):
-    assert audit._dsn(url) is None
+# Parsing it lives in test_mysql_url.py, shared with the verticals store.
 
 
 def test_a_malformed_url_is_not_retried():

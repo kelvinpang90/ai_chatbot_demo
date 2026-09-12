@@ -13,6 +13,11 @@ services:
     # backend/.env instead. Unset there means the audit log is off, which is a
     # quiet failure by design -- `docker logs ai_chatbot_backend | grep "audit
     # log"` is what says so.
+    #
+    # VERTICALS_MYSQL_URL (task 22) is absent for the same reason and lives in
+    # the same file. It needs no network change: data_net below is what task 31
+    # added for Redis, and infra_mysql is on it already. Unset there is not
+    # quiet -- the property and food back offices raise instead.
     environment:
       - REDIS_URL=redis://infra_redis:6379/16
       # Every audit timestamp and every log line is written in the container's

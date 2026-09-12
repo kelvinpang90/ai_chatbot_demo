@@ -9,9 +9,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
-from urllib.parse import unquote, urlparse
 
 from app.config import settings
+from app.services.mysql_url import connect as _default_connect
+from app.services.mysql_url import dsn as _mysql_dsn
 
 if TYPE_CHECKING:
     from app.services.user_store import UserProfile
@@ -47,7 +48,6 @@ MAX_TOOL_OUTPUT_CHARS = 64_000
 # Same posture as the user store: once writing has failed, stop paying the
 # timeout on every message and try again in half a minute.
 RETRY_AFTER_SECONDS = 30.0
-CONNECT_TIMEOUT_SECONDS = 2.0
 
 SCHEMA = (
     """
@@ -177,30 +177,6 @@ def close() -> None:
 
 def current() -> Turn | None:
     return _turn.get()
-
-
-def _dsn(url: str) -> dict | None:
-    """Connection kwargs from a `mysql://user:pass@host:port/db` URL, or None."""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("mysql", "mysql+pymysql") or not parsed.hostname:
-        logger.warning("MYSQL_URL is not a mysql:// url; the audit log is off")
-        return None
-    database = (parsed.path or "").lstrip("/")
-    if not database:
-        logger.warning("MYSQL_URL names no database; the audit log is off")
-        return None
-    return {
-        "host": parsed.hostname,
-        "port": parsed.port or 3306,
-        # A generated password is very likely to contain reserved characters, so
-        # the URL carries it percent-encoded and it is decoded back here.
-        "user": unquote(parsed.username or ""),
-        "password": unquote(parsed.password or ""),
-        "database": database,
-        "charset": "utf8mb4",
-        "autocommit": True,
-        "connect_timeout": CONNECT_TIMEOUT_SECONDS,
-    }
 
 
 class AuditStore:
@@ -367,7 +343,7 @@ class AuditStore:
         if not self._url or time.time() < self._offline_until:
             return None
         if self._conn is None:
-            dsn = _dsn(self._url)
+            dsn = _mysql_dsn(self._url, feature="the audit log")
             if dsn is None:
                 # A malformed URL will not fix itself in thirty seconds, so this
                 # one stays down until the process restarts with a good one.
@@ -415,15 +391,6 @@ class AuditStore:
             reason,
             f": {failure}" if failure else "",
         )
-
-
-def _default_connect(dsn: dict):
-    # Imported here, not at module scope, so a deployment without the package --
-    # or without a MySQL at all -- runs with the audit log off instead of failing
-    # to boot.
-    import pymysql
-
-    return pymysql.connect(**dsn)
 
 
 def _timestamp(at: float | None) -> str:

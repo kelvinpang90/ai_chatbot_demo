@@ -1129,10 +1129,21 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 > **剧本 4b —— 点餐（餐饮，4 步）**：客户「两份椰浆饭一杯拉茶」→ bot 加购物车 → 报总价 → 确认下单，后台订单状态流转。**演完立刻接剧本 3**，两段连成 9 步。
 > **不新开项目**：作为 `backend/app/verticals/{food,realestate}/`，共用 vps_infra 里开一个 MySQL db，后台页面挂在导演台同一个域名下——保持一个部署单元，不增加运维负担。
 
-- [ ] **任务 22：verticals 骨架 + 数据库**
-  文件：`backend/app/verticals/__init__.py`（新增）、`backend/app/verticals/db.py`（新增）、`docker-compose.yml` / `docker-compose.prod.yml`（接 `data_net`）
-  目标：在 vps_infra 的 MySQL 上开一个独立 db + 用户；建表；本地 compose 能连上
-  验收：`docker compose up` 后能建表、写一行、读回来
+- [x] **任务 22：verticals 骨架 + 数据库**——**2026-09-12 完成**。后端 **802 passed**（781 → 802，净增 21）。
+  文件：`backend/app/verticals/__init__.py`（新增）、`backend/app/verticals/db.py`（新增）、`backend/app/services/mysql_url.py`（新增）、`backend/app/services/audit.py`、`backend/app/config.py`、`backend/.env.example`、`deploy/mysql-init/01-verticals.sql`（新增）、`docker-compose.yml`、`docker-compose.prod.yml`、`backend/scripts/verticals_probe.py`（新增）、`backend/tests/test_verticals_db.py`（新增）、`backend/tests/test_mysql_url.py`（新增）、`backend/tests/test_audit.py`、`backend/tests/conftest.py`
+
+  **和审计层同骨架，但有一处故意相反**：`audit.py` 写失败是「丢掉这一行、谁也不告诉」——对日志是对的，因为调用方正在回客户、拿它没办法，丢的是一条记录。**verticals 存的是客户正盯着屏幕等它出现的预约/订单**，静默丢掉会变成「bot 说您的看房已确认」而后台空空如也，这是演示能犯的最严重的错。所以这里一律抛 `StoreUnavailable`，由上层工具转成 ERP 工具那套「刚才没查到」的说法。熔断器保留（失败后半分钟内不再付连接超时），只是到期抛错而不是返回 None。
+
+  **`_dsn()` 抽成了 `services/mysql_url.py` 共享**，没有复制第二份。它带着 percent-decode——那是线上踩过的坑（密码里一个 `@` 会表现成「密码不对」而不是「URL 不对」），有测试守着。两份解析器等于两次漂移的机会。日志里加了 `feature` 参数，因为现在有两个 URL，「not a mysql:// url」本身说不清坏的是哪一个。原来那 4 条 `_dsn` 测试搬去了 `test_mysql_url.py`。
+
+  **没有 registry 之外的框架**：`store.register(*SCHEMA)` 让每个 vertical 在 import 时贡献自己的建表语句，共用一条连接。晚注册也有效（会重新打开建表标志），否则一个被延迟 import 的 router 会发现 schema 已经「建好了」却没有它的表。
+
+  **`VERTICALS_MYSQL_URL` 是独立的一条**，不设 = 这两个行业没有后台。和 `MYSQL_URL` 一样**绝不能进 compose**（仓库是 public，带密码）。**生产 compose 不需要改网络**——backend 从任务 31 起就挂在 `data_net` 上，`infra_mysql` 就在上面；只在注释里补了一句说明。本地 compose 里 `mysql:8` 的 `MYSQL_DATABASE` 只能建一个库，所以第二个库由 `deploy/mysql-init/01-verticals.sql` 建（挂进 `/docker-entrypoint-initdb.d`，只影响本地那个一次性容器）。
+
+  **验证**：单测 **803 passed**（781 → 803）；**变异测试 13 处全红**——第一轮有一条漏网，暴露出我那条「畸形 URL 不重试」的测试根本没断言到性质（URL 解析不出来时驱动本来就不会被调用，所以「什么都没执行」在熔断与否两种情况下都成立），改成数解析次数才真正杀掉。
+  **真实 MySQL 活体验证**（不是打桩）：`docker compose up -d mysql` 起本地 mysql:8，跑 `scripts/verticals_probe.py`——建表、写入一行含中文和撇号的数据（`陈家明 O'Brien` / `蒲种三房，60 万以内`）、读回**完全一致**、`DATETIME(3)` 的毫秒没丢、探针表自行清掉。**能连上 `ai_chatbot_verticals` 本身就证明 init 脚本建出了第二个库**。两个 compose 都过了 `docker compose config`。
+
+  ⚠️ **线上还差一个 grant**（见下面「阻塞项 I」），不做的话任务 23-26 的真机验收落不了地。不加也不会坏：demo 其余部分行为完全不变。
 
 - [ ] **任务 23：realestate 后端 + 后台页面**
   文件：`backend/app/verticals/realestate/`（models / routes）、`frontend/src/pages/VerticalAdmin.tsx`（新增）
@@ -1542,6 +1553,20 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - `scripts/provision-project.sh` 也能干这事，但它强制要第二个参数（Redis 区段），而本项目的 16 已经分过了
   - ⚠️ **改完 `.env` 必须 `docker compose up -d --force-recreate backend`**，`restart` 读不到新的环境变量（任务 36 的记录里那对 9:26 失败 / 9:35 成功就是这个坑）
   - **不加也不会坏**：`MYSQL_URL` 空 = 审计关掉，demo 行为和现在完全一致，只是什么都不记
+
+- [ ] **I. 线上给 verticals 建库**（任务 22 留下的，任务 23-26 真机验收前要做）——一条 grant，用的还是已有那个账号：
+  ```sql
+  CREATE DATABASE ai_chatbot_verticals CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  GRANT ALL PRIVILEGES ON `ai_chatbot_verticals`.* TO 'ai_chatbot_app'@'%';
+  FLUSH PRIVILEGES;
+  ```
+  ⚠️ **容器名是 `infra_mysql`，服务名才是 `mysql`**（和阻塞项 H 同一个坑）。
+  然后往 `/opt/ai_chatbot/backend/.env` 加一行
+  `VERTICALS_MYSQL_URL=mysql://ai_chatbot_app:<密码>@infra_mysql:3306/ai_chatbot_verticals`
+  （密码就是 `MYSQL_URL` 里那个，**percent-encode**），再
+  `docker compose up -d --force-recreate backend`——`restart` 读不到新环境变量。
+  - **不加也不会坏**：房产和餐饮没有后台而已，demo 其余部分行为完全不变。但和审计层不同，
+    这个不是静默的：第一次调用就会抛 `StoreUnavailable`，日志里有一行说清楚
 
 ---
 

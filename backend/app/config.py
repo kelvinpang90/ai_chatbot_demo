@@ -91,6 +91,16 @@ class Settings(BaseSettings):
     # get. Shape: mysql://user:password@infra_mysql:3306/ai_chatbot
     mysql_url: str = ""
 
+    # A second database on the same infra_mysql, where the property and food
+    # demos keep their own back office (task 22). Separate from the audit log's
+    # because the two have opposite lifecycles: the audit log is a record kept on
+    # purpose, and this is demo state that wants truncating between showings.
+    # Unset means those verticals have no back office -- but unlike the audit
+    # log, which goes quietly dark, the first call says so out loud, because a
+    # booking that silently went nowhere is worse than one that failed.
+    # Shape: mysql://user:password@infra_mysql:3306/ai_chatbot_verticals
+    verticals_mysql_url: str = ""
+
     # Guards everything under /console: the live tool feed, and from task 37.1
     # the audit log behind it. Empty means the console is closed rather than
     # open -- the opposite of how the chat routes read an empty password, and
