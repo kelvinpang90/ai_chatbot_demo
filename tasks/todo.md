@@ -1145,10 +1145,27 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   ⚠️ **线上还差一个 grant**（见下面「阻塞项 I」），不做的话任务 23-26 的真机验收落不了地。不加也不会坏：demo 其余部分行为完全不变。
 
-- [ ] **任务 23：realestate 后端 + 后台页面**
-  文件：`backend/app/verticals/realestate/`（models / routes）、`frontend/src/pages/VerticalAdmin.tsx`（新增）
-  目标：房源表 + 看房预约表 + REST 接口；一个极简后台页面能看到预约列表
-  验收：curl 建一条预约，后台页面刷新能看到
+- [x] **任务 23：realestate 后端 + 后台页面**——**2026-09-13 完成**。后端 **821 passed**（802 → 821，净增 19），前端 `tsc -b` + `vite build` 全过。
+  文件：`backend/app/verticals/realestate/{__init__,models,routes}.py`（新增）、`backend/app/services/clock.py`（新增）、`backend/app/services/audit.py`、`backend/app/main.py`、`backend/tests/test_verticals_realestate.py`（新增）、`frontend/src/pages/VerticalAdmin.{tsx,css}`（新增）、`frontend/src/api.ts`、`frontend/src/main.tsx`
+
+  **房源不是第二份数据，是从 bot 的 prompt 里播种的。** `bots/data/realestate.json` 本来就带着那 8 套房，persona 还明写「Only the listings in front of you exist, with the id, price, size and status they carry」。在库里再抄一份，就等于给「bot 报 62 万、隔壁屏幕写 65 万」留了一个位置。所以 `seed_listings()` 读 bot config，用 `ON DUPLICATE KEY UPDATE` 播进去——改 JSON 里的价格，重启后后台跟着变。
+
+  **路由挂在 `/api/verticals/realestate/*`，不在 `/console/` 下面，这是部署决定不是命名决定。** `/console/` 下每加一条路径，就要在 `frontend/nginx.conf` 和 `vite.config.ts` 再写两遍，否则线上被 SPA 接管——任务 19.1 那个「部署了但点不动」的按钮就是这么来的，`test_console_routing.py` 就是为它写的。`/api/` 两边本来就按前缀代理，这三条路由掉不进那个坑，**两个配置文件一行没改**。鉴权仍用 console token，且走 `require_console_write`（只认 header）：这张表是姓名加电话，没有 EventSource，不需要那个会落进代理日志的 query string 形式。
+
+  **时间戳那 8 小时的坑，在这里是提前避开的**：`audit.py` 里的 `_timestamp` 抽成了 `services/clock.py` 的 `sql_timestamp`（和任务 22 抽 `mysql_url.py` 同一个理由，那段注释里的教训不该有第二份）。`created_at` 由**应用容器**写，不用 MySQL 的 `CURRENT_TIMESTAMP`——本地 compose 里 `mysql:8` 根本没设 TZ。发出去的字符串不带 offset，页面**切片而不是 `new Date()` 解析**。
+
+  **写代码过程中自己揪出来一个洞并补上**：`_seeded` 是进程级标志（这是「改 JSON 价格重启生效」的前提），但如果数据库**空着回来**（换 volume / `down -v` / 表被 drop），`db.py` 会老实把 schema 重建出来，而这个标志会说「8 条已经播过了」——于是后台永远空白，而且 bot 还在报的每个 listing id 都会 404，直到进程重启为止。补法：`_reseed_if_the_store_went_away` 装饰器，任何一次调用撞上 `StoreUnavailable` 就把标志清掉。**这条是拿真库实测过的**，见下。
+
+  **验证（三层，全部实跑，没有跳过）**：
+  1. **单测 821 passed**（8 skipped 都是历史的：`tzset` POSIX only + 7 条要设 `REFUSAL_EVAL_BASE_URL` 的 refusal eval）。新增 19 条，含「数据库空着回来要重新播种」「时间戳由本容器打」「query string 里的 token 不算数」。
+  2. **真 MySQL 活体验证**（`mysql:8` 容器 + 挂 `deploy/mysql-init`，不是打桩）：建表、播 8 条房源、curl 建预约、读回。中文和撇号原样（`陈家明 O'Brien`、`下午 3 点，蒲种`，全角逗号也没掉），`DATETIME(3)` 毫秒没丢，`DATE` 存的是纯日期。`PROP-999` → 404，空姓名 → 422，不带 header → 401，**token 放 query string → 401**。
+  3. **浏览器实看**（Chrome，`npm run dev` + vite 代理）：`/vertical-admin?token=…` 打开是 8 条房源 + 预约列表；**页面开着的时候 curl 灌一条，5 秒内它自己出现在最上面并高亮**（这就是剧本 4a 那一下）。然后 `docker stop mysql`，页面**保住已有的行并在顶部报「读不到后台」**——不会把「数据库挂了」演成「还没有预约」。再把表 drop 掉（进程仍以为播过种），下一次调用重建 + 重播 8 条，页面自己恢复。
+
+  **偏离 / 没做的**：
+  - 预约表**没有 status 列**。persona 写的是「take down ... then tell them the agent will confirm it」，这条记录本身就是「待确认的请求」，加一个永远等于 `Requested` 的列是死重量。餐饮那边的状态流转是任务 25 自己的表。
+  - 日期拆成 `viewing_date DATE` + `preferred_time VARCHAR(32)` 自由文本，没有合成一个 DATETIME——客户选的是日期，硬凑 00:00 等于在屏幕上写一个没人说过的时间。`preferred_time` 留自由文本是因为填它的是 WhatsApp Flow，槽位列表是 Meta 的。
+  - **真机验收不在本任务**：这三条路由现在只有 curl 和浏览器走过，bot 还不会调它们——那是任务 24（Flow 表单）和任务 26（剧本 4a 真机）。
+  - ⚠️ **线上仍缺「阻塞项 I」那条 grant**（任务 22 留下的）。不加：房产后台第一次调用就抛 `StoreUnavailable`，页面显示「读不到后台」，demo 其余部分不受影响。
 
 - [ ] **任务 24：WhatsApp Flow —— 预约看房**
   文件：`backend/app/tools/realestate.py`（新增）、`docs/whatsapp-flows.md`（新增，Flow JSON）

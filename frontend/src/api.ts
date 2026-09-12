@@ -314,3 +314,50 @@ export function sendDemoSummary(token: string, keyId?: string): Promise<DemoSumm
     body: JSON.stringify({ key_id: keyId ?? null }),
   })
 }
+
+// --- the verticals' back office (task 23) ------------------------------------
+//
+// Under /api/ rather than /console/, and behind the same token. The prefix is a
+// deployment decision -- see the note at the top of
+// backend/app/verticals/realestate/routes.py -- not a claim that this is part of
+// the customer's flow. It is the second screen in the room.
+
+/** One property on KL Homes Realty's books. */
+export interface Listing {
+  listing_id: string
+  property_type: string
+  area: string
+  size_sqft: number
+  bedrooms: number
+  price_rm: number
+  status: string
+}
+
+/** One viewing request, as the back office holds it. */
+export interface Viewing {
+  id: number
+  listing_id: string
+  customer_name: string
+  phone: string
+  // "2026-09-20" and "2026-09-12 14:03:11.842" -- naive, and sliced rather than
+  // parsed. `new Date()` on a string carrying no offset reads it as local time,
+  // and tasks/erp-crm-timezone.md is a day spent on what that costs.
+  viewing_date: string
+  preferred_time: string
+  created_at: string
+  area: string | null
+  property_type: string | null
+  price_rm: number | null
+}
+
+export function readViewings(token: string): Promise<Viewing[]> {
+  return request<Viewing[]>('/api/verticals/realestate/viewings', {
+    headers: { 'X-Console-Token': token },
+  })
+}
+
+export function readListings(token: string): Promise<Listing[]> {
+  return request<Listing[]>('/api/verticals/realestate/listings', {
+    headers: { 'X-Console-Token': token },
+  })
+}

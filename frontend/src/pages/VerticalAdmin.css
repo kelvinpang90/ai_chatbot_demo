@@ -1,0 +1,193 @@
+/* The property agency's back office (task 23).
+ *
+ * Light, plain and tabular, and that is the whole design brief: this screen
+ * stands in for the client's own system, next to the ERP and CRM tabs it is
+ * meant to be believed alongside. The director's console is the dark one, and
+ * the two must not be mistaken for each other across a room.
+ */
+
+.va,
+.va-gate {
+  --va-bg: #f4f6f8;
+  --va-panel: #ffffff;
+  --va-line: #e2e6eb;
+  --va-text: #1f2933;
+  --va-dim: #6b7683;
+  --va-accent: #1f6feb;
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  background: var(--va-bg);
+  color: var(--va-text);
+  font-size: 13px;
+}
+
+.va {
+  padding: 20px;
+}
+
+.va-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.va-gate h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.va-gate p {
+  margin: 0;
+  color: var(--va-dim);
+  max-width: 420px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.va-gate-note {
+  color: #b3452b;
+}
+
+.va-gate input {
+  background: var(--va-panel);
+  border: 1px solid var(--va-line);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: inherit;
+  font: inherit;
+  min-width: 280px;
+}
+
+.va-gate button,
+.va-status button {
+  background: var(--va-accent);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.va-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.va-head h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.va-head p {
+  margin: 4px 0 0;
+}
+
+.va-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.va-error {
+  color: #b3452b;
+  max-width: 460px;
+}
+
+.va-dim {
+  color: var(--va-dim);
+}
+
+.va-panel {
+  background: var(--va-panel);
+  border: 1px solid var(--va-line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.va-panel h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.va-count {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--va-bg);
+  color: var(--va-dim);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.va-empty {
+  margin: 0;
+  padding: 18px 0;
+  color: var(--va-dim);
+}
+
+.va table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.va th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--va-dim);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--va-line);
+  white-space: nowrap;
+}
+
+.va td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--va-line);
+  vertical-align: top;
+}
+
+.va tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.va-row.fresh {
+  /* The moment the screen exists for: the client taps send on their phone and
+     this row is already here when they look up. Fades rather than blinks, so it
+     draws the eye once instead of holding it. */
+  animation: va-arrive 8s ease-out;
+}
+
+@keyframes va-arrive {
+  0%,
+  35% {
+    background: #fff3cd;
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.va-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--va-bg);
+  color: var(--va-dim);
+  font-size: 12px;
+}
+
+.va-tag.ok {
+  background: #e4f4e8;
+  color: #237a3b;
+}
