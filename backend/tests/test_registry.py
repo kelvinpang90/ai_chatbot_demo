@@ -64,6 +64,7 @@ def test_retail_is_wired_to_the_erp_and_crm_it_demonstrates():
         "erp_create_credit_note",
         "crm_lookup_customer",
         "crm_create_lead",
+        "request_human_help",
     }
     assert [tool.name for tool in tool_registry.get_tools("retail")] == retail.tools
 
@@ -93,11 +94,13 @@ def test_the_light_tier_bots_run_on_tools_too():
         "hotel_create_booking",
         "hotel_get_booking",
         "hotel_modify_booking",
+        "request_human_help",
     }
     assert set(saas.tools) == {
         "saas_search_known_issues",
         "saas_create_ticket",
         "saas_get_tickets",
+        "request_human_help",
     }
     assert [tool.name for tool in tool_registry.get_tools("hotel")] == hotel.tools
     assert [tool.name for tool in tool_registry.get_tools("saas")] == saas.tools

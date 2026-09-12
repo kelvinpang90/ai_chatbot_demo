@@ -32,6 +32,11 @@ VOICE = "voice"
 INTERACTIVE = "interactive"
 IMAGE = "image"
 DOCUMENT = "document"
+# Not how a customer's words reached us but who wrote the reply: the one row type
+# where "assistant" is a person at the console rather than the model. The
+# customer cannot tell the difference, which is the point of task 20 -- so this
+# column is the only place the difference is kept at all.
+HUMAN = "human"
 
 # The console's ring buffer holds 200 events and forgets them on restart; this is
 # the copy that outlives the demo. Long values are still capped, because one

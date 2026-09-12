@@ -261,6 +261,52 @@ export interface DemoSummary {
 // Closing the demo off (task 19.1). `keyId` is left out in the ordinary case -
 // one customer in the room - and the reply names whoever it actually went to, so
 // a room with three of them does not end on a guess.
+/** One conversation a person has taken off the bot (task 20). */
+export interface HandoverCustomer {
+  key_id: string
+  display_name: string | null
+  bot_id: string | null
+  since: number
+}
+
+export interface HandoverList {
+  customers: HandoverCustomer[]
+}
+
+// Polled rather than derived from the feed: the feed carries the transitions,
+// but a banner driven off it alone would go out whenever the ring buffer rolled
+// or the backend restarted -- and a console that says nothing is happening while
+// the bot sits silent is the one failure this cannot have.
+export function readHandovers(token: string): Promise<HandoverList> {
+  return request<HandoverList>('/console/handover', { headers: { 'X-Console-Token': token } })
+}
+
+export function setHandover(
+  token: string,
+  keyId: string,
+  active: boolean,
+): Promise<HandoverList> {
+  return request<HandoverList>('/console/handover', {
+    method: 'POST',
+    headers: { 'X-Console-Token': token },
+    body: JSON.stringify({ key_id: keyId, active }),
+  })
+}
+
+export interface HandoverReply {
+  key_id: string
+  display_name: string | null
+  text: string
+}
+
+export function replyAsHuman(token: string, keyId: string, text: string): Promise<HandoverReply> {
+  return request<HandoverReply>('/console/reply', {
+    method: 'POST',
+    headers: { 'X-Console-Token': token },
+    body: JSON.stringify({ key_id: keyId, text }),
+  })
+}
+
 export function sendDemoSummary(token: string, keyId?: string): Promise<DemoSummary> {
   return request<DemoSummary>('/console/demo-summary', {
     method: 'POST',

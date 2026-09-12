@@ -133,6 +133,37 @@ class ToolSwitch(BaseModel):
     enabled: bool
 
 
+class HandoverCustomer(BaseModel):
+    """One conversation a person has taken off the bot."""
+
+    key_id: str
+    display_name: str | None
+    bot_id: str | None
+    # Unix seconds. The console turns it into "held for 4 minutes"; the backend
+    # has no business deciding how that reads on a screen it cannot see.
+    since: float
+
+
+class HandoverList(BaseModel):
+    customers: list[HandoverCustomer]
+
+
+class HandoverRequest(BaseModel):
+    key_id: str
+    active: bool
+
+
+class HandoverReplyRequest(BaseModel):
+    key_id: str
+    text: str
+
+
+class HandoverReplyResult(BaseModel):
+    key_id: str
+    display_name: str | None
+    text: str
+
+
 class DemoSummaryRequest(BaseModel):
     """Who to close the demo off with.
 

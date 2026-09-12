@@ -31,7 +31,7 @@
       {"q": "Is breakfast included?", "a": "Breakfast is included for Sea View Suite and above; other room types can add breakfast for RM 45 per person per day."}
     ]
   },
-  "tools": ["hotel_search_rooms", "hotel_create_booking", "hotel_get_booking", "hotel_modify_booking"],
+  "tools": ["hotel_search_rooms", "hotel_create_booking", "hotel_get_booking", "hotel_modify_booking", "request_human_help"],
   "quick_questions": [
     {"zh": "有哪些房型和价格？", "en": "What room types and rates do you have?", "ms": "Apakah jenis bilik dan kadar yang ada?"},
     {"zh": "帮我查一下我的预订", "en": "Check my booking", "ms": "Semak tempahan saya"},

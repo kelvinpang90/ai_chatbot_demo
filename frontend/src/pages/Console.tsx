@@ -4,12 +4,16 @@ import {
   ApiError,
   consoleStreamUrl,
   forgetToken,
+  readHandovers,
   readToolSwitch,
   rememberToken,
+  replyAsHuman,
   sendDemoSummary,
+  setHandover,
   setToolSwitch,
   storedToken,
   type ConsoleEvent,
+  type HandoverCustomer,
 } from '../api'
 
 // How many times to let a stream that has never opened fail before giving up on
@@ -20,6 +24,11 @@ const MAX_FAILED_ATTEMPTS = 3
 // not to hammer a backend that is still coming up, short enough that a redeploy
 // mid-demo costs a few seconds rather than the operator's attention.
 const RECONNECT_DELAY_MS = 3000
+
+// How often the console asks who is in a person's hands. The feed shows the
+// moment it happens; this is what keeps the banner honest afterwards, including
+// across a reconnect or a redeploy that empties the event buffer.
+const HANDOVER_POLL_MS = 5000
 
 // How long the same enquiry takes a person. Not measured, deliberately
 // conservative, and on screen because "it is fast" means nothing next to a
@@ -86,6 +95,11 @@ export default function Console() {
   // nervous double-click would send two.
   const [closing, setClosing] = useState(false)
   const [closingNote, setClosingNote] = useState('')
+  // Who a person has taken off the bot, and what they are typing to them.
+  const [held, setHeld] = useState<HandoverCustomer[]>([])
+  const [draftReply, setDraftReply] = useState('')
+  const [sending, setSending] = useState(false)
+  const [handoverNote, setHandoverNote] = useState('')
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const feedRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
@@ -240,6 +254,56 @@ export default function Console() {
       .catch(() => setSwitchNote('开关没拨动，后端没接受'))
   }
 
+  useEffect(() => {
+    if (!token) return
+    let stale = false
+    const ask = () =>
+      readHandovers(token)
+        .then(({ customers }) => !stale && setHeld(customers))
+        .catch(() => !stale && setHandoverNote('读不到人工接管的状态'))
+    ask()
+    const timer = window.setInterval(ask, HANDOVER_POLL_MS)
+    return () => {
+      stale = true
+      window.clearInterval(timer)
+    }
+  }, [token])
+
+  // One conversation at a time: a demo has one customer in a person's hands, and
+  // a picker for a list that is nearly always of length one would be furniture.
+  const holding = held[0] ?? null
+
+  function sendReply() {
+    if (!holding || sending) return
+    const text = draftReply.trim()
+    if (!text) return
+    setSending(true)
+    replyAsHuman(token, holding.key_id, text)
+      .then(() => {
+        // Cleared only once it has actually gone: the operator is typing in
+        // front of a customer who is waiting, and a box that empties on a send
+        // that failed loses what they wrote.
+        setDraftReply('')
+        setHandoverNote('')
+      })
+      .catch((failure: unknown) => {
+        setHandoverNote(
+          failure instanceof ApiError ? `没发出去：${failure.message}` : '没发出去，后端没接受',
+        )
+      })
+      .finally(() => setSending(false))
+  }
+
+  function releaseHandover() {
+    if (!holding) return
+    setHandover(token, holding.key_id, false)
+      .then(({ customers }) => {
+        setHeld(customers)
+        setHandoverNote('')
+      })
+      .catch(() => setHandoverNote('交不回去，后端没接受'))
+  }
+
   function closeDemo() {
     if (closing) return
     setClosing(true)
@@ -328,6 +392,32 @@ export default function Console() {
         <div className="console-control-banner">
           对照组：所有工具已关闭。同一个 bot、同一个问题，现在它只能从提示词里的 JSON 里答——
           <strong>听起来一样自信，但没有一个数字是查来的。</strong>
+        </div>
+      )}
+
+      {holding && (
+        <div className="console-handover">
+          <div className="console-handover-head">
+            <strong>人工接管中</strong>
+            <span>{holding.display_name ?? holding.key_id}</span>
+            <span className="console-handover-dim">bot 已静默，客户看到的每一句都是你打的</span>
+            <button className="console-switch" onClick={releaseHandover}>
+              交回 bot
+            </button>
+          </div>
+          <div className="console-handover-line">
+            <input
+              value={draftReply}
+              placeholder="打字回复这位客户，Enter 发送"
+              disabled={sending}
+              onChange={(e) => setDraftReply(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendReply()}
+            />
+            <button className="console-switch" disabled={sending} onClick={sendReply}>
+              {sending ? '发送中…' : '发送'}
+            </button>
+          </div>
+          {handoverNote && <span className="console-switch-note">{handoverNote}</span>}
         </div>
       )}
 

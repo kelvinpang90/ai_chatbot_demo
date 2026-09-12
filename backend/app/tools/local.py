@@ -102,6 +102,13 @@ class _Serving:
 
     bot: BotConfig
     store: dict
+    # The record itself, or None for a visitor we hold nothing for. A live
+    # reference for the same reason `store` is: the router saves this object when
+    # the turn ends, so a tool that writes to a second copy has written nothing.
+    # Only one tool needs it, and it needs it for the one fact a tool's own
+    # arguments can never carry -- whose conversation this is. The model must not
+    # be in a position to name somebody else's.
+    customer: "UserProfile | None" = None
 
 
 _serving: ContextVar[_Serving | None] = ContextVar("local_tools_serving", default=None)
@@ -125,7 +132,9 @@ def serving(bot: BotConfig, customer: UserProfile | None):
         store = {}
         if customer is not None:
             customer.profile[bot.id] = store
-    token = _serving.set(_Serving(bot=bot, store=store))
+    token = _serving.set(
+        _Serving(bot=bot, store=store, customer=customer)
+    )
     try:
         yield
     finally:
@@ -137,6 +146,18 @@ def _current() -> _Serving:
     if current is None:
         raise _Refused(NO_TURN)
     return current
+
+
+def customer() -> "UserProfile | None":
+    """Whose conversation this turn belongs to, or None outside one.
+
+    Exported because a tool that hands the conversation to a person has to know
+    which conversation, and must not be able to get that from the model. Returns
+    None rather than raising: "there is nobody here to hand over" is an answer
+    the caller gives the customer, not a failure.
+    """
+    current = _serving.get()
+    return None if current is None else current.customer
 
 
 def _catalogue(key: str) -> list[dict]:

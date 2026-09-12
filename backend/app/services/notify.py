@@ -57,6 +57,11 @@ TEMPLATE_LANGUAGE = "en"
 # the room needs to see that nobody typed it. Same span shape as image.download
 # and voice.transcribe, so the front end learns no new event type.
 PUSH_TOOL = "notify.push"
+# And what it calls a line a person typed on the console. A separate label, not
+# a separate mechanism: the console span, the history entry and the audit row are
+# all the same machinery -- what differs is that the room can see at a glance
+# which of the two happened.
+HUMAN_TOOL = "human.reply"
 
 
 class Template(NamedTuple):
@@ -149,7 +154,7 @@ def dispatch(to: str) -> list[threading.Timer]:
     return timers
 
 
-def send_now(to: str, text: str) -> None:
+def send_now(to: str, text: str, *, label: str = PUSH_TOOL, source: str = audit.TEXT) -> None:
     """Say something to this customer immediately, with no clock in between.
 
     For a push somebody asked for rather than one an event produced: the closing
@@ -163,7 +168,7 @@ def send_now(to: str, text: str) -> None:
     lands on the console as a failure -- which is the right way round, because
     the alternative is a summary that silently went nowhere.
     """
-    _send(to, Push(delay_seconds=0, text=text), window_opened_at=time.time())
+    _send(to, Push(delay_seconds=0, text=text), window_opened_at=time.time(), label=label, source=source)
 
 
 def _payload_for(to: str, push: Push, window_opened_at: float) -> dict | None:
@@ -176,7 +181,14 @@ def _payload_for(to: str, push: Push, window_opened_at: float) -> dict | None:
     return push.template.build(to)
 
 
-def _send(to: str, push: Push, window_opened_at: float) -> None:
+def _send(
+    to: str,
+    push: Push,
+    window_opened_at: float,
+    *,
+    label: str = PUSH_TOOL,
+    source: str = audit.TEXT,
+) -> None:
     """Deliver one push. Runs on a timer thread, long after its turn ended.
 
     Nothing above catches for this one -- there is no request left to fail, and
@@ -192,32 +204,32 @@ def _send(to: str, push: Push, window_opened_at: float) -> None:
             return
         events.emit(
             type=events.TOOL_START,
-            tool=PUSH_TOOL,
+            tool=label,
             tool_use_id=span,
             input={"to": to, "kind": payload.get("type", "")},
         )
         whatsapp_media.send_message(payload)
         events.emit(
             type=events.TOOL_END,
-            tool=PUSH_TOOL,
+            tool=label,
             tool_use_id=span,
             output=push.text,
             duration_ms=int((time.monotonic() - started) * 1000),
             status="ok",
         )
-        _remember(to, push.text)
+        _remember(to, push.text, source)
     except Exception as failure:
         logger.exception("could not push a follow-up to %s", to)
         events.emit(
             type=events.SEND_FAILED,
-            tool=PUSH_TOOL,
+            tool=label,
             tool_use_id=span,
             output=f"{type(failure).__name__}: {failure}",
             status="error",
         )
 
 
-def _remember(to: str, text: str) -> None:
+def _remember(to: str, text: str, source: str = audit.TEXT) -> None:
     """Put the push into the customer's history and into the audit log.
 
     Without it the model is asked "when?" about a message it cannot see itself
@@ -238,6 +250,6 @@ def _remember(to: str, text: str) -> None:
     # and a push belongs to the conversation rather than to a reply.
     audit.begin_for(profile, audit.WHATSAPP)
     try:
-        audit.record_message("assistant", text)
+        audit.record_message("assistant", text, source)
     finally:
         audit.close()

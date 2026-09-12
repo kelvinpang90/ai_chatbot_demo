@@ -30,6 +30,12 @@ OPERATION_TIMEOUT_SECONDS = 1.0
 # within a couple of turns, without anyone touching this service.
 RETRY_AFTER_SECONDS = 30.0
 
+# How many records `everyone` will read. A ceiling rather than a page, because
+# the one caller wants "who is in a person's hands right now" and a demo has
+# never had more customers than this in a week. Past it the console would be
+# showing a list nobody could work through anyway.
+MAX_ENUMERATED = 500
+
 
 @dataclass
 class UserProfile:
@@ -76,6 +82,13 @@ class UserProfile:
     crm_contact_id: str | None = None
     first_seen: float = 0.0
     last_seen: float = 0.0
+    # When a person took this conversation off the bot, or 0 for "the bot has
+    # it". On the record rather than in `session_store` -- which is where the
+    # plan put it -- because that store is this process's memory and nothing
+    # else's: a redeploy mid-demo would drop the flag and the bot would start
+    # answering over the top of whoever was typing. Seven days of Redis is the
+    # wrong lifetime for it too, but far less wrong than one uvicorn restart.
+    handover_since: float = 0.0
     history: list[Message] = field(default_factory=list)
     # Free-form and keyed by bot id, deliberately unschematised: what is worth
     # remembering differs per industry (a delivery address for retail, a budget
@@ -243,6 +256,45 @@ class UserStore:
             except Exception:
                 self._go_offline("delete failed")
         self._memory.pop(key, None)
+
+    def everyone(self, *, limit: int = MAX_ENUMERATED) -> list[UserProfile]:
+        """Every customer currently on file. Demo-scale only, and only one caller.
+
+        The console asks it who is in a person's hands (`handover.waiting`), and
+        it is answered by reading the records rather than by keeping a second
+        list beside them -- two places holding the same truth is how a screen
+        ends up saying the bot is silent while the bot is answering.
+
+        A SCAN rather than KEYS, and capped, because this is on a five-second
+        poll: cheap over a demo's worth of customers and not something to reach
+        for over a real one's.
+        """
+        raws: list[str] = []
+        client = self._redis()
+        if client is not None:
+            try:
+                for key in client.scan_iter(match=f"{KEY_PREFIX}*", count=limit):
+                    raw = client.get(key)
+                    if raw:
+                        raws.append(raw)
+                    if len(raws) >= limit:
+                        break
+            except Exception:
+                self._go_offline("scan failed")
+                raws = []
+        if client is None or not raws:
+            raws = [
+                raw
+                for key in list(self._memory)
+                if (raw := self._memory_read(key)) is not None
+            ][:limit]
+
+        found = []
+        for raw in raws:
+            profile = _deserialise(raw)
+            if profile is not None:
+                found.append(profile)
+        return found
 
     def reset(self) -> None:
         """Forget everything held in memory and re-open the connection. Tests."""

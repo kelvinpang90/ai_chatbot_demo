@@ -15,12 +15,17 @@ from app.models import (
     ConversationSummary,
     DemoSummaryRequest,
     DemoSummaryResult,
+    HandoverCustomer,
+    HandoverList,
+    HandoverReplyRequest,
+    HandoverReplyResult,
+    HandoverRequest,
     HistoryPage,
     ToolCallRecord,
     ToolSwitch,
     TranscriptMessage,
 )
-from app.services import notify
+from app.services import audit, handover, notify
 from app.services.audit import audit_store
 from app.services.user_store import identity, user_store
 from app.tools import registry as tool_registry
@@ -402,3 +407,85 @@ def _conversation_to_close(key: str | None) -> tuple[str, str]:
     if not rows:
         raise HTTPException(status_code=404, detail="No conversation to summarise")
     return rows[0]["key_id"], rows[0]["conversation_id"]
+
+
+@router.get(
+    "/handover", response_model=HandoverList, dependencies=[Depends(require_console_token)]
+)
+def list_handovers() -> HandoverList:
+    """Whose conversations a person is holding right now.
+
+    Polled rather than pushed. The feed carries the transitions as spans, which
+    is what makes the moment visible in the room, but a banner driven off the
+    feed alone would go out whenever the ring buffer rolled or the backend
+    restarted -- and a console that says nothing is happening while the bot sits
+    silent is the one failure this feature cannot have.
+    """
+    return HandoverList(
+        customers=[
+            HandoverCustomer(
+                key_id=row["key_id"],
+                display_name=row["display_name"],
+                bot_id=row["bot_id"],
+                since=row["since"],
+            )
+            for row in handover.waiting()
+        ]
+    )
+
+
+@router.post(
+    "/handover", response_model=HandoverList, dependencies=[Depends(require_console_token)]
+)
+def set_handover(request: HandoverRequest) -> HandoverList:
+    """Take a conversation off the bot, or give it back.
+
+    Giving it back sends the customer nothing, which is the whole acceptance
+    criterion: they were never told a machine had them, and "the robot is back
+    now" is the one sentence that would make the join visible.
+    """
+    profile = user_store.get(_known_key(request.key_id))
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Nobody on file under that number")
+    if request.active:
+        handover.begin(profile, reason="taken over from the console")
+    else:
+        handover.end(profile)
+    return list_handovers()
+
+
+@router.post(
+    "/reply", response_model=HandoverReplyResult, dependencies=[Depends(require_console_token)]
+)
+def reply_as_human(request: HandoverReplyRequest) -> HandoverReplyResult:
+    """Send what the person at the console just typed, as the business.
+
+    Only while they actually hold the conversation. A reply typed into a chat the
+    bot is still answering would arrive beside the bot's own next message, and
+    the customer would be talking to two people who cannot see each other.
+
+    It goes out with no mark on it and is filed as an assistant turn, because to
+    the customer it is simply the answer. The audit log knows better: the row
+    carries `source = human`, which is the only place the difference is kept.
+    """
+    key_id = _known_key(request.key_id)
+    profile = user_store.get(key_id)
+    if not handover.active(profile):
+        raise HTTPException(status_code=409, detail="That conversation is not in your hands")
+    if not profile.phone:
+        raise HTTPException(status_code=409, detail="No phone number on file for that customer")
+
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Nothing to send")
+
+    notify.send_now(profile.phone, text, label=notify.HUMAN_TOOL, source=audit.HUMAN)
+    return HandoverReplyResult(key_id=key_id, display_name=profile.display_name, text=text)
+
+
+def _known_key(key: str) -> str:
+    """The identity a customer is filed under, from whatever the console sent."""
+    try:
+        return identity(key)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Not a phone number") from None

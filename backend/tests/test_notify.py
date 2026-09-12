@@ -134,7 +134,7 @@ def test_a_push_is_recorded_in_the_transcript_as_its_own_turn(_sent):
     with patch.object(audit, "record_message") as recorded:
         notify._send(PHONE, _push(), window_opened_at=time.time())
 
-    assert recorded.call_args.args == ("assistant", TEXT)
+    assert recorded.call_args.args[:2] == ("assistant", TEXT)
 
 
 def test_a_customer_we_no_longer_hold_is_still_sent_their_message(_sent):

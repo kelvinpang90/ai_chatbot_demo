@@ -29,7 +29,7 @@
       {"name": "Enterprise", "price_rm_per_month": null, "seats": null, "features": "Custom contract, dedicated support, SLA"}
     ]
   },
-  "tools": ["saas_search_known_issues", "saas_create_ticket", "saas_get_tickets"],
+  "tools": ["saas_search_known_issues", "saas_create_ticket", "saas_get_tickets", "request_human_help"],
   "quick_questions": [
     {"zh": "我登录不进去，怎么办？", "en": "I can't log in, what should I do?", "ms": "Saya tidak boleh log masuk, apa patut saya buat?"},
     {"zh": "帮我创建一个工单", "en": "Help me create a support ticket", "ms": "Bantu saya cipta tiket sokongan"},

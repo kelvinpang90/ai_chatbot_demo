@@ -9,7 +9,17 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 from app.bots.registry import BotConfig, get_bot, list_bots
 from app.config import settings
 from app.console import events
-from app.services import audit, doc_store, llm, notify, outbox, transcribe, whatsapp, whatsapp_media
+from app.services import (
+    audit,
+    doc_store,
+    handover,
+    llm,
+    notify,
+    outbox,
+    transcribe,
+    whatsapp,
+    whatsapp_media,
+)
 from app.services.user_store import user_store
 from app.session_store import session_store
 from app.tools import erp
@@ -86,6 +96,24 @@ DOCUMENT_TOOL = "document.download"
 # later turn and hangs the PDF back on it. Which is why the filename is in it.
 DOCUMENT_MARKER = "[document]"
 MENU_KEYWORDS = {"menu", "菜单"}
+# Asking for a person, in the words a customer actually uses. A floor under the
+# `request_human_help` tool rather than a replacement for it: the tool is how a
+# bot escalates something it judges to be beyond it, and this is how a customer
+# who has stopped wanting to talk to a machine gets their way whatever the model
+# thinks -- including on the four bots that have no tools to call.
+HUMAN_KEYWORDS = {
+    "人工",
+    "转人工",
+    "找人工",
+    "真人",
+    "找真人",
+    "human",
+    "agent",
+    "real person",
+    "speak to a human",
+    "talk to a human",
+    "orang sebenar",
+}
 
 
 @router.get("")
@@ -533,6 +561,11 @@ def _start_over(sender: Sender) -> None:
     profile.history.clear()
     # Whatever they pick next is a new transcript.
     profile.conversation_id = None
+    # And whoever was holding it does not hold the next one. Without this a
+    # customer who typed `menu` while a person had them would be shown the demo
+    # list and then met with silence for every message after it, because the
+    # flag outlived the conversation it belonged to.
+    handover.end(profile)
     user_store.save(profile)
 
 
@@ -552,6 +585,39 @@ def _remember_identity(profile, sender: Sender) -> None:
         profile.display_name = sender.username
 
 
+def _asked_for_a_person(text: str) -> bool:
+    """Whether the customer has asked to stop talking to a machine.
+
+    Matched as a phrase inside the message rather than as the whole of it, unlike
+    `menu`: nobody types "human" on its own, they type "can I speak to a human
+    please". The words are specific enough that a substring match does not catch
+    ordinary sentences -- "人工" is not a fragment of anything a customer says
+    about earbuds.
+    """
+    said = " ".join(text.lower().split())
+    return any(word in said for word in HUMAN_KEYWORDS)
+
+
+def _record_while_silent(profile, text: str, source: str, reply: str = "") -> None:
+    """File a turn the bot is not answering.
+
+    The transcript has to be whole whoever was typing -- it is the thing the
+    console reads back and the thing the model is replayed when it gets the
+    conversation back. A customer who explained their problem to a person and
+    then finds the bot has never heard of it has been handed back badly.
+    """
+    audit.begin_for(profile, audit.WHATSAPP)
+    try:
+        profile.add_message("user", text)
+        audit.record_message("user", text, source)
+        if reply:
+            profile.add_message("assistant", reply)
+            audit.record_message("assistant", reply)
+        user_store.save(profile)
+    finally:
+        audit.close()
+
+
 def _handle_text_message(
     sender: Sender,
     text: str,
@@ -565,6 +631,21 @@ def _handle_text_message(
 
     profile = user_store.get_or_create(sender.key)
     _remember_identity(profile, sender)
+
+    if handover.active(profile):
+        # A person has this conversation. The message is filed so the transcript
+        # is whole and so the bot has read it when it gets the conversation back,
+        # and then nothing is sent: whoever is typing on the console is the only
+        # voice the customer hears until they hand it over.
+        _record_while_silent(profile, text, source)
+        logger.info("%s is in a person's hands; the bot stays quiet", sender.key)
+        return []
+
+    if _asked_for_a_person(text):
+        logger.info("%s asked for a person", sender.key)
+        handover.begin(profile, reason=text.strip()[:200])
+        _record_while_silent(profile, text, source, reply=handover.HANDED_OVER_MESSAGE)
+        return [whatsapp.build_text_message(sender.key, handover.HANDED_OVER_MESSAGE)]
 
     if profile.bot_id is None:
         logger.info("No bot selected yet for %s, showing bot list", sender.key)

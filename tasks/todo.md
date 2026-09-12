@@ -992,12 +992,48 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **顺带发现，没修**：`frontend/vite.config.ts` 的 dev proxy 是一条路由一条地列的，`/console/history` **不在里面**（任务 37.2 加查询页时漏了）。只影响 `npm run dev`，不影响线上（nginx 转发的是整个 `/console/`）。我只加了自己这条 `/console/demo-summary`，没顺手改成 `/console` 一条通配——那是旁边的代码。要修就一行的事。
 
-- [ ] 🔍 **任务 20：人工接管状态机**
-  文件：`backend/app/session_store.py`（加接管标志）、`backend/app/routers/whatsapp_webhook.py`、测试
-  目标：客户说「找真人」→ 会话标记为人工模式，bot 静默；**用户在导演台上直接打字回复**（走 `send_message()` 外发）；用户发暗号 → bot 接管回来
-  ⚠️ **不能搬 `acuven_aichat` 的 `smb_message_echoes`**。那条线是公司客服号 `+60 11-3618 2335`，跑在 WhatsApp Business App 上（Coexistence），所以人能拿手机直接回。**demo 号 `+60 17-394 8123` 是纯 Cloud API 号码，没有手机 App 可开**，手机上根本回不了它的消息
-  接管入口因此放在导演台（任务 12/27 本来就要做，加一个输入框）。演示效果反而更好：观众同时看到两块屏——客户手机上来消息，大屏上标着「人工接管中」，老板当场敲字
+- [x] 🔍 **任务 20：人工接管状态机**——**2026-09-12 完成，代码侧全绿；真机那一轮属任务 21**
+  文件：`backend/app/services/handover.py`（新增）、`backend/app/tools/human.py`（新增）、`backend/app/routers/whatsapp_webhook.py`、`backend/app/routers/console.py`、`backend/app/services/user_store.py`、`backend/app/services/notify.py`、`backend/app/tools/local.py`、`backend/app/models.py`、`backend/app/services/audit.py`、`frontend/src/pages/Console.tsx` + `.css`、`frontend/src/api.ts`、`frontend/vite.config.ts`、`frontend/nginx.conf`、测试
+  目标：客户说「找真人」→ 会话标记为人工模式，bot 静默；用户在导演台上直接打字回复；用户发暗号 → bot 接管回来
   验收：pytest 覆盖状态迁移；真机走一轮，客户侧全程无感
+
+  **三处偏离规格，都是有理由的**
+
+  1. **标志存 `UserProfile`（Redis），不存 `session_store`**。规格点名了 `session_store`，但那是**这个进程的记忆**：演示中途重部署会把标志丢掉，bot 就在老板正打字的时候抢话。七天的 Redis 对这个标志来说也不是对的寿命，但比一次 uvicorn 重启对得多。有测试专门钉这条（`test_it_survives_the_process_that_started_it`）
+  2. **交回用按钮，不用「暗号」**。暗号是「老板拿手机回」那个假设的遗留物——而规格自己已经推翻了那个假设（demo 号是纯 Cloud API 号，没有手机 App）。操作者在导演台输入框里打字，一个暗号词有被当成正文发给客户的风险；按钮没有
+  3. **多了一条路径：`request_human_help` 工具**。规格只写了关键词。但剧本 3 要的是「**bot 判断超出自动处理范围**」——那不是客户说了某个词，是模型自己的判断。所以两条都有：关键词是**保底**（四个没有工具的 bot 也管用，而且客户铁了心要找人时不取决于模型怎么想），工具是**判断**。工具挂在三个有工具的 bot 上
+
+  **做了什么**
+
+  - **接管中 bot 一个字都不发**——不是道歉，不是「稍等」。客户现在在跟人说话，机器插一句就是把接缝露出来
+  - **但客户说的每一句照样写进 history 和审计**。转录要完整，而且 bot 接回来时得读过——客户跟人讲完了问题，发现 bot 完全不知道，那是交接失败
+  - **交回时不给客户发任何东西**。他从来没被告知过「刚才是机器人」，「机器回来了」是唯一一句会让接缝显形的话。这条就是验收标准里那句「客户侧全程无感」
+  - **导演台那半边**：横幅（显示接管中 + 是谁 + bot 已静默）、输入框、交回按钮。状态**轮询** `GET /console/handover` 拿权威值，同时两端各发一条 `handover` 的 tool span 让事件流即时有反应。**不靠事件流推导状态**——环形缓冲区滚掉或后端重启，屏幕会说「没事」而 bot 仍在静默，那是这个功能唯一不能有的失败
+  - 人打的回复**对客户没有任何标记**，在 history 里记为 assistant——对他来说那就是答复。**只有审计日志知道**：那一行的 `source = human`。导演台上是 `human.reply` 的 span，和 `notify.push` 分得开
+  - `menu` 会**同时解除接管**。不解除的话，客户打了 menu、拿到 demo 列表、然后从此被静默
+
+  **⚠️ 测试当场抓到一个会让整个功能失效的 bug**
+
+  第一版 `handover.begin(key)` 自己从 store 重新读一份记录、置位、保存。而路由手里**还攥着同一条记录的另一个副本**，回合结束时把它存回去——**标志被覆盖，bot 照常回答，日志里什么痕迹都没有**。工具那条路一模一样。
+
+  改成 `begin/end` 直接作用在**调用方手里那个对象**上（和 `local._Serving.store` 是同一个「活引用」手法），`_Serving` 也从只带 `key_id` 改成带整条记录。`test_the_flag_lands_on_the_record_the_router_is_about_to_save` 钉的就是这个。
+
+  **验证到什么程度**
+
+  - 后端 **717 passed / 7 skipped**（基线 691，净增 26）；`test_handover.py` 26 条
+  - **变异测试 15 处，第一轮 14 红 1 漏，补齐后 15/15 全红**。漏的那处是 `request_human_help` 工具本身一条测试都没有
+  - **顺带修掉一个测试卫生问题**：变异运行时有两条跑了 16-22 秒——那说明短路一旦失效，它们会**真的去打模型 API**。补上 patch，现在最慢的测试是 0.25 秒
+  - 前端 `tsc -b && vite build` 过，`oxlint` **0 warnings 0 errors**
+  - **上一轮加的路由守卫立刻见效**：新增的 `/console/handover` 和 `/console/reply` 没登记进 nginx 和 vite 时它当场变红。这正是它存在的理由
+  - ⚠️ **没验的**：
+    - **真机**（属任务 21）。尤其是「客户侧全程无感」这条——只有拿手机走一轮才算数
+    - **导演台那个输入框没在浏览器里点过**，只有 build + lint
+    - **模型会不会主动调 `request_human_help`** 没验过。工具本身有测试，但「bot 遇到超纲的事会不会想到用它」是提示词层面的事，而这类假设本周已经被证伪过一次
+
+  **两个已知边角，没修**
+
+  - 关键词是**子串匹配**，所以「human」出现在别的意思里（"that's a human mistake"）也会触发。演示场景里可接受，而且宁可误触发也不要客户喊了人没人理
+  - 接管标志跟着记录活七天。操作者忘了交回，这个客户七天内都收不到 bot 的回复——导演台横幅一直挂着是唯一的提示
 
 - [ ] **任务 21：批次 03 真机验收**（用户任务）——⚠️ **2026-09-12 主动推送和收尾总结都收到了**，但金额格式和 CRM 措辞当天改过，要重看一眼。转人工那半段等任务 20。见下方「真机验收记录：2026-09-12」
   验收：**验的是能力，不是剧本 3**（那出戏要等批次 04 的餐饮流程）。零售下单后主动推送收到；说「找真人」后 bot 静默、导演台上回一句客户能收到、打暗号后 bot 接管回来

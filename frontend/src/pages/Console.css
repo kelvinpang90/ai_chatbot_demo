@@ -246,3 +246,43 @@
   border-color: var(--console-accent);
   color: var(--console-accent);
 }
+
+/* Task 20. Deliberately loud: while this is on screen the bot is silent, and an
+   operator who does not notice it is a customer nobody is answering. */
+.console-handover {
+  border: 1px solid var(--console-accent);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.console-handover-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.console-handover-dim {
+  color: var(--console-dim);
+  font-size: 12px;
+  margin-right: auto;
+}
+
+.console-handover-line {
+  display: flex;
+  gap: 8px;
+}
+
+.console-handover-line input {
+  flex: 1;
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--console-line);
+  background: var(--console-panel);
+  color: inherit;
+}
