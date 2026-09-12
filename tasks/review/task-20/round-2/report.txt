@@ -1,0 +1,31 @@
+任务 20 / 第 2 轮 / commit 30bfc63
+verdict: changes-requested
+
+报了 8 条，进修复队列 6 条，降级 2 条。
+
+[MUST FIX] N1 P1  backend/app/services/notify.py:202
+    A regression the round-1 fix introduced: task 19.1's closing summary is silently swallowed during a handover while the endpoint reports success.
+    证据: repro repro/test_n1_the_closing_summary_is_swallowed.py::test_the_closing_summary_still_reaches_the_phone
+[MUST FIX] N2 P1  backend/app/routers/whatsapp_webhook.py:104
+    The phrase list that replaced the word list over-corrected: 23 of 25 realistic requests for a person now miss, 转接人工 among them.
+    证据: repro repro/test_n2_n3_the_phrase_list_is_wrong_both_ways.py::test_n2_the_ways_people_actually_ask
+[MUST FIX] N3 P2  backend/app/routers/whatsapp_webhook.py:104
+    The same list still fires on what a prospect says while deciding to buy.
+    证据: repro repro/test_n2_n3_the_phrase_list_is_wrong_both_ways.py::test_n3_deciding_out_loud_is_not_asking_for_a_person
+[MUST FIX] N4 P2  backend/app/routers/whatsapp_webhook.py:0
+    A seventh leak the round-1 fix missed: _handle_interactive_reply sends the greeting and the menu during a handover.
+    证据: repro repro/test_n4_n5_the_seventh_leak_and_the_guards_own_lost_update.py::test_n4_tapping_a_button_does_not_interrupt_a_person
+[MUST FIX] N5 P2  backend/app/routers/whatsapp_webhook.py:0
+    The round-1 mid-turn guard reintroduced the lost update one line below where it fixed it.
+    证据: repro repro/test_n4_n5_the_seventh_leak_and_the_guards_own_lost_update.py::test_n5_a_message_that_arrived_while_the_model_thought_is_not_erased
+[MUST FIX] A1 P2  backend/app/services/handover.py:0
+    The confrontation pass: the flag has no maximum age, and both round-1 findings are symptoms of that rather than of what was fixed.
+    证据: repro repro/test_a1_a_forgotten_takeover_never_lapses.py::test_a_takeover_nobody_ended_lapses_on_its_own
+[降级] N6 P3  frontend/src/pages/Console.tsx:286
+    A selection that has been handed back is never cleared, so the panel silently falls through to a different customer.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）
+[降级] N7 P3  backend/app/services/whatsapp.py:44
+    The P2-3 fix rides on _recipient, whose own docstring says it has never been verified against a live send.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）

@@ -1094,6 +1094,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **修完之后**：**766 passed / 7 skipped**（第 1 轮后 744）；第 2 轮修复的**变异测试 10 处，10/10 全红**。前端 build + lint 干净。
 
+  **两轮的逐条记录已按仓库格式落盘**：`tasks/review/task-20/{round-1,round-2}/`，含 `findings.json`、真跑过的 `repro/`（round-1 对 `b59bdf3` 16 red / 4 green，round-2 对 `30bfc63` 18 red）和 `validate_findings.py` 的输出（7 条/5 入队、8 条/6 入队）。`tasks/review/task-20/README.md` 写明了这两轮**跟自动流程的差异**——最实质的一条是**隔离弱化**：原流程给审查方一个改不到被审代码的独立 worktree，这两轮只有一句「不要改」的指令。
+
   **审查方的结论：现在仍不建议上真机**，按它给的顺序 hold 在 N1、N5、N2、A1——**这四条都已经修了**。它没有再复验这一轮（第 2 轮是协议的轮次上限）。
 
   **两个已知边角，没修**

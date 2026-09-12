@@ -1,0 +1,135 @@
+{
+  "task": "20",
+  "round": "1",
+  "commit": "b59bdf3",
+  "base": "c9307f9",
+  "verdict": "changes-requested",
+  "suite_result": "717 passed, 7 skipped, 2 warnings in 8.90s (reviewer's own run against the unmodified commit)",
+  "reviewer": "Claude Code subagent, driven from tasks/review/reviewer_prompt.md. NOT the hook flow: the Stop hook that normally starts this cannot fire in a background session, so the developer launched the reviewer by hand. Same agent the automation uses; weaker isolation, since it ran in the developer's worktree under an instruction not to write rather than in a disposable one of its own.",
+  "findings": [
+    {
+      "id": "P1-1",
+      "severity": "P1",
+      "category": "correctness",
+      "file": "backend/app/routers/whatsapp_webhook.py",
+      "line": 104,
+      "summary": "The words that hand a conversation to a person are matched as substrings, so ordinary sentences silence the bot for seven days.",
+      "failure": "A customer types 你们这是人工智能吗？ -- Chinese for \"is this an AI?\", and the likeliest first question anybody asks an AI demo. 人工智能 contains 人工, so the bot sends the transfer line and goes mute until somebody opens the console or the customer types menu. 'I bought it from your agent last week' and 'is this suitable for human resources teams?' do the same, and realestate's own persona (realestate.json:16,31) instructs the bot to offer the word agent while having no tools, so the keyword list is its only path. The docstring asserted 人工 was not a fragment of anything a customer says; that premise was false and untested.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p1_1_ordinary_words_silence_the_bot.py::test_an_ordinary_sentence_does_not_ask_for_a_person",
+        "observed_failure": "/repro/test_p1_1_ordinary_words_silence_the_bot.py:24: AssertionError: 你们这是人工智能吗？\n/repro/test_p1_1_ordinary_words_silence_the_bot.py:24: AssertionError: I bought it from your agent last week, can I return it?\n/repro/test_p1_1_ordinary_words_silence_the_bot.py:24: AssertionError: is this suitable for human resources teams?\n6 failed (the four positive cases in the same file pass, so the list is not simply broken -- it is imprecise)"
+      },
+      "queue": true,
+      "effective_severity": "P1",
+      "validator_notes": []
+    },
+    {
+      "id": "P1-2",
+      "severity": "P1",
+      "category": "correctness",
+      "file": "backend/app/routers/whatsapp_webhook.py",
+      "line": 295,
+      "summary": "Six paths let the bot speak while a person holds the conversation, and what they send are the lines that announce there is a bot.",
+      "failure": "The handover guard sits inside _handle_text_message; five paths return before it -- an unsupported message type, a voice note that will not transcribe, a photo or document that will not download, and the daily cap. Each sends its canned apology over the top of whoever is typing on the console. The sixth is worse: notify._send has no handover check, so a push queued by an order placed a minute earlier fires during the handover and interrupts the human with 'your order is on its way'. The commit message claimed the bot sends 'nothing at all, not even an apology'; those five strings are the apologies.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p1_2_the_bot_speaks_during_a_handover.py",
+        "observed_failure": "/repro/test_p1_2_the_bot_speaks_during_a_handover.py:41: AssertionError: [{'text': {'body': '抱歉，这个 demo 只能读文字、语音、图片和 PDF…'}, 'to': '60129990101'}]\n/repro/test_p1_2_the_bot_speaks_during_a_handover.py:53: AssertionError: [{'text': {'body': '您今天在这个 demo 的消息次数已用完…'}, 'to': '60129990102'}]\n6 failed"
+      },
+      "queue": true,
+      "effective_severity": "P1",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-1",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/services/handover.py",
+      "line": 132,
+      "summary": "waiting() sorts oldest first and the console types to the first row, so the default target is whichever conversation nobody handed back.",
+      "failure": "One customer tripped P1-1 last week and was never handed back. Today's prospect asks for a person. The banner names last week's customer and every line the owner types in front of the room lands on a stranger's phone.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_console_targets_and_reach.py::test_p2_1_the_console_default_is_the_newest_handover",
+        "observed_failure": "/repro/test_p2_console_targets_and_reach.py:42: AssertionError: assert '60129990101' == '60129990202'"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-3",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/routers/console.py",
+      "line": 476,
+      "summary": "A customer who hides their phone number can be silenced by the keyword path and then answered by nobody.",
+      "failure": "reply_as_human requires profile.phone and 409s without it, but BSUID records are first-class everywhere else -- whatsapp._recipient addresses them and the router keys on key_id. The bot is silent because the handover is real; the console cannot answer because the endpoint refuses. The customer is stuck.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_console_targets_and_reach.py::test_p2_3_a_customer_with_no_phone_number_can_still_be_answered",
+        "observed_failure": "/repro/test_p2_console_targets_and_reach.py:56: AssertionError: {'detail': 'No phone number on file for that customer'}"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-4",
+      "severity": "P2",
+      "category": "security",
+      "file": "backend/app/routers/console.py",
+      "line": 49,
+      "summary": "The console token is accepted from the query string on endpoints that now silence the bot and put arbitrary text on a customer's phone.",
+      "failure": "The comment justifying a URL-borne token still says everything under the router is read-only. It stopped being true with task 19.1 and is now sharper: POST /console/reply?token=... with no header returns 200 and dispatches the text. The token sits in the nginx access log and in browser history by design, and it grants 'message any customer this demo has seen in the last seven days'.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_console_targets_and_reach.py::test_p2_4_a_token_in_the_url_cannot_write",
+        "observed_failure": "/repro/test_p2_console_targets_and_reach.py:71: AssertionError: a log-visible token wrote to a customer's phone\n2 failed (/console/reply and /console/handover)"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "P2-2",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "frontend/src/pages/Console.tsx",
+      "line": 274,
+      "summary": "Only the first held conversation is ever shown; anyone past it is silent to the bot and invisible to the console.",
+      "failure": "held[1..] is dropped. With P1-1 misfiring, more than one held conversation is not hypothetical, and the ones past the first are answered by nobody at all.",
+      "evidence": {
+        "kind": "read-only",
+        "note": "Read from the component; no repro. Fixed alongside P2-1 with a picker."
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "只读代码推测，不进修复队列（可以作为线索）"
+      ]
+    },
+    {
+      "id": "P2-5",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/routers/console.py",
+      "line": 478,
+      "summary": "WITHDRAWN BY THE REVIEWER in round 2. The claimed failure (a reply over 4096 characters failing at Meta) does not happen: whatsapp._body already clips.",
+      "failure": "The reviewer asserted the send would fail at Meta without tracing the send path. What is real is the residual half -- an operator's sentence silently truncated -- and the fix kept for it is a maxLength on the input.",
+      "evidence": {
+        "kind": "read-only",
+        "note": "Reviewer's own retraction, phase 2: 'I asserted it fails at Meta without ever tracing the send path.'"
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "只读代码推测，不进修复队列（可以作为线索）"
+      ]
+    }
+  ],
+  "self_check": "The reviewer re-introduced the lost-update bug the commit claims to fix and confirmed five tests went red, so that guard is real rather than tautological. It also ran the whole scene in-process against a real Redis. Its own phase-2 self-assessment: it is good at 'what input produces what wrong output' and weak at 'what invariant is missing' -- both of its misses were missing-invariant findings, and it filed the symptoms of the uncapped flag without ever filing the flag.",
+  "phase2": "Run separately after the developer had fixed round 1; see round-2/findings.json.",
+  "queued_count": 5
+}

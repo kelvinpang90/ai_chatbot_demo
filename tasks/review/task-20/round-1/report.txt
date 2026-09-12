@@ -1,0 +1,28 @@
+任务 20 / 第 1 轮 / commit b59bdf3
+verdict: changes-requested
+
+报了 7 条，进修复队列 5 条，降级 2 条。
+
+[MUST FIX] P1-1 P1  backend/app/routers/whatsapp_webhook.py:104
+    The words that hand a conversation to a person are matched as substrings, so ordinary sentences silence the bot for seven days.
+    证据: repro repro/test_p1_1_ordinary_words_silence_the_bot.py::test_an_ordinary_sentence_does_not_ask_for_a_person
+[MUST FIX] P1-2 P1  backend/app/routers/whatsapp_webhook.py:295
+    Six paths let the bot speak while a person holds the conversation, and what they send are the lines that announce there is a bot.
+    证据: repro repro/test_p1_2_the_bot_speaks_during_a_handover.py
+[MUST FIX] P2-1 P2  backend/app/services/handover.py:132
+    waiting() sorts oldest first and the console types to the first row, so the default target is whichever conversation nobody handed back.
+    证据: repro repro/test_p2_console_targets_and_reach.py::test_p2_1_the_console_default_is_the_newest_handover
+[MUST FIX] P2-3 P2  backend/app/routers/console.py:476
+    A customer who hides their phone number can be silenced by the keyword path and then answered by nobody.
+    证据: repro repro/test_p2_console_targets_and_reach.py::test_p2_3_a_customer_with_no_phone_number_can_still_be_answered
+[MUST FIX] P2-4 P2  backend/app/routers/console.py:49
+    The console token is accepted from the query string on endpoints that now silence the bot and put arbitrary text on a customer's phone.
+    证据: repro repro/test_p2_console_targets_and_reach.py::test_p2_4_a_token_in_the_url_cannot_write
+[降级] P2-2 P3  frontend/src/pages/Console.tsx:274
+    Only the first held conversation is ever shown; anyone past it is silent to the bot and invisible to the console.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）
+[降级] P2-5 P3  backend/app/routers/console.py:478
+    WITHDRAWN BY THE REVIEWER in round 2. The claimed failure (a reply over 4096 characters failing at Meta) does not happen: whatsapp._body already clips.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）

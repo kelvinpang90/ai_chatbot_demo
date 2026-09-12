@@ -1,0 +1,152 @@
+{
+  "task": "20",
+  "round": "2",
+  "commit": "30bfc63",
+  "base": "b59bdf3",
+  "verdict": "changes-requested",
+  "suite_result": "744 passed, 7 skipped, 2 warnings in 4.55s (reviewer's own run). All ten round-1 fixes re-verified as fixed.",
+  "reviewer": "Same agent, resumed. Phase 2 (confrontation) and re-verification in one pass.",
+  "findings": [
+    {
+      "id": "N1",
+      "severity": "P1",
+      "category": "correctness",
+      "file": "backend/app/services/notify.py",
+      "line": 202,
+      "summary": "A regression the round-1 fix introduced: task 19.1's closing summary is silently swallowed during a handover while the endpoint reports success.",
+      "failure": "The new guard keys on the span label, and send_demo_summary calls send_now with the default one. Hand over, show the human reply, press 结束演示: the console says the summary went to Kelvin and the phone gets nothing. Batch 03's showpiece, dead at the most likely moment to press it.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_n1_the_closing_summary_is_swallowed.py::test_the_closing_summary_still_reaches_the_phone",
+        "observed_failure": "AssertionError: Expected 'send_message' to have been called once. Called 0 times."
+      },
+      "queue": true,
+      "effective_severity": "P1",
+      "validator_notes": []
+    },
+    {
+      "id": "N2",
+      "severity": "P1",
+      "category": "correctness",
+      "file": "backend/app/routers/whatsapp_webhook.py",
+      "line": 104,
+      "summary": "The phrase list that replaced the word list over-corrected: 23 of 25 realistic requests for a person now miss, 转接人工 among them.",
+      "failure": "转接人工 is how every Malaysian bank chat words it. Also missed: 能不能转真人, 人工在吗, get me a human, speak to an agent, can I chat with a human, nak cakap dengan manusia, boleh saya bercakap dengan wakil. banking, food and realestate have no tool at all, so this list is their only path to a person.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_n2_n3_the_phrase_list_is_wrong_both_ways.py::test_n2_the_ways_people_actually_ask",
+        "observed_failure": "/repro/test_n2_n3_the_phrase_list_is_wrong_both_ways.py:27: AssertionError: 转接人工\n... 8 failed"
+      },
+      "queue": true,
+      "effective_severity": "P1",
+      "validator_notes": []
+    },
+    {
+      "id": "N3",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/routers/whatsapp_webhook.py",
+      "line": 104,
+      "summary": "The same list still fires on what a prospect says while deciding to buy.",
+      "failure": "'Let me talk to someone in my team and get back to you', 'I need to speak to someone in accounts first' and 'I'll talk to someone about the budget' all hand the conversation to a person -- the bot goes silent at the close. So do 我想找个人一起拼单 and a Malay sentence about the courier.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_n2_n3_the_phrase_list_is_wrong_both_ways.py::test_n3_deciding_out_loud_is_not_asking_for_a_person",
+        "observed_failure": "/repro/test_n2_n3_the_phrase_list_is_wrong_both_ways.py:42: AssertionError: Let me talk to someone in my team and get back to you\n... 6 failed"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "N4",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/routers/whatsapp_webhook.py",
+      "line": 0,
+      "summary": "A seventh leak the round-1 fix missed: _handle_interactive_reply sends the greeting and the menu during a handover.",
+      "failure": "A customer taken over before they had picked a demo taps one off the list. Two payloads go out over the top of whoever is typing. The round-1 record claimed all canned replies went through the new guard; that was never true.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_n4_n5_the_seventh_leak_and_the_guards_own_lost_update.py::test_n4_tapping_a_button_does_not_interrupt_a_person",
+        "observed_failure": "AssertionError: [{'text': {'body': 'This is a demo: products, stock and orders come from a real ERP s...'}}, {'type': 'interactive'}]"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "N5",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/routers/whatsapp_webhook.py",
+      "line": 0,
+      "summary": "The round-1 mid-turn guard reintroduced the lost update one line below where it fixed it.",
+      "failure": "Two messages in flight. B is filed by the silent path while A is still in the model; A then saves the copy it loaded before B existed and B's message is erased. Verified: the history holds ['how much?'] only, and the customer's new delivery address is gone. It also contradicts the feature's own stated principle that everything the customer says while a person holds the conversation is written down.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_n4_n5_the_seventh_leak_and_the_guards_own_lost_update.py::test_n5_a_message_that_arrived_while_the_model_thought_is_not_erased",
+        "observed_failure": "/repro/...:61: AssertionError: ['how much?']"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "A1",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/services/handover.py",
+      "line": 0,
+      "summary": "The confrontation pass: the flag has no maximum age, and both round-1 findings are symptoms of that rather than of what was fixed.",
+      "failure": "The round-1 record called this an accepted edge, mitigated by the console banner. The banner is visible only to a console that is open, with the right token, on the day -- nobody is at one next week. A message that muted the bot muted it for seven days, and the console's default target was whichever conversation somebody forgot to hand back. Round one changed who held[0] is; it did not remove the stale row, and nothing tested that a handover ever ends by itself.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_a1_a_forgotten_takeover_never_lapses.py::test_a_takeover_nobody_ended_lapses_on_its_own",
+        "observed_failure": "/repro/test_a1_a_forgotten_takeover_never_lapses.py:26: AssertionError: assert True is False"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    },
+    {
+      "id": "N6",
+      "severity": "P3",
+      "category": "correctness",
+      "file": "frontend/src/pages/Console.tsx",
+      "line": 286,
+      "summary": "A selection that has been handed back is never cleared, so the panel silently falls through to a different customer.",
+      "failure": "held.find(...) ?? held[0]. The poll runs every five seconds, so this can happen between a keystroke and Enter -- the same shape as P2-1 with a smaller window.",
+      "evidence": {
+        "kind": "read-only",
+        "note": "Reviewer marked this READ-ONLY SPECULATION. Fixed anyway; it is two lines."
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "只读代码推测，不进修复队列（可以作为线索）"
+      ]
+    },
+    {
+      "id": "N7",
+      "severity": "P3",
+      "category": "correctness",
+      "file": "backend/app/services/whatsapp.py",
+      "line": 44,
+      "summary": "The P2-3 fix rides on _recipient, whose own docstring says it has never been verified against a live send.",
+      "failure": "The first BSUID handover reply is where that guess gets tested. Pre-existing rather than introduced here.",
+      "evidence": {
+        "kind": "read-only",
+        "note": "Not fixed. Recorded as a known unknown; it needs a live send to settle."
+      },
+      "queue": false,
+      "effective_severity": "P3",
+      "validator_notes": [
+        "只读代码推测，不进修复队列（可以作为线索）"
+      ]
+    }
+  ],
+  "self_check": "Phase 2 self-assessment, in the reviewer's words: it is good at 'what input produces what wrong output' and weak at 'what invariant is missing'. Both of its misses (the uncapped flag; the unverified assumption that the model would reach for the tool) were things the developer had written down unprompted and it had not filed. It also withdrew its own round-1 P2-5 after tracing the send path it had not traced the first time.",
+  "phase2": "Done in this round. The reviewer's hold list, in order, was N1, N5, N2 and A1; all four are addressed in e7d9da5. It did not re-verify that commit -- round 2 is the protocol's ceiling.",
+  "queued_count": 6
+}
