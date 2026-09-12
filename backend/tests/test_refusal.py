@@ -169,7 +169,9 @@ def test_a_bot_with_no_tools_gets_the_same_contract_as_one_with_tools():
     """`food` answers out of its context data alone, which is exactly the bot
     with the least to fall back on and the most room to improvise."""
     toolless = get_bot("food")
-    assert toolless.tools == []
+    # One tool, and it is the way out rather than a way to answer: `food` still
+    # has nothing to look anything up in, which is the point of this test.
+    assert toolless.tools == ["request_human_help"]
 
     assert llm.NEVER_INVENT in llm.build_system_blocks(toolless, None)[0]["text"]
 

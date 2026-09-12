@@ -118,11 +118,13 @@ def test_retail_no_longer_carries_the_answers_it_is_supposed_to_look_up():
     assert "products" not in retail.context_data
 
 
-def test_a_bot_with_no_tools_declared_still_gets_an_empty_list():
-    """The pre-tool path is a contract, not a gap: bots without tools answer in
-    one turn exactly as they did before the runner existed."""
-    assert registry.get_bot("banking").tools == []
-    assert tool_registry.get_tools("banking") == []
+def test_a_bot_nobody_has_heard_of_gets_an_empty_list():
+    """The pre-tool path is a contract, not a gap: a bot without tools answers in
+    one turn exactly as it did before the runner existed.
+
+    Every bot on the menu now declares `request_human_help` (task 20), so the
+    empty case is reached by asking for a bot that does not exist rather than by
+    naming one that happens to have nothing."""
     assert tool_registry.get_tools("does-not-exist") == []
 
 

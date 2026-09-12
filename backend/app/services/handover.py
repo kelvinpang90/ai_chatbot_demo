@@ -32,6 +32,20 @@ logger = logging.getLogger(__name__)
 # half of scene 3 that happens on the big screen rather than on the phone.
 HANDOVER_TOOL = "handover"
 
+# How long a takeover can last before it lapses on its own.
+#
+# The round-1 record called a flag with no ceiling an accepted edge, with the
+# console banner as the mitigation. Round two took that apart: the banner is
+# visible only to a console that is open, with the right token, on the day, and
+# nobody is at one next week. Both of round one's other findings trace back here
+# -- a message that muted the bot muted it for seven days, and the console's
+# default target was whichever conversation somebody forgot to hand back.
+#
+# Two hours because a demo is watched continuously and lasts minutes. Anything
+# still held after two hours was forgotten rather than held, and a customer whose
+# messages go nowhere is worse served than one the bot answers imperfectly.
+MAX_HANDOVER_SECONDS = 2 * 60 * 60
+
 # What the customer is told when they ask for a person. Three languages, like
 # every other line the model did not write -- and the only one either side of
 # this sends automatically: going back to the bot says nothing at all, because a
@@ -106,8 +120,16 @@ def end(profile) -> bool:
 
 
 def active(profile) -> bool:
-    """Whether this customer's conversation is in a person's hands right now."""
-    return bool(profile is not None and profile.handover_since)
+    """Whether this customer's conversation is in a person's hands right now.
+
+    Lapsed takeovers read as false rather than being cleaned up here: this is
+    asked on the hot path of every inbound message, and a read that writes is a
+    read that can fail. The row is dropped from the console's list by `waiting`
+    and the field is cleared the next time anything saves the record.
+    """
+    if profile is None or not profile.handover_since:
+        return False
+    return (time.time() - profile.handover_since) < MAX_HANDOVER_SECONDS
 
 
 def waiting() -> list[dict]:
@@ -119,7 +141,7 @@ def waiting() -> list[dict]:
     """
     held = []
     for profile in user_store.everyone():
-        if profile.handover_since:
+        if active(profile):
             held.append(
                 {
                     "key_id": profile.key_id,

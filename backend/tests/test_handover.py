@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.bots import registry
 from app.bots.registry import get_bot
 from app.console import events
 from app.main import app
@@ -576,3 +577,151 @@ def test_a_token_in_the_url_cannot_write(_console_token, method, path, body):
 def test_a_token_in_the_url_can_still_read(_console_token):
     """EventSource cannot send a header, so reading has to keep accepting it."""
     assert client.get(f"/console/handover?token={TOKEN}").status_code == 200
+
+
+# -- what round two of the cold review found (2026-09-12) ----------------------
+
+
+def test_the_closing_summary_is_not_swallowed_by_a_handover(_console_token):
+    """N1, a regression the round-one fix introduced. The guard keyed on the
+    label, so task 19.1's summary -- sent with the default one -- was dropped
+    while the endpoint went on reporting success: the console said it had gone
+    to Kelvin and the phone got nothing."""
+    _customer()
+    _take_over(PHONE)
+
+    with patch.object(notify.whatsapp_media, "send_message") as send:
+        notify.send_now(PHONE, "📋 刚才这 10 分钟里…")
+
+    send.assert_called_once()
+
+
+def test_only_the_bots_own_timed_push_is_dropped():
+    """What separates the two is not who they are addressed to but who started
+    them: a timer, or a person's finger."""
+    phone = "60129998030"
+    _customer(phone)
+    _take_over(phone)
+
+    with patch.object(notify.whatsapp_media, "send_message") as send:
+        notify._send(phone, notify.Push(delay_seconds=30, text="您的订单已确认"), time.time())
+
+    send.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "转接人工",  # how every Malaysian bank chat words it
+        "能不能转真人",
+        "人工在吗",
+        "get me a human",
+        "speak to an agent",
+        "can I chat with a human",
+        "nak cakap dengan manusia",
+        "boleh saya bercakap dengan wakil",
+    ],
+)
+def test_the_ways_people_actually_ask_for_a_person(said):
+    """N2. The phrase list that replaced the word list missed 23 of 25 realistic
+    phrasings -- an over-correction, and on the bots with no tools it was the
+    only path there was."""
+    assert _asked_for_a_person(said) is True, said
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Let me talk to someone in my team and get back to you",
+        "I need to speak to someone in accounts first",
+        "I'll talk to someone about the budget",
+        "我想找个人一起拼单",
+        "我找同事帮我下单",
+        "boleh saya cakap dengan orang yang hantar barang tu?",
+        "I want a personal recommendation",
+    ],
+)
+def test_deciding_out_loud_is_not_asking_for_a_person(said):
+    """N3, the other direction. The first three are what a prospect says as they
+    are deciding to buy -- the bot went silent at the close."""
+    assert _asked_for_a_person(said) is False, said
+
+
+def test_every_bot_can_reach_a_person():
+    """N2's structural half. The keyword floor has now been wrong in both
+    directions; judgement belongs to the model, and the light-tier bots are the
+    ones least able to cope and so most in need of the way out."""
+    for bot in registry.list_bots():
+        assert "request_human_help" in bot.tools, bot.id
+
+
+def test_tapping_a_button_does_not_interrupt_a_person():
+    """N4, the seventh leak and the only one that is not an apology: a customer
+    taken over before they had picked a demo taps one off the list."""
+    phone = "60129998031"
+    profile = user_store.get_or_create(phone)
+    user_store.save(profile)
+    _take_over(phone)
+
+    sent = dispatch_message(
+        {
+            "id": f"wamid.{phone}.31",
+            "from": phone,
+            "type": "interactive",
+            "interactive": {"type": "list_reply", "list_reply": {"id": "retail", "title": "Retail"}},
+        }
+    )
+
+    assert sent == []
+
+
+def test_a_message_that_arrived_while_the_model_thought_is_not_erased():
+    """N5, the mid-turn guard's own lost update -- the bug it was written to
+    prevent, reintroduced one line lower. Two messages in flight: the second is
+    filed by the silent path, and the first then saves the copy it loaded before
+    the second existed."""
+    phone = "60129998032"
+    _customer(phone)
+
+    def take_over_and_let_another_message_land(*_args, **_kwargs):
+        _take_over(phone)
+        # The second message, handled by the silent path while this turn runs.
+        dispatch_message(_said(phone, "the address is 12 Jalan Ampang", seq=33))
+        return "Sorry, I'm not sure."
+
+    with patch.object(llm, "get_reply", side_effect=take_over_and_let_another_message_land):
+        dispatch_message(_said(phone, "how much?", seq=32))
+
+    said = [m.content for m in user_store.get(phone).history]
+    assert "the address is 12 Jalan Ampang" in said
+    assert "how much?" in said
+    assert "Sorry, I'm not sure." not in said
+
+
+def test_a_takeover_nobody_ended_lapses_on_its_own():
+    """A1, the root the review pressed on in the confrontation pass: both
+    round-one findings trace back to a flag with no ceiling, and the mitigation
+    recorded for it -- the console banner -- is visible only to somebody with a
+    console open on the day."""
+    phone = "60129998033"
+    profile = _customer(phone)
+    _take_over(phone)
+
+    profile = user_store.get(phone)
+    profile.handover_since = time.time() - handover.MAX_HANDOVER_SECONDS - 60
+    user_store.save(profile)
+
+    assert handover.active(user_store.get(phone)) is False
+    assert [row["key_id"] for row in handover.waiting()] == []
+
+
+def test_a_takeover_still_inside_the_ceiling_holds():
+    phone = "60129998034"
+    profile = _customer(phone)
+    _take_over(phone)
+
+    profile = user_store.get(phone)
+    profile.handover_since = time.time() - handover.MAX_HANDOVER_SECONDS + 600
+    user_store.save(profile)
+
+    assert handover.active(user_store.get(phone)) is True

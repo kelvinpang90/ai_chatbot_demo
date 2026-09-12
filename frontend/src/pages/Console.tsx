@@ -270,6 +270,13 @@ export default function Console() {
         .then(({ customers }) => {
           if (stale) return
           setHeld(customers)
+          // A selection that has been handed back stops being a selection. Left
+          // set, `holding` silently falls through to whoever is next on the list
+          // -- which can happen between a keystroke and Enter, because this runs
+          // every five seconds.
+          setSelected((current) =>
+            current && customers.some((c) => c.key_id === current) ? current : null,
+          )
           // A poll that worked clears a note left by one that did not, or a
           // single blip pins the error string there for the rest of the session.
           setHandoverNote((note) => (note === POLL_FAILED ? '' : note))

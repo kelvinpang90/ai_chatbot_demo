@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -97,45 +98,37 @@ DOCUMENT_TOOL = "document.download"
 DOCUMENT_MARKER = "[document]"
 MENU_KEYWORDS = {"menu", "菜单"}
 # Asking for a person, in the words a customer actually uses -- and only when
-# they are actually asking. A floor under the `request_human_help` tool rather
-# than a replacement for it: the tool is how a bot escalates something it judges
-# to be beyond it, and this is how a customer who has stopped wanting to talk to
-# a machine gets their way whatever the model thinks, including on the three bots
-# that have no tools to call.
+# they are actually asking. A floor under the `request_human_help` tool, never a
+# replacement for it: the tool is where judgement lives, and the model reads
+# "能不能帮我转接一下人工" the way a person does. This only has to catch the
+# unambiguous cases without catching anything else.
 #
-# Phrases, never bare nouns, and that is the whole of what this list learned the
-# hard way. The first version matched "human", "agent" and "人工" as substrings,
-# which silences the bot for seven days on:
-#   你们这是人工智能吗?            -- "is this an AI?", the single likeliest
-#                                     question anybody asks an AI demo
-#   I bought it from your agent    -- and realestate's own persona tells the bot
-#                                     to offer exactly this word
-#   human resources teams
-# A customer who wants a person says so with a verb. A customer using one of
-# these words about something else never does.
-HUMAN_PHRASES = (
-    "转人工",
-    "找人工",
-    "要人工",
-    "人工客服",
-    "人工服务",
-    "找真人",
-    "要真人",
-    "真人客服",
-    "找个人",
-    "找同事",
-    "speak to a human",
-    "talk to a human",
-    "speak to a person",
-    "talk to a person",
-    "speak to someone",
-    "talk to someone",
-    "real person",
-    "human agent",
-    "customer service agent",
-    "cakap dengan orang",
-    "nak orang sebenar",
-    "orang sebenar",
+# It has now been wrong in both directions, which is the argument for keeping it
+# narrow and giving every bot the tool:
+#
+#   round 1, bare words as substrings -- 人工智能 ("artificial intelligence")
+#            contains 人工, so "is this an AI?" muted the bot for seven days
+#   round 2, fixed phrases -- 23 of 25 realistic phrasings missed, 转接人工
+#            among them, which is how every Malaysian bank chat words it
+#
+# So: the Chinese nouns with the one compound that is not a request excluded,
+# the English nouns only next to a verb that asks for one, and in Malay the words
+# that mean a person rather than the word for person -- "cakap dengan orang yang
+# hantar barang" is about the courier, not about us.
+HUMAN_REQUEST = re.compile(
+    r"""
+    人工(?!智能|智慧|成本|费)                    # 转接人工 / 人工客服 / 人工在吗
+  | 真人                                          # 转真人 / 真人客服
+  | 转\s*接?\s*(客服|专员)                        # 转接客服
+  | \b(speak|talk|chat|connect|transfer|escalate|get|put|need|want)\b
+    [\s\w,'-]{0,25}
+    \b(human|agent|real\s+person|live\s+person|person)\b
+  | \b(human|live|customer\s+service)\s+agent\b
+  | \bmanusia\b                                   # Malay: a human being
+  | \borang\s+sebenar\b                           # a real person
+  | \bwakil\b                                     # a representative
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
@@ -629,14 +622,12 @@ def _canned(sender: "Sender", message: str) -> list[dict]:
 def _asked_for_a_person(text: str) -> bool:
     """Whether the customer has asked to stop talking to a machine.
 
-    Matched as a phrase inside the message rather than as the whole of it, unlike
+    Matched inside the message rather than against the whole of it, unlike
     `menu`: nobody types this on its own, they type "can I speak to a human
-    please". Which is also why the list holds phrases and not words -- see
-    `HUMAN_PHRASES` for the three ordinary sentences the word version muted the
-    bot on, one of them the likeliest question at an AI demo.
+    please". See `HUMAN_REQUEST` for what two rounds of review taught this about
+    being wrong in each direction.
     """
-    said = " ".join(text.lower().split())
-    return any(phrase in said for phrase in HUMAN_PHRASES)
+    return HUMAN_REQUEST.search(" ".join(text.split())) is not None
 
 
 def _record_while_silent(profile, text: str, source: str, reply: str = "") -> None:
@@ -724,14 +715,21 @@ def _handle_text_message(
         taken = user_store.get(sender.key)
         if handover.active(taken):
             logger.info("dropping the bot's answer to %s: a person took over mid-turn", sender.key)
-            # The flag is carried onto the copy about to be saved, or this save
-            # is the lost update all over again -- this object was loaded before
-            # the console was clicked and has a zero where the truth is.
-            profile.handover_since = taken.handover_since
+            # Written onto the record as it is NOW, not onto the copy this turn
+            # has been holding. The first version saved the stale copy and was
+            # the lost update all over again one line lower: a second message
+            # arriving while the model thought would be filed by the silent path
+            # and then erased by this save. Round two of the review demonstrated
+            # it -- the customer's new delivery address, gone.
+            #
             # What the customer said is kept; the answer nobody sent is not. The
             # colleague picking this up needs to read the question, and the model
-            # must not be replayed a reply that never left the building.
-            user_store.save(profile)
+            # must not be replayed a reply that never left the building. The one
+            # cost is order: a message that arrived while this turn ran is filed
+            # ahead of this one. Nothing is lost, which is the part that matters,
+            # and the audit log has both in the order they really came.
+            taken.add_message("user", text)
+            user_store.save(taken)
             return []
         # Built before it is recorded, deliberately. A reply WhatsApp will not carry
         # must not become part of this customer's history either: the turn is
@@ -772,6 +770,14 @@ def _handle_interactive_reply(sender: Sender, interactive: dict) -> list[dict]:
 
     profile = user_store.get_or_create(sender.key)
     _remember_identity(profile, sender)
+
+    if handover.active(profile):
+        # The seventh leak, and the only one that is not an apology: a customer
+        # taken over before they had picked a demo taps one off the list, and the
+        # bot sends the greeting and the quick-question buttons over the top of
+        # whoever is typing. Found by round two of the cold review.
+        logger.info("%s tapped a button while a person has the conversation", sender.key)
+        return []
 
     if profile.bot_id is None:
         bot = get_bot(selected_id)

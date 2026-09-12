@@ -35,6 +35,7 @@
       {"q": "Do you cater for large events?", "a": "Yes! For orders above RM 300, please give us at least 24 hours notice."}
     ]
   },
+  "tools": ["request_human_help"],
   "quick_questions": [
     {"zh": "有什么推荐的菜？", "en": "What do you recommend?", "ms": "Apa yang anda cadangkan?"},
     {"zh": "两个人吃大概多少钱？", "en": "How much for two people?", "ms": "Berapa harganya untuk dua orang?"},

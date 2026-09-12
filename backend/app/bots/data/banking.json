@@ -28,6 +28,7 @@
       {"q": "Is online banking secure?", "a": "Yes, we use 2FA and encrypted connections. Never share your OTP or password with anyone, including bank staff."}
     ]
   },
+  "tools": ["request_human_help"],
   "quick_questions": [
     {"zh": "我的账户余额是多少？", "en": "What's my account balance?", "ms": "Berapa baki akaun saya?"},
     {"zh": "查看最近的交易记录", "en": "Show my recent transactions", "ms": "Tunjukkan transaksi terkini saya"},

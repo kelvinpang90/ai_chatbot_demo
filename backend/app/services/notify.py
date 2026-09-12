@@ -168,7 +168,17 @@ def send_now(to: str, text: str, *, label: str = PUSH_TOOL, source: str = audit.
     lands on the console as a failure -- which is the right way round, because
     the alternative is a summary that silently went nowhere.
     """
-    _send(to, Push(delay_seconds=0, text=text), window_opened_at=time.time(), label=label, source=source)
+    # `unattended=False`: somebody is pressing a button. Whatever a handover
+    # means for the bot's own follow-ups, it does not mean swallowing the
+    # thing a person just asked to send.
+    _send(
+        to,
+        Push(delay_seconds=0, text=text),
+        window_opened_at=time.time(),
+        label=label,
+        source=source,
+        unattended=False,
+    )
 
 
 def _payload_for(to: str, push: Push, window_opened_at: float) -> dict | None:
@@ -188,6 +198,9 @@ def _send(
     *,
     label: str = PUSH_TOOL,
     source: str = audit.TEXT,
+    # Whether a timer started this rather than a person. Only the unattended kind
+    # is dropped when a colleague has the conversation.
+    unattended: bool = True,
 ) -> None:
     """Deliver one push. Runs on a timer thread, long after its turn ended.
 
@@ -204,10 +217,17 @@ def _send(
         # customer may have asked for a person -- at which point "your order is
         # on its way" arrives on top of whatever the colleague is typing. Found
         # by a cold review of task 20, which called it the worst shape of the
-        # five: the others are the bot answering, this one is the bot
+        # six: the others are the bot answering, this one is the bot
         # interrupting. A push a person swallowed is not resent afterwards; by
         # then it is not news.
-        if label != HUMAN_TOOL and handover.active(user_store.get(to)):
+        #
+        # Only the bot's own. The first version of this guard keyed on the label
+        # and swallowed task 19.1's closing summary with it -- the operator
+        # pressed 结束演示, the console said it had gone to Kelvin, and the phone
+        # got nothing. Round two of the same review caught it. What separates the
+        # two is not who they are addressed to but who started them: a timer, or
+        # a person's finger.
+        if unattended and handover.active(user_store.get(to)):
             logger.info("dropping a queued push to %s: a person has the conversation", to)
             return
         payload = _payload_for(to, push, window_opened_at)

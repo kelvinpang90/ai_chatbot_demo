@@ -31,6 +31,7 @@
       {"q": "How do I book a viewing?", "a": "Just tell us which listing and your preferred date/time, and we'll confirm with the property agent."}
     ]
   },
+  "tools": ["request_human_help"],
   "quick_questions": [
     {"zh": "有哪些房源推荐？", "en": "What listings do you recommend?", "ms": "Apakah hartanah yang anda cadangkan?"},
     {"zh": "有 70 万以下的三房吗？", "en": "Any 3-bedroom under RM 700k?", "ms": "Ada unit 3 bilik bawah RM 700k?"},
