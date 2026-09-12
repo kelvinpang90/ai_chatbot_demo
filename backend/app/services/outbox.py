@@ -4,6 +4,7 @@ import logging
 from contextvars import ContextVar
 from typing import NamedTuple
 
+from app.config import settings
 from app.services import whatsapp
 
 logger = logging.getLogger(__name__)
@@ -45,10 +46,42 @@ class Choices(NamedTuple):
         )
 
 
+class FlowForm(NamedTuple):
+    """A native form for the customer to fill in without leaving WhatsApp.
+
+    The third thing a tool can leave here, and the reason the note below says
+    this module has no branch per message type: it knows how to address itself,
+    so nothing in `add` or `drain` learned a new word for it.
+
+    What comes back is not another item in here -- a filled form arrives as an
+    ordinary inbound message on the webhook, hours later if the customer puts
+    their phone down. See `_handle_flow_reply` in the webhook router.
+    """
+
+    body: str
+    flow_id: str
+    flow_token: str
+    cta: str
+    screen: str
+    data: dict
+
+    def build(self, to: str) -> dict:
+        return whatsapp.build_flow_message(
+            to,
+            body_text=self.body,
+            flow_id=self.flow_id,
+            flow_token=self.flow_token,
+            cta=self.cta,
+            screen=self.screen,
+            data=self.data,
+            mode=settings.whatsapp_flow_mode,
+        )
+
+
 # Anything a tool can leave behind for the reply to carry. Each knows how to
 # address itself, so this module never grows a branch per message type: the
 # outbox's job is when things go out, not what they are.
-Outgoing = Attachment | Choices
+Outgoing = Attachment | Choices | FlowForm
 
 
 # Per conversation, not per process: replies run in FastAPI's sync threadpool and

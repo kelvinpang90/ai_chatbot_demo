@@ -23,7 +23,7 @@ from app.services import (
 )
 from app.services.user_store import user_store
 from app.session_store import session_store
-from app.tools import erp
+from app.tools import erp, realestate
 
 router = APIRouter(prefix="/webhook/whatsapp")
 logger = logging.getLogger(__name__)
@@ -758,6 +758,8 @@ def _handle_text_message(
 
 def _handle_interactive_reply(sender: Sender, interactive: dict) -> list[dict]:
     reply_type = interactive.get("type")
+    if reply_type == "nfm_reply":
+        return _handle_flow_reply(sender, interactive.get("nfm_reply", {}))
     if reply_type == "list_reply":
         selected = interactive.get("list_reply", {})
     elif reply_type == "button_reply":
@@ -800,6 +802,46 @@ def _handle_interactive_reply(sender: Sender, interactive: dict) -> list[dict]:
         selected_id, str(selected.get("title") or "")
     )
     return _handle_text_message(sender, said, source=audit.INTERACTIVE) if said else []
+
+
+def _handle_flow_reply(sender: Sender, nfm_reply: dict) -> list[dict]:
+    """A native form, filled in and sent back (task 24).
+
+    The booking is written before the model sees anything, and then the model is
+    told about it in the same way a tapped list row is told about -- as a line in
+    the conversation it is already having. That split is deliberate: the customer
+    has already pressed submit, so the record must not depend on the model
+    choosing to call something, while the sentence they read back should still
+    come out in whatever language they have been writing in.
+
+    Arriving hours later is normal. A form opened before lunch and submitted
+    after it is one inbound message with no text, and everything below has to
+    cope with a conversation that has moved on -- or with a colleague having
+    taken it over in the meantime.
+    """
+    profile = user_store.get_or_create(sender.key)
+    _remember_identity(profile, sender)
+
+    if handover.active(profile):
+        # Same leak the tapped-button path closed: a person is typing, and the
+        # bot must not answer over them. The booking is still filed -- it is the
+        # customer's, not the bot's -- and the colleague sees it on the screen.
+        logger.info("%s submitted a form while a person has the conversation", sender.key)
+        realestate.book_from_form(nfm_reply, sender.key)
+        return []
+
+    if profile.bot_id is None:
+        # A form with no demo behind it should not be reachable: one can only be
+        # opened from inside a conversation. Sending the menu is the honest
+        # recovery, and the log line is there because this would mean something
+        # is wrong upstream.
+        logger.warning("%s submitted a form with no demo selected", sender.key)
+        return _send_bot_list(sender.key)
+
+    # `_handle_text_message` opens the turn this belongs to, which is why the
+    # write above it does not open one of its own.
+    said = realestate.book_from_form(nfm_reply, sender.key)
+    return _handle_text_message(sender, said, source=audit.INTERACTIVE)
 
 
 def _resolve_product_choice(row_id: str, title: str) -> str | None:

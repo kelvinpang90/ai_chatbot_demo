@@ -253,6 +253,61 @@ def build_quick_reply_buttons(to: str, body_text: str, buttons: list[dict]) -> d
     }
 
 
+def build_flow_message(
+    to: str,
+    body_text: str,
+    flow_id: str,
+    flow_token: str,
+    cta: str,
+    screen: str,
+    data: dict | None = None,
+    header_text: str | None = None,
+    mode: str = "published",
+) -> dict:
+    """A native form, opened and filled in without leaving WhatsApp (task 24).
+
+    `flow_action` is "navigate" rather than "data_exchange", and that is the
+    decision this whole feature rests on. data_exchange makes Meta call a public
+    endpoint of ours for every screen, over a key exchange we would have to set
+    up and keep -- days of work for a form with four fields. navigate hands the
+    screen its data up front, right here in `flow_action_payload`, and the filled
+    form comes back as one inbound `nfm_reply` message through the webhook we
+    already have.
+
+    `flow_token` is echoed back untouched with that reply, so it is how a
+    submission is tied to the conversation it came from. It travels through
+    Meta's systems: put a correlation id in it, never a phone number.
+
+    `mode` is "draft" only while trying an unpublished Flow -- Meta rejects it
+    once the Flow is live. See `settings.whatsapp_flow_mode`.
+    """
+    parameters: dict = {
+        "flow_message_version": "3",
+        "flow_token": flow_token,
+        "flow_id": flow_id,
+        "flow_cta": _clip(cta, MAX_BUTTON_TITLE_CHARS),
+        "flow_action": "navigate",
+        "flow_action_payload": {"screen": screen, "data": data or {}},
+    }
+    if mode == "draft":
+        parameters["mode"] = "draft"
+
+    interactive: dict = {
+        "type": "flow",
+        "body": {"text": _body(body_text, MAX_INTERACTIVE_BODY_CHARS)},
+        "action": {"name": "flow", "parameters": parameters},
+    }
+    if header_text:
+        interactive["header"] = {"type": "text", "text": header_text}
+
+    return {
+        "messaging_product": "whatsapp",
+        **_recipient(to),
+        "type": "interactive",
+        "interactive": interactive,
+    }
+
+
 def send_raw(payload: dict) -> httpx.Response:
     """Hand one built payload to Meta, and refuse to shrug off a rejection.
 

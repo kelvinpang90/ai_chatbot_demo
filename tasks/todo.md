@@ -1167,11 +1167,23 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **真机验收不在本任务**：这三条路由现在只有 curl 和浏览器走过，bot 还不会调它们——那是任务 24（Flow 表单）和任务 26（剧本 4a 真机）。
   - ⚠️ **线上仍缺「阻塞项 I」那条 grant**（任务 22 留下的）。不加：房产后台第一次调用就抛 `StoreUnavailable`，页面显示「读不到后台」，demo 其余部分不受影响。
 
-- [ ] **任务 24：WhatsApp Flow —— 预约看房**
-  文件：`backend/app/tools/realestate.py`（新增）、`docs/whatsapp-flows.md`（新增，Flow JSON）
-  目标：bot 弹出原生表单（姓名 / 日期 / 房源）→ 提交回调写进 vertical 后端
-  验收：真机在 WhatsApp 里填完表单不跳出 App，后台页面出现那条预约
-  **降级方案**：Flow JSON 配置是七件武器里最容易卡住的。卡住就降级为多轮交互按钮引导，戏照演，只是没那么惊艳——**不要在这里死磕超过一个 session**
+- [x] **任务 24：WhatsApp Flow —— 预约看房**——**2026-09-13 代码侧完成，838 passed**（821 → 838，净增 17）。**真机那一枪属任务 26**，而且还缺一步只有用户能做的：在 Meta 后台建 Flow 拿 ID。
+  文件：`backend/app/tools/realestate.py`（新增）、`docs/whatsapp-flows.md`（新增，Flow JSON）、`backend/app/services/whatsapp.py`、`backend/app/services/outbox.py`、`backend/app/routers/whatsapp_webhook.py`、`backend/app/tools/registry.py`、`backend/app/config.py`、`backend/.env.example`、`backend/app/bots/data/realestate.json`、`backend/tests/test_realestate_flow.py`（新增）
+
+  **走 `navigate` 不走 `data_exchange`，整个功能压在这个决定上。** `data_exchange` 要 Meta 每翻一屏回调我们的公网 endpoint，还要做 RSA 密钥交换和签名校验——为一个四字段、无分支、无服务端校验的表单搭一套密钥体系。`navigate` 把房源列表**随消息一次性发过去**（`flow_action_payload.data`），填完的表单作为一条 `nfm_reply` 入站消息走**已有的 webhook** 回来。代价是 Meta 不帮我们校验字段，所以 `book_from_form` 自己解析：缺字段 / 日期读不出来，一律不写库并明确告诉 bot「没保存」。这也是清单说「不要死磕超过一个 session」时该选的那条路。
+
+  **预约是在 webhook 里确定性写入的，不是让模型调工具写的。** 客户已经按下提交了，这条记录必须存在——不能取决于模型有没有想起来调工具。写完之后才把一句话交给模型（`_handle_text_message`，source=`interactive`），让它用客户一直在用的那门语言回一句确认、并调 `crm_create_lead` 长出剧本 4a 要的线索卡。**这是两件事的分工**：确定性的归代码，措辞和语言归模型。
+
+  **降级路径是内建 + 有测试守着的，不是备胎。** `WHATSAPP_FLOW_ID` 空着是**受支持的状态**：工具返回 `NO_FORM`，bot 改成在聊天里一次性问三件事。网页聊天线永远走这条（没有 outbox = 没有能承载表单的通道）。没人跑过的备胎就是坏的，所以它有自己的测试。
+  ⚠️ **降级路径下口头给的信息不会自动落库**——`book_from_form` 只在收到 `nfm_reply` 时触发。真要走降级，演示时指着 CRM 看板讲。没补这个，因为它是降级路径不是主路径。
+
+  **验证（验了什么 / 怎么验 / 没验什么）**：
+  1. **单测 838 passed**，新增 17 条：房源只出 `Available` 的、下拉框标题带真实价格、没配 Flow 时降级、网页线降级、后台挂了不发空表单、`navigate` 而非 `data_exchange`、draft/published 两种 mode、**flow_token 里不含手机号**、毫秒时间戳按 UTC 解析、缺字段不写库、后台挂了明说没保存、webhook 的 `nfm_reply` 真能变成预约、**人工接管期间表单照样落库但 bot 闭嘴**。
+  2. **真 MySQL 活体验证**（`mysql:8` 容器，不是打桩）：房源自建表自播种 → 生成真实要发给 Meta 的 payload（`navigate` / `flow_message_version: 3` / 7 个可选房源，`PROP-207`「Under offer」被正确排除）→ 喂一条模拟的 `nfm_reply`（含 DatePicker 毫秒串）→ 落库成 viewing #1，`陈家明 O'Brien` 和 `下午 3 点，蒲种` 原样，毫秒没丢 → 缺日期那条确认 rows 不变。
+  3. **没验的，也验不了**：Flow JSON 能不能被 Meta 的 Flow Builder 接受、表单在手机上长什么样、`nfm_reply` 的真实字段名是否与文档一致。**这三件只有真机能证**，属任务 26。
+  - 踩坑记一笔：探针打 payload 时 `[:1400]` 把末尾的 `mode: draft` 截掉了，一度以为是 bug。**截断输出会伪造缺字段**，下次打 payload 要么不截、要么先打 keys。
+
+  **还缺一步（只有用户能做）**：照 [docs/whatsapp-flows.md](../docs/whatsapp-flows.md) 在 Meta 后台建 Flow、贴 JSON、拿 Flow ID 填进 `.env`。文档里写清了 screen id 和四个字段名是**代码的合同**，对不上不会报错、字段会静悄悄变空。⚠️ Flow JSON 的 `version` 是唯一我没法替用户确认的东西，Builder 报版本错就按它提示的改。
 
 - [ ] **任务 25：food 后端 + 点餐流程**
   文件：`backend/app/verticals/food/`、`backend/app/tools/food.py`（新增）、`backend/app/bots/data/food.json`

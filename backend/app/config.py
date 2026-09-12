@@ -24,6 +24,18 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str = ""
     whatsapp_app_secret: str = ""
     whatsapp_daily_msg_limit: int = 100
+    # The published Flow that asks for a name, a date and a property (task 24).
+    # Empty is a supported state, not a broken one: the bot then walks the same
+    # three questions in chat instead of opening a form. That is the degrade path
+    # the plan asks for, and it is also what every test and the web chat line
+    # get, since neither has a Flow to open.
+    whatsapp_flow_id: str = ""
+    # "draft" lets a Flow that has not been published yet be opened by whoever
+    # owns the Meta app, which is the only way to try one before committing to
+    # it. Anything else is sent as a normal published Flow. Meta rejects `draft`
+    # for a Flow that IS published, so this has to go back to "published" after
+    # the Flow goes live -- hence a setting rather than a constant.
+    whatsapp_flow_mode: str = "published"
     # Meta will hand us documents up to 100MB; anything past this is bigger than we
     # can put in front of the model, so refuse it before pulling it into memory.
     # Five is Anthropic's own ceiling for a single image, which is what this cap
