@@ -698,30 +698,164 @@ def test_a_message_that_arrived_while_the_model_thought_is_not_erased():
     assert "Sorry, I'm not sure." not in said
 
 
-def test_a_takeover_nobody_ended_lapses_on_its_own():
+def _idle_for(phone: str, seconds: float) -> None:
+    """Age the takeover so the person has been quiet for `seconds`."""
+    profile = user_store.get(phone)
+    profile.handover_active_at = time.time() - seconds
+    user_store.save(profile)
+
+
+def test_a_takeover_nobody_is_attending_lapses_on_its_own():
     """A1, the root the review pressed on in the confrontation pass: both
     round-one findings trace back to a flag with no ceiling, and the mitigation
     recorded for it -- the console banner -- is visible only to somebody with a
     console open on the day."""
     phone = "60129998033"
-    profile = _customer(phone)
+    _customer(phone)
     _take_over(phone)
 
-    profile = user_store.get(phone)
-    profile.handover_since = time.time() - handover.MAX_HANDOVER_SECONDS - 60
-    user_store.save(profile)
+    _idle_for(phone, handover.MAX_IDLE_SECONDS + 60)
 
     assert handover.active(user_store.get(phone)) is False
     assert [row["key_id"] for row in handover.waiting()] == []
 
 
-def test_a_takeover_still_inside_the_ceiling_holds():
+def test_a_takeover_somebody_is_still_working_holds():
     phone = "60129998034"
-    profile = _customer(phone)
+    _customer(phone)
     _take_over(phone)
 
-    profile = user_store.get(phone)
-    profile.handover_since = time.time() - handover.MAX_HANDOVER_SECONDS + 600
-    user_store.save(profile)
+    _idle_for(phone, handover.MAX_IDLE_SECONDS - 600)
 
     assert handover.active(user_store.get(phone)) is True
+
+
+def test_a_colleague_who_keeps_replying_never_runs_out_of_time(_console_token):
+    """The reason the clock is idle-based rather than absolute. A ceiling on the
+    whole takeover would drop a colleague mid-sentence at two hours and one
+    minute, and the customer would watch the bot take over the conversation they
+    were having with a person. Each reply puts the clock back to zero."""
+    phone = "60129998035"
+    _customer(phone)
+    _take_over(phone)
+    # Nearly out of time, in the way somebody who stepped away for coffee is.
+    _idle_for(phone, handover.MAX_IDLE_SECONDS - 60)
+
+    with patch.object(notify, "send_now"):
+        response = client.post(
+            "/console/reply",
+            json={"key_id": phone, "text": "still here Boss, checking with the warehouse"},
+            headers={"X-Console-Token": TOKEN},
+        )
+
+    assert response.status_code == 200
+    # Back to zero: not "an hour and fifty-nine minutes used up".
+    fresh = user_store.get(phone)
+    assert time.time() - fresh.handover_active_at < 5
+    assert handover.active(fresh) is True
+
+
+def test_once_it_has_lapsed_the_console_has_to_take_it_over_again(_console_token):
+    """The bot is answering this conversation again. Somebody typing into it
+    from the console would be the second voice all over again, so the reply is
+    refused rather than quietly delivered beside the bot's."""
+    phone = "60129998038"
+    _customer(phone)
+    _take_over(phone)
+    _idle_for(phone, handover.MAX_IDLE_SECONDS + 60)
+
+    with patch.object(notify, "send_now") as sent:
+        response = client.post(
+            "/console/reply",
+            json={"key_id": phone, "text": "sorry for the wait"},
+            headers={"X-Console-Token": TOKEN},
+        )
+
+    assert response.status_code == 409
+    sent.assert_not_called()
+
+
+def test_a_customer_typing_into_the_silence_does_not_keep_it_alive():
+    """Only the person's own actions count. Somebody still writing to a
+    conversation nobody is reading is the failure this ceiling exists for, not
+    evidence against it."""
+    phone = "60129998036"
+    _customer(phone)
+    _take_over(phone)
+    _idle_for(phone, handover.MAX_IDLE_SECONDS - 30)
+
+    with patch.object(llm, "get_reply", return_value="(the bot should not answer)"):
+        dispatch_message(_said(phone, "hello? anyone there?", seq=36))
+
+    _idle_for(phone, handover.MAX_IDLE_SECONDS + 60)
+    assert handover.active(user_store.get(phone)) is False
+
+
+def test_a_record_from_before_the_idle_clock_still_expires():
+    """Written while the ceiling measured from the takeover itself. There is no
+    activity stamp on it, and the moment it began is the honest thing to measure
+    from -- which is exactly what the previous version did for everybody."""
+    phone = "60129998037"
+    _customer(phone)
+    _take_over(phone)
+
+    old = user_store.get(phone)
+    old.handover_active_at = 0.0
+    old.handover_since = time.time() - handover.MAX_IDLE_SECONDS - 60
+    user_store.save(old)
+
+    assert handover.active(user_store.get(phone)) is False
+
+
+def test_a_fresh_takeover_already_counts_as_a_sign_of_life():
+    """Taking it over is itself the person doing something. Without the stamp the
+    clock would lean on the compatibility fallback for every new takeover, which
+    would make that fallback load-bearing instead of what it is."""
+    phone = "60129998039"
+    _customer(phone)
+
+    _take_over(phone)
+
+    fresh = user_store.get(phone)
+    assert time.time() - fresh.handover_active_at < 5
+
+
+def test_a_record_from_before_the_idle_clock_is_still_held_if_it_is_recent():
+    """The other half of the fallback, and the half that matters: a takeover
+    written by the previous build has no activity stamp, and reading that as
+    "idle since 1970" would hand every one of them back to the bot at once."""
+    phone = "60129998040"
+    _customer(phone)
+    _take_over(phone)
+
+    old = user_store.get(phone)
+    old.handover_active_at = 0.0
+    old.handover_since = time.time() - 60
+    user_store.save(old)
+
+    assert handover.active(user_store.get(phone)) is True
+
+
+def test_handing_back_leaves_nothing_behind_on_the_record():
+    """Both fields, not just the one `active` happens to read first. Stale data
+    left on a record is how the next bug gets built."""
+    phone = "60129998041"
+    _customer(phone)
+    _take_over(phone)
+
+    _give_back(phone)
+
+    fresh = user_store.get(phone)
+    assert fresh.handover_since == 0.0
+    assert fresh.handover_active_at == 0.0
+
+
+def test_touching_a_conversation_the_bot_still_has_stamps_nothing():
+    """`touch` says "the person holding this is still here". There is no person
+    holding this one."""
+    phone = "60129998042"
+    _customer(phone)
+
+    handover.touch(user_store.get(phone))
+
+    assert user_store.get(phone).handover_active_at == 0.0

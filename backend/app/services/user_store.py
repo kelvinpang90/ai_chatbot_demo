@@ -89,6 +89,11 @@ class UserProfile:
     # answering over the top of whoever was typing. Seven days of Redis is the
     # wrong lifetime for it too, but far less wrong than one uvicorn restart.
     handover_since: float = 0.0
+    # And the last time the PERSON holding it did something -- see
+    # `handover.active`. Separate from `handover_since` because the two answer
+    # different questions: the console shows how long a customer has been held,
+    # and the ceiling asks whether anybody is still there.
+    handover_active_at: float = 0.0
     history: list[Message] = field(default_factory=list)
     # Free-form and keyed by bot id, deliberately unschematised: what is worth
     # remembering differs per industry (a delivery address for retail, a budget

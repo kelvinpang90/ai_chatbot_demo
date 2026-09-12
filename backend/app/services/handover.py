@@ -32,19 +32,24 @@ logger = logging.getLogger(__name__)
 # half of scene 3 that happens on the big screen rather than on the phone.
 HANDOVER_TOOL = "handover"
 
-# How long a takeover can last before it lapses on its own.
+# How long a takeover survives without the person doing anything.
 #
-# The round-1 record called a flag with no ceiling an accepted edge, with the
-# console banner as the mitigation. Round two took that apart: the banner is
-# visible only to a console that is open, with the right token, on the day, and
-# nobody is at one next week. Both of round one's other findings trace back here
-# -- a message that muted the bot muted it for seven days, and the console's
-# default target was whichever conversation somebody forgot to hand back.
+# It exists because the first version had no ceiling at all -- the flag rode on
+# the customer's record for seven days. The round-1 note called that an accepted
+# edge, mitigated by the console banner; round two took that apart, because the
+# banner is visible only to a console that is open, with the right token, on the
+# day, and nobody is at one next week. Both of round one's other findings trace
+# back to it.
 #
-# Two hours because a demo is watched continuously and lasts minutes. Anything
-# still held after two hours was forgotten rather than held, and a customer whose
-# messages go nowhere is worse served than one the bot answers imperfectly.
-MAX_HANDOVER_SECONDS = 2 * 60 * 60
+# Measured from the last thing the PERSON did, not from when they took over. A
+# ceiling on the whole takeover cuts off a colleague who is still mid-sentence at
+# two hours and one minute, which is the wrong half to be strict with.
+#
+# And only the person's own actions count. A customer who keeps typing is not
+# evidence that anybody is reading -- that is precisely the shape of the failure
+# this ceiling exists for, a takeover nobody is attending and a customer being
+# ignored rather than answered.
+MAX_IDLE_SECONDS = 2 * 60 * 60
 
 # What the customer is told when they ask for a person. Three languages, like
 # every other line the model did not write -- and the only one either side of
@@ -80,7 +85,10 @@ def begin(profile, reason: str = "") -> bool:
         return True
 
     key_id = profile.key_id
-    profile.handover_since = time.time()
+    now = time.time()
+    profile.handover_since = now
+    # Taking it over is itself the first sign of life.
+    profile.handover_active_at = now
     user_store.save(profile)
     events.emit(
         type=events.TOOL_START,
@@ -106,6 +114,7 @@ def end(profile) -> bool:
     key_id = profile.key_id
     held_for = max(0, int(time.time() - profile.handover_since))
     profile.handover_since = 0.0
+    profile.handover_active_at = 0.0
     user_store.save(profile)
     events.emit(
         type=events.TOOL_END,
@@ -119,17 +128,34 @@ def end(profile) -> bool:
     return True
 
 
+def touch(profile) -> None:
+    """Record that the person holding this conversation is still here.
+
+    Called when they send something, and by nothing else. The clock this feeds
+    is the answer to "is anybody still reading?", and only their own actions are
+    evidence of that -- see `MAX_IDLE_SECONDS`.
+    """
+    if profile is None or not profile.handover_since:
+        return
+    profile.handover_active_at = time.time()
+    user_store.save(profile)
+
+
 def active(profile) -> bool:
     """Whether this customer's conversation is in a person's hands right now.
 
     Lapsed takeovers read as false rather than being cleaned up here: this is
     asked on the hot path of every inbound message, and a read that writes is a
     read that can fail. The row is dropped from the console's list by `waiting`
-    and the field is cleared the next time anything saves the record.
+    and the fields are cleared the next time anything saves the record.
     """
     if profile is None or not profile.handover_since:
         return False
-    return (time.time() - profile.handover_since) < MAX_HANDOVER_SECONDS
+    # Records written before the idle clock existed have no activity stamp; the
+    # moment they were taken over is the best thing to measure from, which is
+    # exactly what the previous version did for everybody.
+    since = profile.handover_active_at or profile.handover_since
+    return (time.time() - since) < MAX_IDLE_SECONDS
 
 
 def waiting() -> list[dict]:

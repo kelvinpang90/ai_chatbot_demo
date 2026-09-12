@@ -506,6 +506,10 @@ def reply_as_human(request: HandoverReplyRequest) -> HandoverReplyResult:
     notify.send_now(
         profile.phone or profile.key_id, text, label=notify.HUMAN_TOOL, source=audit.HUMAN
     )
+    # They are still here, so the takeover does not lapse under them. Only this
+    # counts: a customer typing into the silence is not evidence anybody is
+    # reading it.
+    handover.touch(user_store.get(key_id))
     return HandoverReplyResult(key_id=key_id, display_name=profile.display_name, text=text)
 
 
