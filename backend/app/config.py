@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # number that reads as "it did that by itself" is found in front of an
     # audience, not here.
     push_delay_seconds: float = 30.0
+    # How long a handover survives without the person doing anything (task 20).
+    # A setting for the same reason the push delay is one: it is a judgement
+    # about how a room behaves, not a technical constant. Two hours suits a demo
+    # watched continuously; a real service desk that leaves conversations open
+    # over lunch would want longer, and a rehearsal where you want to watch it
+    # lapse wants about a minute.
+    handover_idle_seconds: float = 2 * 60 * 60
 
     # 微信客服 (WeCom customer service). All four are secrets and all four default
     # to empty for the same reason the back-office passwords do -- this repository

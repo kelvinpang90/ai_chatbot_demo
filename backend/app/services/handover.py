@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import time
 
+from app.config import settings
 from app.console import events
 from app.services.user_store import user_store
 
@@ -49,7 +50,11 @@ HANDOVER_TOOL = "handover"
 # evidence that anybody is reading -- that is precisely the shape of the failure
 # this ceiling exists for, a takeover nobody is attending and a customer being
 # ignored rather than answered.
-MAX_IDLE_SECONDS = 2 * 60 * 60
+#
+# The number itself lives in `settings.handover_idle_seconds` (env
+# HANDOVER_IDLE_SECONDS) so the VPS can change it with a restart rather than a
+# deploy. Read at each call rather than bound to a module constant, so a test
+# can move it without reloading this module.
 
 # What the customer is told when they ask for a person. Three languages, like
 # every other line the model did not write -- and the only one either side of
@@ -133,7 +138,7 @@ def touch(profile) -> None:
 
     Called when they send something, and by nothing else. The clock this feeds
     is the answer to "is anybody still reading?", and only their own actions are
-    evidence of that -- see `MAX_IDLE_SECONDS`.
+    evidence of that -- see `settings.handover_idle_seconds`.
     """
     if profile is None or not profile.handover_since:
         return
@@ -155,7 +160,7 @@ def active(profile) -> bool:
     # moment they were taken over is the best thing to measure from, which is
     # exactly what the previous version did for everybody.
     since = profile.handover_active_at or profile.handover_since
-    return (time.time() - since) < MAX_IDLE_SECONDS
+    return (time.time() - since) < settings.handover_idle_seconds
 
 
 def waiting() -> list[dict]:

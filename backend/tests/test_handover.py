@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.bots import registry
 from app.bots.registry import get_bot
+from app.config import settings
 from app.console import events
 from app.main import app
 from app.routers.whatsapp_webhook import _asked_for_a_person, dispatch_message
@@ -714,7 +715,7 @@ def test_a_takeover_nobody_is_attending_lapses_on_its_own():
     _customer(phone)
     _take_over(phone)
 
-    _idle_for(phone, handover.MAX_IDLE_SECONDS + 60)
+    _idle_for(phone, settings.handover_idle_seconds + 60)
 
     assert handover.active(user_store.get(phone)) is False
     assert [row["key_id"] for row in handover.waiting()] == []
@@ -725,7 +726,7 @@ def test_a_takeover_somebody_is_still_working_holds():
     _customer(phone)
     _take_over(phone)
 
-    _idle_for(phone, handover.MAX_IDLE_SECONDS - 600)
+    _idle_for(phone, settings.handover_idle_seconds - 600)
 
     assert handover.active(user_store.get(phone)) is True
 
@@ -739,7 +740,7 @@ def test_a_colleague_who_keeps_replying_never_runs_out_of_time(_console_token):
     _customer(phone)
     _take_over(phone)
     # Nearly out of time, in the way somebody who stepped away for coffee is.
-    _idle_for(phone, handover.MAX_IDLE_SECONDS - 60)
+    _idle_for(phone, settings.handover_idle_seconds - 60)
 
     with patch.object(notify, "send_now"):
         response = client.post(
@@ -762,7 +763,7 @@ def test_once_it_has_lapsed_the_console_has_to_take_it_over_again(_console_token
     phone = "60129998038"
     _customer(phone)
     _take_over(phone)
-    _idle_for(phone, handover.MAX_IDLE_SECONDS + 60)
+    _idle_for(phone, settings.handover_idle_seconds + 60)
 
     with patch.object(notify, "send_now") as sent:
         response = client.post(
@@ -782,12 +783,12 @@ def test_a_customer_typing_into_the_silence_does_not_keep_it_alive():
     phone = "60129998036"
     _customer(phone)
     _take_over(phone)
-    _idle_for(phone, handover.MAX_IDLE_SECONDS - 30)
+    _idle_for(phone, settings.handover_idle_seconds - 30)
 
     with patch.object(llm, "get_reply", return_value="(the bot should not answer)"):
         dispatch_message(_said(phone, "hello? anyone there?", seq=36))
 
-    _idle_for(phone, handover.MAX_IDLE_SECONDS + 60)
+    _idle_for(phone, settings.handover_idle_seconds + 60)
     assert handover.active(user_store.get(phone)) is False
 
 
@@ -801,7 +802,7 @@ def test_a_record_from_before_the_idle_clock_still_expires():
 
     old = user_store.get(phone)
     old.handover_active_at = 0.0
-    old.handover_since = time.time() - handover.MAX_IDLE_SECONDS - 60
+    old.handover_since = time.time() - settings.handover_idle_seconds - 60
     user_store.save(old)
 
     assert handover.active(user_store.get(phone)) is False
@@ -859,3 +860,18 @@ def test_touching_a_conversation_the_bot_still_has_stamps_nothing():
     handover.touch(user_store.get(phone))
 
     assert user_store.get(phone).handover_active_at == 0.0
+
+
+def test_the_idle_ceiling_can_be_changed_without_a_deploy():
+    """A judgement about how a room behaves, not a technical constant -- and one
+    you want to be able to turn down to a minute while rehearsing, or up when a
+    service desk leaves conversations open over lunch."""
+    phone = "60129998043"
+    _customer(phone)
+    _take_over(phone)
+    _idle_for(phone, 90)
+
+    with patch.object(settings, "handover_idle_seconds", 60):
+        assert handover.active(user_store.get(phone)) is False
+    with patch.object(settings, "handover_idle_seconds", 600):
+        assert handover.active(user_store.get(phone)) is True
