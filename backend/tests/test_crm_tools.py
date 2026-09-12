@@ -643,3 +643,86 @@ def test_an_amount_that_rounds_past_the_column_never_reaches_the_crm():
 
     assert answer == crm.BAD_LEAD
     assert fake.posts == []
+
+
+# -- one sale, one card (2026-09-12) -------------------------------------------
+#
+# Seen on a real phone: one contact with two identical cards for SO-2026-00002,
+# the second differing only by "已开 e-Invoice". The retail persona tells the bot
+# to record the sale once the order is placed, and issuing the invoice a moment
+# later gives it a second reason to write. The note written at the time said a
+# returning customer is added to their existing record rather than duplicated --
+# true of the contact, never true of the deal.
+
+ORDERED = "Sony WF-C710N 真无线降噪耳机 × 3（订单 SO-2026-00002）"
+INVOICED = "Sony WF-C710N 真无线降噪耳机 × 3（订单 SO-2026-00002，已开 e-Invoice INV-2026-00002）"
+CARD_FOR_THE_ORDER = {
+    "id": "d-77",
+    "title": crm_client.marked(ORDERED),
+    "amount": VALUE,
+    "status": "lead",
+}
+
+
+def test_the_same_order_mentioned_twice_leaves_one_card():
+    """The acceptance, in the shape the screenshot had."""
+    with fake_crm(existing=[TAN], deals=[CARD_FOR_THE_ORDER]) as fake:
+        payload = json.loads(
+            crm.crm_create_lead("Tan Wei Ming", "60173948123", INVOICED, VALUE)
+        )
+
+    assert "/api/deals" not in fake.post_paths
+    assert payload["deal_id"] == "d-77"
+
+
+def test_the_new_detail_still_lands_on_the_card_that_exists():
+    """Reusing the card must not lose what the second call was for -- the invoice
+    number is the whole of what it added."""
+    with fake_crm(existing=[TAN], deals=[CARD_FOR_THE_ORDER]) as fake:
+        crm.crm_create_lead("Tan Wei Ming", "60173948123", INVOICED, VALUE)
+
+    content = fake.body("/api/deals/d-77/activities")["content"]
+    assert "INV-2026-00002" in content
+
+
+def test_a_different_order_is_a_different_card():
+    """Two sales to one customer are two opportunities, and the pipeline should
+    say so."""
+    with fake_crm(existing=[TAN], deals=[CARD_FOR_THE_ORDER]) as fake:
+        crm.crm_create_lead(
+            "Tan Wei Ming", "60173948123", "另一单 Sony 耳机 × 1（订单 SO-2026-00099）", VALUE
+        )
+
+    assert "/api/deals" in fake.post_paths
+
+
+def test_an_enquiry_with_no_order_behind_it_always_gets_its_own_card():
+    """Somebody who asks twice without buying has asked twice. There is nothing
+    to match on and nothing that should be matched."""
+    with fake_crm(existing=[TAN], deals=[CARD_FOR_THE_ORDER]) as fake:
+        crm.crm_create_lead("Tan Wei Ming", "60173948123", ENQUIRY, VALUE)
+
+    assert "/api/deals" in fake.post_paths
+
+
+def test_a_crm_that_will_not_say_what_cards_exist_still_records_the_lead():
+    """The duplicate check guards the write; it must not replace it. A card too
+    many is a mess somebody can merge, a lost lead is a customer nobody rings."""
+    with fake_crm(
+        existing=[TAN], get_fails={"/api/deals": ApiClientError("crm api: deals unavailable")}
+    ) as fake:
+        payload = json.loads(
+            crm.crm_create_lead("Tan Wei Ming", "60173948123", INVOICED, VALUE)
+        )
+
+    assert "/api/deals" in fake.post_paths
+    assert payload["deal_id"] == "d-9"
+
+
+def test_the_order_number_is_read_the_way_this_project_writes_them():
+    assert crm._order_number("下了 SO-2026-00002 这张单") == "SO-2026-00002"
+    assert crm._order_number("order so-2026-00002 confirmed") == "SO-2026-00002"
+    assert crm._order_number("三个耳机，还没下单") == ""
+    # An invoice number is not an order number: they travel together and only one
+    # of them identifies the sale on the board.
+    assert crm._order_number("INV-2026-00002") == ""

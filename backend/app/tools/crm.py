@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from typing import NamedTuple
 
 from anthropic import beta_tool
@@ -195,6 +196,47 @@ def _auto_created_card(client: crm_client.CrmClient, contact_id: str | None) -> 
     return deals[0] if deals else None
 
 
+# An order number as this project writes them. Used to tell one enquiry from a
+# second mention of the same sale -- see `_deal_for_order`.
+ORDER_NUMBER = re.compile(r"\bSO-\d{4}-\d+\b", re.IGNORECASE)
+
+
+def _order_number(text: str) -> str:
+    found = ORDER_NUMBER.search(text or "")
+    return found.group(0).upper() if found else ""
+
+
+def _deal_for_order(client: crm_client.CrmClient, contact_id, order_no: str) -> dict | None:
+    """A card this contact already has for this order, if there is one.
+
+    The retail bot records the sale in the CRM once the order is placed, and then
+    has a second reason to write a moment later when the e-Invoice is issued.
+    Seen on a real phone on 2026-09-12: one contact, two identical cards for
+    SO-2026-00002, the second one differing only by "已开 e-Invoice".
+
+    The note in the round's own record said a returning customer is added to
+    their existing record rather than duplicated. That is true of the CONTACT and
+    was never true of the DEAL, which is the half nobody checked.
+
+    Matched on the order number rather than on the wording, because the wording
+    is exactly what differs between the two calls. An enquiry with no order
+    behind it matches nothing and still gets its own card, which is right: two
+    separate enquiries from one person are two opportunities.
+    """
+    if not order_no:
+        return None
+    try:
+        deals = client.deals_for_contact(contact_id)
+    except ApiClientError:
+        # Worth a card too many rather than losing the lead: this is only the
+        # duplicate check, and the write it guards is the point of the tool.
+        logger.warning("could not check %s for an existing card", contact_id, exc_info=True)
+        return None
+    return next(
+        (deal for deal in deals if order_no in str(deal.get("title") or "").upper()), None
+    )
+
+
 def _card(client: crm_client.CrmClient, lead: _Lead) -> tuple[dict, dict | None]:
     """The contact this lead belongs to, and the card that now represents it.
 
@@ -215,6 +257,14 @@ def _card(client: crm_client.CrmClient, lead: _Lead) -> tuple[dict, dict | None]
         None,
     )
     if contact:
+        # A second mention of an order already on the board is a note on that
+        # card, not another card beside it. The caller logs the activity against
+        # whichever deal comes back, so the new detail still lands -- on the one
+        # the salesperson is already looking at.
+        same_order = _deal_for_order(client, contact.get("id"), _order_number(lead.requirement))
+        if same_order is not None:
+            logger.info("reusing deal %s for %s", same_order.get("id"), lead.phone)
+            return contact, same_order
         deal = client.create_deal(
             contact_id=contact.get("id"), title=lead.title, amount=lead.amount
         )
