@@ -96,24 +96,47 @@ DOCUMENT_TOOL = "document.download"
 # later turn and hangs the PDF back on it. Which is why the filename is in it.
 DOCUMENT_MARKER = "[document]"
 MENU_KEYWORDS = {"menu", "菜单"}
-# Asking for a person, in the words a customer actually uses. A floor under the
-# `request_human_help` tool rather than a replacement for it: the tool is how a
-# bot escalates something it judges to be beyond it, and this is how a customer
-# who has stopped wanting to talk to a machine gets their way whatever the model
-# thinks -- including on the four bots that have no tools to call.
-HUMAN_KEYWORDS = {
-    "人工",
+# Asking for a person, in the words a customer actually uses -- and only when
+# they are actually asking. A floor under the `request_human_help` tool rather
+# than a replacement for it: the tool is how a bot escalates something it judges
+# to be beyond it, and this is how a customer who has stopped wanting to talk to
+# a machine gets their way whatever the model thinks, including on the three bots
+# that have no tools to call.
+#
+# Phrases, never bare nouns, and that is the whole of what this list learned the
+# hard way. The first version matched "human", "agent" and "人工" as substrings,
+# which silences the bot for seven days on:
+#   你们这是人工智能吗?            -- "is this an AI?", the single likeliest
+#                                     question anybody asks an AI demo
+#   I bought it from your agent    -- and realestate's own persona tells the bot
+#                                     to offer exactly this word
+#   human resources teams
+# A customer who wants a person says so with a verb. A customer using one of
+# these words about something else never does.
+HUMAN_PHRASES = (
     "转人工",
     "找人工",
-    "真人",
+    "要人工",
+    "人工客服",
+    "人工服务",
     "找真人",
-    "human",
-    "agent",
-    "real person",
+    "要真人",
+    "真人客服",
+    "找个人",
+    "找同事",
     "speak to a human",
     "talk to a human",
+    "speak to a person",
+    "talk to a person",
+    "speak to someone",
+    "talk to someone",
+    "real person",
+    "human agent",
+    "customer service agent",
+    "cakap dengan orang",
+    "nak orang sebenar",
     "orang sebenar",
-}
+)
 
 
 @router.get("")
@@ -292,7 +315,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
 
     if not session_store.check_and_increment_daily_count(sender.key):
         logger.info("Rate limit hit for %s", sender.key)
-        return [whatsapp.build_text_message(sender.key, RATE_LIMIT_MESSAGE)]
+        return _canned(sender, RATE_LIMIT_MESSAGE)
 
     msg_type = message.get("type")
     if msg_type == "interactive":
@@ -301,7 +324,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
     if msg_type == "audio":
         spoken = _transcribe_voice_note(message.get("audio") or {})
         if not spoken:
-            return [whatsapp.build_text_message(sender.key, VOICE_UNREADABLE_MESSAGE)]
+            return _canned(sender, VOICE_UNREADABLE_MESSAGE)
         # From here it is a text message and nothing downstream is told otherwise:
         # "menu" said out loud resets the demo, a spoken product name searches the
         # ERP, and the history the model reads holds the words, not the audio.
@@ -311,7 +334,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
         block = message.get("image") or {}
         photo = _fetch_photo(block)
         if photo is None:
-            return [whatsapp.build_text_message(sender.key, IMAGE_UNREADABLE_MESSAGE)]
+            return _canned(sender, IMAGE_UNREADABLE_MESSAGE)
         # The picture travels beside the turn, not inside it: what the history
         # keeps is the caption under a marker, which is all the model can use on
         # a later turn anyway.
@@ -326,7 +349,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
         block = message.get("document") or {}
         document = _fetch_document(block)
         if document is None:
-            return [whatsapp.build_text_message(sender.key, DOCUMENT_UNREADABLE_MESSAGE)]
+            return _canned(sender, DOCUMENT_UNREADABLE_MESSAGE)
         # Filed before the turn runs, because this is not a one-turn attachment:
         # every message from here on hangs it back on the line below until the
         # customer sends another file or starts the demo over.
@@ -335,7 +358,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
 
     if msg_type != "text":
         logger.info("Ignoring unsupported message type '%s' from %s", msg_type, sender.key)
-        return [whatsapp.build_text_message(sender.key, UNSUPPORTED_TYPE_MESSAGE)]
+        return _canned(sender, UNSUPPORTED_TYPE_MESSAGE)
 
     text = message.get("text", {}).get("body", "")
     return _handle_text_message(sender, text)
@@ -585,17 +608,35 @@ def _remember_identity(profile, sender: Sender) -> None:
         profile.display_name = sender.username
 
 
+def _canned(sender: "Sender", message: str) -> list[dict]:
+    """One of the bot's own apologies -- unless a person has the conversation.
+
+    Every one of these sits on a path that returns before `_handle_text_message`
+    and therefore before the handover check inside it: a sticker, a voice note
+    that would not transcribe, a photo that would not download, the daily cap.
+    A cold review found all five, and they are the worst possible thing for the
+    bot to say while somebody is typing, because they are the sentences that
+    announce there is a bot. "This demo can only read text, voice, photo and
+    PDF" arriving in the middle of a human conversation is the join made visible
+    in one line.
+    """
+    if handover.active(user_store.get(sender.key)):
+        logger.info("swallowing a canned reply to %s: a person has it", sender.key)
+        return []
+    return [whatsapp.build_text_message(sender.key, message)]
+
+
 def _asked_for_a_person(text: str) -> bool:
     """Whether the customer has asked to stop talking to a machine.
 
     Matched as a phrase inside the message rather than as the whole of it, unlike
-    `menu`: nobody types "human" on its own, they type "can I speak to a human
-    please". The words are specific enough that a substring match does not catch
-    ordinary sentences -- "人工" is not a fragment of anything a customer says
-    about earbuds.
+    `menu`: nobody types this on its own, they type "can I speak to a human
+    please". Which is also why the list holds phrases and not words -- see
+    `HUMAN_PHRASES` for the three ordinary sentences the word version muted the
+    bot on, one of them the likeliest question at an AI demo.
     """
     said = " ".join(text.lower().split())
-    return any(word in said for word in HUMAN_KEYWORDS)
+    return any(phrase in said for phrase in HUMAN_PHRASES)
 
 
 def _record_while_silent(profile, text: str, source: str, reply: str = "") -> None:
@@ -674,6 +715,24 @@ def _handle_text_message(
         reply = llm.get_reply(
             bot, profile, profile.history, image=image, document=doc_store.get(sender.key)
         )
+        # A turn takes seconds and several tool calls, and the moment somebody
+        # reaches for the console is the moment the bot is visibly struggling --
+        # so a person taking over WHILE this ran is the likely case, not the
+        # exotic one. Re-read rather than trusted from the copy loaded before the
+        # model was called: this object has been in hand the whole time and knows
+        # nothing about it. Found by a cold review of task 20.
+        taken = user_store.get(sender.key)
+        if handover.active(taken):
+            logger.info("dropping the bot's answer to %s: a person took over mid-turn", sender.key)
+            # The flag is carried onto the copy about to be saved, or this save
+            # is the lost update all over again -- this object was loaded before
+            # the console was clicked and has a zero where the truth is.
+            profile.handover_since = taken.handover_since
+            # What the customer said is kept; the answer nobody sent is not. The
+            # colleague picking this up needs to read the question, and the model
+            # must not be replayed a reply that never left the building.
+            user_store.save(profile)
+            return []
         # Built before it is recorded, deliberately. A reply WhatsApp will not carry
         # must not become part of this customer's history either: the turn is
         # dropped whole and the next message starts from the last good exchange,

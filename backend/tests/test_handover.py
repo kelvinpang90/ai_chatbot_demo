@@ -15,10 +15,11 @@ from fastapi.testclient import TestClient
 from app.bots.registry import get_bot
 from app.console import events
 from app.main import app
-from app.routers.whatsapp_webhook import dispatch_message
+from app.routers.whatsapp_webhook import _asked_for_a_person, dispatch_message
 from app.services import audit, handover, llm, notify
 from app.tools import human, local
 from app.services.user_store import user_store
+from app.session_store import session_store
 
 client = TestClient(app)
 
@@ -391,3 +392,187 @@ def test_starting_the_demo_over_takes_it_back_from_the_person_too():
 
     assert sent  # the demo list, not silence
     assert handover.active(user_store.get(phone)) is False
+
+
+# -- what the cold review found (2026-09-12) -----------------------------------
+#
+# Every one of these was green before the review ran and red after it. They are
+# kept in the reviewer's own words where possible, because the value is in the
+# examples rather than in the mechanism.
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        # "Is this an AI?" -- the likeliest question anybody asks an AI demo, and
+        # 人工智能 contains 人工.
+        "你们这是人工智能吗？",
+        "这是人工智能做的吗",
+        # realestate's own persona tells the bot to offer this word.
+        "I bought it from your agent last week, can I return it?",
+        "Do you have an agent in Penang?",
+        "is this suitable for human resources teams?",
+        "human error la",
+    ],
+)
+def test_ordinary_sentences_do_not_silence_the_bot(said):
+    """The first version matched "human", "agent" and "人工" as substrings. Each
+    of these muted the bot for seven days."""
+    assert _asked_for_a_person(said) is False, said
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "我要转人工",
+        "找真人",
+        "可以帮我转人工客服吗",
+        "can I speak to a human please",
+        "i want to talk to a person",
+        "boleh cakap dengan orang sebenar tak",
+    ],
+)
+def test_somebody_actually_asking_still_gets_a_person(said):
+    assert _asked_for_a_person(said) is True, said
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"type": "sticker", "sticker": {"id": "media-stk-1"}},
+        {"type": "audio", "audio": {"mime_type": "audio/ogg"}},
+        {"type": "image", "image": {"mime_type": "image/jpeg"}},
+        {"type": "document", "document": {"mime_type": "application/pdf"}},
+    ],
+)
+def test_the_bots_own_apologies_do_not_interrupt_a_person(message):
+    """Five paths return before the guard inside `_handle_text_message`, and the
+    lines they send are the ones that announce there is a bot at all. "This demo
+    can only read text, voice, photo and PDF", arriving in the middle of a human
+    conversation, is the join made visible in a single line."""
+    phone = "60129998020"
+    _customer(phone)
+    _take_over(phone)
+
+    sent = dispatch_message({"id": f"wamid.{phone}.20", "from": phone, **message})
+
+    assert sent == []
+
+
+def test_the_daily_cap_does_not_interrupt_a_person():
+    """The same shape as the four above, from further up the function."""
+    phone = "60129998021"
+    _customer(phone)
+    _take_over(phone)
+
+    with patch.object(session_store, "check_and_increment_daily_count", return_value=False):
+        sent = dispatch_message(_said(phone, "hello?", seq=21))
+
+    assert sent == []
+
+
+def test_a_push_queued_before_the_handover_does_not_interrupt_it():
+    """The worst shape of the six: the others are the bot answering, this one is
+    the bot interrupting. Order placed, push queued, customer asks for a person,
+    and a minute later "your order is on its way" lands on top of whatever the
+    colleague is typing."""
+    phone = "60129998022"
+    _customer(phone)
+    _take_over(phone)
+
+    with patch.object(notify.whatsapp_media, "send_message") as send:
+        notify._send(phone, notify.Push(delay_seconds=0, text="您的订单已确认"), time.time())
+
+    send.assert_not_called()
+
+
+def test_a_person_typing_is_never_swallowed_as_a_push():
+    """The guard above must not silence the thing it exists to protect."""
+    phone = "60129998023"
+    _customer(phone)
+    _take_over(phone)
+
+    with patch.object(notify.whatsapp_media, "send_message") as send:
+        notify.send_now(phone, "Boss, I'll sort it", label=notify.HUMAN_TOOL, source=audit.HUMAN)
+
+    send.assert_called_once()
+
+
+def test_a_person_taking_over_mid_turn_stops_the_answer_going_out():
+    """A turn takes seconds and several tool calls, and the moment somebody
+    reaches for the console is the moment the bot is visibly struggling. The
+    router has held a copy of the record the whole time and knows nothing."""
+    phone = "60129998024"
+    _customer(phone)
+
+    def take_over_while_it_thinks(*_args, **_kwargs):
+        _take_over(phone)
+        return "Sorry, I'm not sure about that."
+
+    with patch.object(llm, "get_reply", side_effect=take_over_while_it_thinks):
+        sent = dispatch_message(_said(phone, "can you do it or not", seq=24))
+
+    assert sent == []
+    # And the answer nobody sent is not in the history the model is replayed.
+    assert [m.role for m in user_store.get(phone).history] == ["user"]
+    # And the save that recorded the question did not undo the takeover that
+    # caused it -- the copy being saved was loaded before the console was
+    # clicked, which is the lost update this whole shape exists to avoid.
+    assert handover.active(user_store.get(phone)) is True
+
+
+def test_the_console_types_to_the_newest_handover_not_the_oldest():
+    """One conversation nobody handed back last week is enough to make the
+    default wrong for every demo after it: the banner names the wrong customer
+    and every line the owner types lands on a stranger's phone."""
+    _customer("60129998025", name="Last week")
+    _take_over("60129998025")
+    time.sleep(0.01)
+    _customer("60129998026", name="Today")
+    _take_over("60129998026")
+
+    assert [row["key_id"] for row in handover.waiting()][0] == "60129998026"
+
+
+def test_a_customer_who_hides_their_number_can_still_be_answered(_console_token):
+    """Silenced by the keyword path and then never answered by anybody, bot or
+    human, because the reply endpoint wanted a phone number that a BSUID record
+    does not have -- while every other path addresses them by key perfectly well."""
+    hidden = "US.1349120865"
+    profile = user_store.get_or_create(hidden)
+    profile.bot_id = "retail"
+    user_store.save(profile)
+    _take_over(hidden)
+
+    with patch.object(notify, "send_now") as sent:
+        response = client.post(
+            "/console/reply",
+            json={"key_id": hidden, "text": "Boss, we can do that."},
+            headers={"X-Console-Token": TOKEN},
+        )
+
+    assert response.status_code == 200
+    assert sent.call_args.args[0] == hidden
+
+
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        ("post", "/console/reply", {"key_id": PHONE, "text": "hello"}),
+        ("post", "/console/handover", {"key_id": PHONE, "active": True}),
+        ("post", "/console/tools", {"enabled": False}),
+        ("post", "/console/demo-summary", {}),
+    ],
+)
+def test_a_token_in_the_url_cannot_write(_console_token, method, path, body):
+    """It lands in the nginx access log and in browser history by design. That
+    was an acceptable key for reading a feed; it is not one for silencing the bot
+    or putting arbitrary text on a customer's phone."""
+    response = getattr(client, method)(f"{path}?token={TOKEN}", json=body)
+
+    assert response.status_code == 401
+
+
+def test_a_token_in_the_url_can_still_read(_console_token):
+    """EventSource cannot send a header, so reading has to keep accepting it."""
+    assert client.get(f"/console/handover?token={TOKEN}").status_code == 200

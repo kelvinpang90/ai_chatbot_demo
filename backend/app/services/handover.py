@@ -129,4 +129,8 @@ def waiting() -> list[dict]:
                     "since": profile.handover_since,
                 }
             )
-    return sorted(held, key=lambda row: row["since"])
+    # Newest first. Ascending put the console's default -- `held[0]` -- on the
+    # oldest one, which is whichever conversation somebody forgot to hand back
+    # last week: every line the owner typed in front of the room would have gone
+    # to a stranger. Found by a cold review of task 20.
+    return sorted(held, key=lambda row: row["since"], reverse=True)

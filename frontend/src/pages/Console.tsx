@@ -30,6 +30,13 @@ const RECONNECT_DELAY_MS = 3000
 // across a reconnect or a redeploy that empties the event buffer.
 const HANDOVER_POLL_MS = 5000
 
+// What WhatsApp will carry in one message. The backend clips past it rather than
+// refusing, so without this the operator's last sentence would simply not arrive
+// and nothing on either screen would say why.
+const MAX_REPLY_CHARS = 4096
+
+const POLL_FAILED = '读不到人工接管的状态'
+
 // How long the same enquiry takes a person. Not measured, deliberately
 // conservative, and on screen because "it is fast" means nothing next to a
 // number the owner can compare against a salary.
@@ -100,6 +107,7 @@ export default function Console() {
   const [draftReply, setDraftReply] = useState('')
   const [sending, setSending] = useState(false)
   const [handoverNote, setHandoverNote] = useState('')
+  const [selected, setSelected] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const feedRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
@@ -259,8 +267,14 @@ export default function Console() {
     let stale = false
     const ask = () =>
       readHandovers(token)
-        .then(({ customers }) => !stale && setHeld(customers))
-        .catch(() => !stale && setHandoverNote('读不到人工接管的状态'))
+        .then(({ customers }) => {
+          if (stale) return
+          setHeld(customers)
+          // A poll that worked clears a note left by one that did not, or a
+          // single blip pins the error string there for the rest of the session.
+          setHandoverNote((note) => (note === POLL_FAILED ? '' : note))
+        })
+        .catch(() => !stale && setHandoverNote(POLL_FAILED))
     ask()
     const timer = window.setInterval(ask, HANDOVER_POLL_MS)
     return () => {
@@ -269,9 +283,12 @@ export default function Console() {
     }
   }, [token])
 
-  // One conversation at a time: a demo has one customer in a person's hands, and
-  // a picker for a list that is nearly always of length one would be furniture.
-  const holding = held[0] ?? null
+  // Whoever is selected, defaulting to the newest -- the backend sorts them that
+  // way now. A picker rather than `held[0]` alone because anybody past the first
+  // was silent to the bot and invisible here, which a cold review of task 20
+  // pointed out is not hypothetical: one conversation nobody handed back last
+  // week is enough to make the default wrong for every demo after it.
+  const holding = held.find((c) => c.key_id === selected) ?? held[0] ?? null
 
   function sendReply() {
     if (!holding || sending) return
@@ -405,13 +422,34 @@ export default function Console() {
               交回 bot
             </button>
           </div>
+          {held.length > 1 && (
+            <div className="console-handover-head">
+              <span className="console-handover-dim">还有别人也在接管中，点一下切换：</span>
+              {held.map((customer) => (
+                <button
+                  key={customer.key_id}
+                  className="console-switch"
+                  data-off={customer.key_id !== holding.key_id}
+                  onClick={() => setSelected(customer.key_id)}
+                >
+                  {customer.display_name ?? customer.key_id}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="console-handover-line">
             <input
               value={draftReply}
               placeholder="打字回复这位客户，Enter 发送"
               disabled={sending}
+              maxLength={MAX_REPLY_CHARS}
               onChange={(e) => setDraftReply(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && sendReply()}
+              onKeyDown={(e) => {
+                // `isComposing` because this panel is in Chinese: picking a
+                // candidate off the IME is an Enter too, and without the guard
+                // the half-composed fragment goes to a live customer.
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) sendReply()
+              }}
             />
             <button className="console-switch" disabled={sending} onClick={sendReply}>
               {sending ? '发送中…' : '发送'}

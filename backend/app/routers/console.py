@@ -47,9 +47,9 @@ MAX_LIMIT = 200
 def require_console_token(
     request: Request,
     # EventSource cannot set request headers, so the live stream has no way to
-    # send one and the token has to be able to travel in the query string. That
-    # puts it in proxy logs, which is the price of the feature; everything under
-    # here is read-only and the token is rotatable.
+    # send one and the token has to be able to travel in the query string for
+    # that one caller. See `require_console_write` for why nothing that writes
+    # accepts it that way.
     token: str | None = Query(default=None),
 ) -> None:
     """Let the caller through only with the configured token.
@@ -59,11 +59,32 @@ def require_console_token(
     task 37.1 needed that proxy rule -- so the accident had to become a gate.
 
     A token in a query string is weaker than one in a header: it lands in browser
-    history and in the proxy's access log. It is still the right trade, because
-    EventSource cannot set headers and the alternative is a live feed of orders
-    and customer names open to anyone with the link. The header is accepted too,
-    for the callers that can send one.
+    history and in the proxy's access log. It is still the right trade for
+    reading, because EventSource cannot set headers and the alternative is a live
+    feed of orders and customer names open to anyone with the link.
     """
+    _check(request, token)
+
+
+def require_console_write(request: Request) -> None:
+    """The same token, and only in the header.
+
+    This note used to say "everything under here is read-only". It stopped being
+    true the moment the console could close a demo off (task 19.1) and stopped
+    being defensible when it could silence the bot and type on a customer's phone
+    (task 20): a token that by design sits in the nginx access log and in browser
+    history is not the right key for "send arbitrary text to any customer this
+    demo has seen this week". A cold review demonstrated `POST /console/reply?token=…`
+    with no header at all.
+
+    Nothing loses a feature by this. Only `/console/stream` cannot send a header,
+    and it does not write; the frontend has sent the header on every other call
+    since task 12.
+    """
+    _check(request, None)
+
+
+def _check(request: Request, token: str | None) -> None:
     expected = settings.console_token
     if not expected:
         raise HTTPException(status_code=503, detail="The console is not configured")
@@ -127,7 +148,7 @@ def read_tool_switch() -> ToolSwitch:
     return ToolSwitch(enabled=tool_registry.tools_enabled())
 
 
-@router.post("/tools", response_model=ToolSwitch, dependencies=[Depends(require_console_token)])
+@router.post("/tools", response_model=ToolSwitch, dependencies=[Depends(require_console_write)])
 def flip_tool_switch(switch: ToolSwitch) -> ToolSwitch:
     """Turn every bot's tools off, or back on, for everyone at once.
 
@@ -344,7 +365,7 @@ def read_conversation(conversation_id: str) -> ConversationDetail:
 @router.post(
     "/demo-summary",
     response_model=DemoSummaryResult,
-    dependencies=[Depends(require_console_token)],
+    dependencies=[Depends(require_console_write)],
 )
 def send_demo_summary(request: DemoSummaryRequest) -> DemoSummaryResult:
     """Close the demo off: count what really happened and send it to the customer.
@@ -435,7 +456,7 @@ def list_handovers() -> HandoverList:
 
 
 @router.post(
-    "/handover", response_model=HandoverList, dependencies=[Depends(require_console_token)]
+    "/handover", response_model=HandoverList, dependencies=[Depends(require_console_write)]
 )
 def set_handover(request: HandoverRequest) -> HandoverList:
     """Take a conversation off the bot, or give it back.
@@ -455,7 +476,7 @@ def set_handover(request: HandoverRequest) -> HandoverList:
 
 
 @router.post(
-    "/reply", response_model=HandoverReplyResult, dependencies=[Depends(require_console_token)]
+    "/reply", response_model=HandoverReplyResult, dependencies=[Depends(require_console_write)]
 )
 def reply_as_human(request: HandoverReplyRequest) -> HandoverReplyResult:
     """Send what the person at the console just typed, as the business.
@@ -472,14 +493,19 @@ def reply_as_human(request: HandoverReplyRequest) -> HandoverReplyResult:
     profile = user_store.get(key_id)
     if not handover.active(profile):
         raise HTTPException(status_code=409, detail="That conversation is not in your hands")
-    if not profile.phone:
-        raise HTTPException(status_code=409, detail="No phone number on file for that customer")
 
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Nothing to send")
 
-    notify.send_now(profile.phone, text, label=notify.HUMAN_TOOL, source=audit.HUMAN)
+    # The number where there is one, the BSUID otherwise -- `whatsapp._recipient`
+    # addresses both, and the rest of this service has keyed on `key_id` since
+    # task 32. Requiring a phone here was a hole a cold review walked through: a
+    # customer who hides their number could be silenced by the keyword path and
+    # then never answered by anybody, bot or human.
+    notify.send_now(
+        profile.phone or profile.key_id, text, label=notify.HUMAN_TOOL, source=audit.HUMAN
+    )
     return HandoverReplyResult(key_id=key_id, display_name=profile.display_name, text=text)
 
 

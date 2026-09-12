@@ -30,7 +30,7 @@ from contextvars import ContextVar
 from typing import NamedTuple
 
 from app.console import events
-from app.services import audit, whatsapp, whatsapp_media
+from app.services import audit, handover, whatsapp, whatsapp_media
 from app.services.user_store import user_store
 
 logger = logging.getLogger(__name__)
@@ -199,6 +199,17 @@ def _send(
     span = f"{to}:{int(time.time())}"
     started = time.monotonic()
     try:
+        # Checked at the moment it fires, not when it was queued. The order that
+        # queued this push is a minute old by now, and in that minute the
+        # customer may have asked for a person -- at which point "your order is
+        # on its way" arrives on top of whatever the colleague is typing. Found
+        # by a cold review of task 20, which called it the worst shape of the
+        # five: the others are the bot answering, this one is the bot
+        # interrupting. A push a person swallowed is not resent afterwards; by
+        # then it is not news.
+        if label != HUMAN_TOOL and handover.active(user_store.get(to)):
+            logger.info("dropping a queued push to %s: a person has the conversation", to)
+            return
         payload = _payload_for(to, push, window_opened_at)
         if payload is None:
             return
