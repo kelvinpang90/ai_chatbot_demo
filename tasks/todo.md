@@ -1410,7 +1410,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 9:26 那条（`OPENAI_API_KEY` 还没进容器）：客户收到「Sorry, I couldn't make out that voice message - please type your question instead.」。**失败路径在真机上确认是有话说的，不是沉默**
   - 9:35 那条：bot 认出是谁，并报出他真实的 ERP 单号（`SO-2026-00001` / `SO-2026-00004`）
   - 9:36 那条（9 秒）：bot 回「我用关键字查了一下」+ `Sony WF-C710N 真无线降噪耳机 RM 328.90（含税）`。**语音驱动了工具调用，价格来自 ERP 商品档案**，验收条件达成
-  ⚠️ **`env_file` 改了必须 `docker compose up -d --force-recreate backend`**，`docker compose restart` 读的是容器创建时固定下来的那份环境变量，改了也读不到——上面 9:26 失败 / 9:35 成功这一对就是它。**部署 workflow 本身没问题**（它走 `up -d`，镜像变了就会重建）；坑在「只改 `.env` 不改代码」那种手工场景
+  ⚠️ **`env_file` 改了必须 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`**，`docker compose restart` 读的是容器创建时固定下来的那份环境变量，改了也读不到——上面 9:26 失败 / 9:35 成功这一对就是它。**部署 workflow 本身没问题**（它走 `up -d`，镜像变了就会重建）；坑在「只改 `.env` 不改代码」那种手工场景
   ⚠️ **导演台现在没有页面可看**（任务 12 未做），只有裸 SSE `/console/stream`，而且**公网打不到**——前端 nginx 只转 `/api/` 和 `/webhook/`（任务 3 的记录里写过，是故意的，那条流没有鉴权）。所以这次验收是靠「手机上的回复对不对」判定的，**没有逐字看到 Whisper 听成了什么**。夹杂句的转录准确度因此仍未被直接观测到，只知道「准到足以走对工具」
   ⚠️ **PowerShell → ssh → 远端 shell 这条路会吃掉反斜杠**。验证时 `sh -c "echo len=\${#OPENAI_API_KEY}"` 和 `grep -c "^OPENAI_API_KEY=.\+"` 都给了假结果（前者没输出、后者报 0），换成不带反斜杠的 `printenv KEY | wc -c` 立刻拿到 165。**要跑带转义的命令就开交互式 ssh，别塞进一行字符串里**
 
@@ -1568,10 +1568,11 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ```
   然后往 `/opt/ai_chatbot/backend/.env` 加一行 `MYSQL_URL=mysql://ai_chatbot_app:<密码>@infra_mysql:3306/ai_chatbot`。
   - `scripts/provision-project.sh` 也能干这事，但它强制要第二个参数（Redis 区段），而本项目的 16 已经分过了
-  - ⚠️ **改完 `.env` 必须 `docker compose up -d --force-recreate backend`**，`restart` 读不到新的环境变量（任务 36 的记录里那对 9:26 失败 / 9:35 成功就是这个坑）
+  - ⚠️ **改完 `.env` 必须 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`**，`restart` 读不到新的环境变量（任务 36 的记录里那对 9:26 失败 / 9:35 成功就是这个坑）
   - **不加也不会坏**：`MYSQL_URL` 空 = 审计关掉，demo 行为和现在完全一致，只是什么都不记
 
-- [ ] **I. 线上给 verticals 建库**（任务 22 留下的，任务 23-26 真机验收前要做）——一条 grant，用的还是已有那个账号：
+- [x] ~~**I. 线上给 verticals 建库**~~——**2026-09-13 用户已完成并实测通过**。线上 `curl -H "X-Console-Token: …" /api/verticals/realestate/listings` 返回 **8 条房源**，价格与 `bots/data/realestate.json` 一致（PROP-202 = RM 620,000）。库、grant、`.env` 里的 `VERTICALS_MYSQL_URL` 全到位；**表和那 8 条数据没有任何人手动建**，是首次调用时 `verticals/db.py` 建表、`realestate/models.py` 的 `seed_listings()` 播进去的。
+  ⚠️ **这一步的代价是一次线上事故**，教训见下面「运维教训：2026-09-13」。以下是原文：
   ```sql
   CREATE DATABASE ai_chatbot_verticals CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   GRANT ALL PRIVILEGES ON `ai_chatbot_verticals`.* TO 'ai_chatbot_app'@'%';
@@ -1581,9 +1582,49 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   然后往 `/opt/ai_chatbot/backend/.env` 加一行
   `VERTICALS_MYSQL_URL=mysql://ai_chatbot_app:<密码>@infra_mysql:3306/ai_chatbot_verticals`
   （密码就是 `MYSQL_URL` 里那个，**percent-encode**），再
-  `docker compose up -d --force-recreate backend`——`restart` 读不到新环境变量。
+  `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`——`restart` 读不到新环境变量。
   - **不加也不会坏**：房产和餐饮没有后台而已，demo 其余部分行为完全不变。但和审计层不同，
     这个不是静默的：第一次调用就会抛 `StoreUnavailable`，日志里有一行说清楚
+
+---
+
+## 运维教训：2026-09-13 —— 一条少了 `-f` 的 compose 命令把线上打挂了
+
+**没改一行代码，线上后端死了十几分钟。** 起因是执行阻塞项 I 的最后一步（改完 `.env` 重建容器），
+在 `/opt/ai_chatbot` 敲了 `docker compose up -d --force-recreate backend`——**少了 `-f docker-compose.prod.yml`**。
+
+### 发生了什么
+
+`/opt/ai_chatbot` 里躺着两个 compose 文件，而 compose 默认读的是 `docker-compose.yml`：
+
+| 文件 | 用途 | 会干什么 |
+|---|---|---|
+| `docker-compose.yml` | **本地开发** | 自带 mysql + redis、从源码 build backend、发布 `127.0.0.1:8000` |
+| `docker-compose.prod.yml` | **线上** | 只有 backend + frontend，用 GHCR 镜像，**不发布任何主机端口**，接共享的 `infra_mysql` / `infra_redis` |
+
+于是它按开发配置来：拉 `mysql:8`、起 redis、build 后端。**目录名让 compose 认成同一个 project、同一个
+`backend` 服务，所以它先把生产容器 `ai_chatbot_backend` 拆了**，再去起替代品——替代品要绑 8000，
+而这台机器上那个端口已经被别的项目占着，绑不上。结果：没有后端在跑，`/api/*` 和 `/console/*` 全 502，
+外加两个多余容器 `ai_chatbot-mysql-1` / `ai_chatbot-redis-1`。
+
+### 三条要记住的
+
+1. **这台机器上每一条 compose 命令都要带 `-f docker-compose.prod.yml`**。本文件里所有
+   `--force-recreate` 的写法已经统一改过了（原来那三处都是裸命令，照抄就会复现今天这次）。
+2. **`docker compose down` 更危险**：不带 `-f` 会连生产的 `ai_chatbot_frontend` 一起端掉，
+   因为 project + service 标签是一样的。
+3. **判断后端死活要看 `/api/bots`，不要看 `/health`。** 排查时我拿 `/health` 返回 200 当后端活着的
+   证据，**那是错的**——`frontend/nginx.conf` 只代理 `/api/`、`/webhook/`、`/console/*`，`/health`
+   会落到 SPA 上，后端死透了它照样 200（返回的是 index.html）。
+
+### 防再犯（已落地）
+
+- 新增仓库根的 `.env.example`，里面是 `/opt/ai_chatbot/.env` 该有的三行：`COMPOSE_FILE=docker-compose.prod.yml`
+  加两个 `*_IMAGE`。**`COMPOSE_FILE` 这一行让裸 `docker compose` 在那个目录里自动走生产文件**；
+  workflow 里显式的 `-f` 依然优先，部署行为不变。
+  ⚠️ 这一行**要用户在 VPS 上手工加进 `/opt/ai_chatbot/.env`**，仓库里改不到它。
+- 两个 compose 文件顶部各加了一段注释，指向对方和这次事故——因为人是在打命令前扫一眼文件，
+  不是在打命令前翻 todo.md。
 
 ---
 

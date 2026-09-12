@@ -1,3 +1,19 @@
+# What runs on the VPS. Every compose command in /opt/ai_chatbot has to name this
+# file -- `docker compose -f docker-compose.prod.yml ...` -- because the other one
+# in this directory is the local development stack, and compose reads that one by
+# default.
+#
+# On 2026-09-13 a bare `docker compose up -d --force-recreate backend` did exactly
+# that. docker-compose.yml brings its own MySQL and Redis, builds the backend from
+# source and publishes 127.0.0.1:8000; compose recognised the running production
+# containers as the same project and service, removed the backend, and then could
+# not start the replacement because another project on the box already held that
+# port. The site answered 502 until it was restored by hand. `docker compose down`
+# is worse: run without -f it also takes out the production frontend.
+#
+# The guard is `COMPOSE_FILE=docker-compose.prod.yml` in /opt/ai_chatbot/.env, so
+# a bare command means this file. See .env.example. Naming the file explicitly is
+# still the habit worth keeping -- the guard is one line on one machine.
 services:
   backend:
     image: ${BACKEND_IMAGE}

@@ -1,3 +1,9 @@
+# The local development stack: a laptop's own MySQL and Redis, the backend built
+# from source, ports published to localhost. Compose reads this file by default,
+# which is the hazard -- it is checked out on the VPS too, beside the production
+# file, and a compose command there that forgets `-f docker-compose.prod.yml`
+# lands here and tears the live backend down. See the note at the top of
+# docker-compose.prod.yml for the outage that was.
 services:
   backend:
     build: ./backend
