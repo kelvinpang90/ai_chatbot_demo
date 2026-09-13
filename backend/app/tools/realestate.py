@@ -241,6 +241,25 @@ def book_property_viewing(
     name = str(customer_name or "").strip()
     if not name or viewing is None:
         return CHAT_DETAILS_UNREADABLE
+    today = _today()
+    if viewing < today:
+        # Found on a real phone on 2026-09-13: "9月20日" saved as 2025-09-20. The
+        # model is never told today's date, so a day and month with no year gets
+        # whatever year it has in mind. The same guard the hotel's check-in date
+        # has (tools/local.py), and for the same reason: this is the one place
+        # that knows what day it is, so it says so.
+        #
+        # Unlike the hotel's, it does not send the model back to ask. A date with
+        # no year means the next time it comes round, and "which year did you
+        # mean?" in front of a client is the question that makes a demo look
+        # like a form.
+        return (
+            f"Nothing was saved: {viewing.isoformat()} has already passed -- today "
+            f"is {today.isoformat()}. If the customer gave a day and a month without "
+            "a year, they mean the next time that date comes round: save it again "
+            "with that year, without asking them. Only ask if the date they gave "
+            "really is in the past."
+        )
 
     customer = local.customer()
     phone = (customer.phone if customer is not None else None) or ""
@@ -339,6 +358,11 @@ def book_from_form(payload: dict, phone: str) -> str:
     if booked is None:
         return FORM_NOT_SAVED
     return _confirmation(booked, how="filled in the booking form")
+
+
+def _today() -> date:
+    """Today, in one place a test can pin."""
+    return date.today()
 
 
 class _UnknownListing(ValueError):

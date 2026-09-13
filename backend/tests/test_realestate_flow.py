@@ -60,6 +60,19 @@ BOOKED = models.Viewing(
 )
 
 
+@pytest.fixture(autouse=True)
+def _today_is_pinned():
+    """Every test here runs on 2026-09-13, whatever the calendar says.
+
+    The bookings below are dated a week or so after that. Without this they
+    would start being refused as past dates the week after this file was
+    written, and a suite that goes red with nobody touching it is how guards
+    stop being believed.
+    """
+    with patch.object(realestate, "_today", return_value=date(2026, 9, 13)):
+        yield
+
+
 @pytest.fixture
 def flow_configured():
     with patch.object(settings, "whatsapp_flow_id", FLOW_ID):
@@ -555,6 +568,39 @@ def test_a_date_the_model_could_not_pin_down_is_refused_and_nothing_is_written(
 
     assert said == realestate.CHAT_DETAILS_UNREADABLE
     written.assert_not_called()
+
+
+def test_a_date_that_has_already_passed_is_refused_and_the_model_told_today(
+    listing_on_the_books,
+):
+    """Found on a real phone on 2026-09-13: the customer said 9月20日 and the
+    model saved 2025-09-20, a year in the past -- onto the back office and onto
+    the CRM card. The model is never told today's date, so a day and a month
+    with no year is filled in from whatever year it has in mind.
+
+    Refused here rather than in the prompt, the way the hotel's check-in date
+    already is (tools/local.py): the tool is the one party that knows what day
+    it is, so it says so, and the model saves again with the right year.
+    """
+    today = date(2026, 9, 13)
+    with patch.object(realestate, "_today", return_value=today):
+        with patch.object(models, "book_viewing") as written:
+            said = realestate.book_property_viewing("陈家明", "PROP-202", "2025-09-20", "下午3点")
+
+    written.assert_not_called()
+    assert "2026-09-13" in said
+
+
+def test_a_viewing_today_is_still_bookable(listing_on_the_books):
+    """Past means before today, not today: "can I come round this afternoon"
+    is the most natural request there is."""
+    today = date(2026, 9, 13)
+    with patch.object(realestate, "_today", return_value=today):
+        with patch.object(models, "book_viewing", return_value=7) as written:
+            with patch.object(models, "get_viewing", return_value=BOOKED):
+                realestate.book_property_viewing("Ali", "PROP-202", "2026-09-13")
+
+    written.assert_called_once()
 
 
 def test_a_chat_booking_the_back_office_could_not_take_is_not_reported_as_booked(
