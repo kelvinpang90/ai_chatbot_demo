@@ -216,6 +216,44 @@ def test_the_tool_path_uses_the_same_model_and_cached_system_blocks():
     assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
+def _tool_choice_sent_for(bot_id: str):
+    @beta_tool
+    def check_stock(sku: str) -> str:
+        """Look up how many units of a SKU are on hand.
+
+        Args:
+            sku: The product code to look up.
+        """
+        return "12 units in stock"
+
+    final = _assistant_message([BetaTextBlock(type="text", text="Hi")], "end_turn")
+    with patch.object(llm, "get_tools", return_value=[check_stock]):
+        with patch.object(llm._client.beta.messages, "parse", return_value=final) as mock_parse:
+            llm.get_reply(get_bot(bot_id), _customer(), history=[])
+    return mock_parse.call_args.kwargs.get("tool_choice")
+
+
+def test_the_property_bot_is_held_to_one_tool_call_at_a_time():
+    """Found on a real phone on 2026-09-14. A viewing was refused for being in
+    the past, and in the same breath -- one response, two tool calls -- the model
+    had already filed the CRM lead for it. The lead landed; the booking did not
+    exist for another three seconds, and would never have existed if the retry
+    had failed too. The tool's answer said to record the lead only once the
+    viewing was saved, but a model calling both at once has not read that
+    answer yet. Only making it wait does."""
+    choice = _tool_choice_sent_for("realestate")
+
+    assert choice == {"type": "auto", "disable_parallel_tool_use": True}
+
+
+def test_a_bot_that_does_not_ask_for_it_keeps_parallel_tool_calls():
+    """Retail looks stock up in three warehouses at once, and that is worth the
+    speed. The rule is per bot because the hazard is per bot."""
+    choice = _tool_choice_sent_for("retail")
+
+    assert not (isinstance(choice, dict) and choice.get("disable_parallel_tool_use"))
+
+
 def test_bot_with_tools_calls_the_tool_and_feeds_the_result_back():
     bot = get_bot("retail")
     customer = _customer()

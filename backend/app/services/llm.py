@@ -332,6 +332,13 @@ def _reply_with_tools(
     `until_done()` would run the same loop with nothing to watch. Iterating instead
     lets us announce the calls Claude asked for, then time the runner executing them.
     """
+    options: dict = {}
+    if bot.sequential_tools:
+        # At most one tool call per response, so each call is decided after the
+        # previous one has answered. Without it, a model can ask for a booking and
+        # the CRM lead that depends on it in one breath -- and the lead lands even
+        # when the booking is refused. See `BotConfig.sequential_tools`.
+        options["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
     runner = _client.beta.messages.tool_runner(
         model=model,
         max_tokens=MAX_REPLY_TOKENS,
@@ -339,6 +346,7 @@ def _reply_with_tools(
         messages=messages,
         tools=tools,
         max_iterations=MAX_TOOL_ITERATIONS,
+        **options,
     )
 
     last_message = None

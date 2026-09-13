@@ -25,6 +25,12 @@ class BotConfig(BaseModel):
     # The tools this bot may call, by name, resolved in app.tools.registry. Empty
     # means it answers from its context data alone, as every bot did before.
     tools: list[str] = []
+    # Make the model call one tool, read its answer, and only then decide on the
+    # next. Off by default: retail checks three warehouses at once and that speed
+    # is worth having. On for a bot whose tools depend on each other's outcome --
+    # the property agent filed a CRM lead for a viewing in the same breath as the
+    # booking that was then refused (2026-09-14).
+    sequential_tools: bool = False
     quick_questions: list[LocalizedText] = []
 
 
