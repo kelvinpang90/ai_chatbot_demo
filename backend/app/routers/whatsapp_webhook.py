@@ -246,7 +246,13 @@ def _handle_incoming_message(message: dict, contact: dict | None = None) -> None
         # a side effect with a different lifetime from a reply.
         whatsapp.send_typing_indicator(str(message.get("id") or ""))
         for payload in dispatch_message(message, contact):
-            whatsapp.send_raw(payload)
+            try:
+                whatsapp.send_raw(payload)
+            except whatsapp.WhatsAppSendError as refused:
+                fallback = realestate.undelivered_form_fallback(payload)
+                if fallback is None:
+                    raise
+                _say_instead_of_the_form(payload, fallback, refused)
     except Exception as failure:
         logger.exception("Unhandled error processing WhatsApp message %s", message.get("id"))
         # The customer is looking at a chat where nothing arrived. Say so on the
@@ -259,6 +265,54 @@ def _handle_incoming_message(message: dict, contact: dict | None = None) -> None
             output=f"{type(failure).__name__}: {failure}",
             status="error",
         )
+
+
+def _say_instead_of_the_form(payload: dict, fallback: str, refused: Exception) -> None:
+    """Meta would not deliver a form: ask for the same details in the chat.
+
+    Here in the send loop, because this is the first moment anybody knows. The
+    model's turn ended when it wrote "a form is coming", and on 2026-09-13 Meta
+    refused every Flow this account sent (#139000, Blocked by Integrity) -- so
+    without this the customer was told about a form that never came and then
+    heard nothing at all.
+
+    Three things happen, and each is for a different reader. The customer gets
+    the question in the chat. The model gets the same line in the history, so
+    their answer arrives in a conversation that already says the form failed and
+    it books with `book_property_viewing` instead of waiting for a submission.
+    And the console gets SEND_FAILED anyway: the fallback worked, but the room
+    should still see that Meta said no, because that is a fact about the account
+    and not about this one customer.
+    """
+    to = str(payload.get("to") or payload.get("recipient") or "")
+    events.emit(
+        type=events.SEND_FAILED,
+        tool="whatsapp.send",
+        tool_use_id="flow",
+        output=f"{type(refused).__name__}: {refused}",
+        status="error",
+    )
+    logger.warning("a booking form to %s was refused, asking in chat instead: %s", to, refused)
+    if not to:
+        return
+
+    profile = user_store.get(to)
+    if handover.active(profile):
+        # The same rule `_canned` keeps: a person has this conversation, and a
+        # canned line from the bot is the join made visible.
+        logger.info("not sending the form fallback to %s: a person has it", to)
+        return
+
+    whatsapp.send_raw(whatsapp.build_text_message(to, fallback))
+    if profile is None:
+        return
+    profile.add_message("assistant", fallback)
+    user_store.save(profile)
+    audit.begin_for(profile, audit.WHATSAPP)
+    try:
+        audit.record_message("assistant", fallback)
+    finally:
+        audit.close()
 
 
 def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
@@ -827,7 +881,7 @@ def _handle_flow_reply(sender: Sender, nfm_reply: dict) -> list[dict]:
         # bot must not answer over them. The booking is still filed -- it is the
         # customer's, not the bot's -- and the colleague sees it on the screen.
         logger.info("%s submitted a form while a person has the conversation", sender.key)
-        realestate.book_from_form(nfm_reply, sender.key)
+        realestate.book_from_form(nfm_reply, profile.phone or "")
         return []
 
     if profile.bot_id is None:
@@ -840,7 +894,7 @@ def _handle_flow_reply(sender: Sender, nfm_reply: dict) -> list[dict]:
 
     # `_handle_text_message` opens the turn this belongs to, which is why the
     # write above it does not open one of its own.
-    said = realestate.book_from_form(nfm_reply, sender.key)
+    said = realestate.book_from_form(nfm_reply, profile.phone or "")
     return _handle_text_message(sender, said, source=audit.INTERACTIVE)
 
 

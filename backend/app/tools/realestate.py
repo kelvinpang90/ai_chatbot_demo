@@ -24,6 +24,7 @@ from anthropic import beta_tool
 
 from app.config import settings
 from app.services import audit, outbox
+from app.tools import local
 from app.verticals import StoreUnavailable
 from app.verticals.realestate import models
 
@@ -40,19 +41,26 @@ CTA = "Book a viewing"
 # Meta's Dropdown takes at most this many options on one screen.
 MAX_FORM_LISTINGS = 20
 
+# "Is being sent", never "is on their screen". The form goes to Meta only after
+# this reply has been written, and Meta can still refuse it -- on 2026-09-13 it
+# refused every one with #139000 "Blocked by Integrity", and the bot had already
+# told the customer the form was in front of them. If it is refused now, the
+# router sends UNDELIVERED_FORM_MESSAGE straight after, so the sentence the model
+# writes from this has to be one that is still true when that happens.
 FORM_SENT = (
-    "The booking form is now on the customer's screen. Tell them in one short "
-    "sentence that the form is there and to fill it in -- name, date and which "
-    "property. Do not ask them for those details yourself, do not repeat them "
-    "back, and do not say the viewing is booked: nothing is booked until they "
-    "submit it, which may be a while. Then stop and wait."
+    "A booking form is being sent to the customer. Tell them in one short "
+    "sentence that a form is coming for them to fill in -- name, date and which "
+    "property. Do not say it is already on their screen, do not ask them for "
+    "those details yourself, and do not say the viewing is booked: nothing is "
+    "booked until they submit it. Then stop and wait."
 )
 
 NO_FORM = (
     "There is no form available on this channel, so ask for the details in the "
     "conversation instead: their name, which property, and which date suits "
     "them. Ask for all three in one short message rather than one at a time. "
-    "When they answer, say their agent will confirm the viewing."
+    "When they have given all three, save it with book_property_viewing -- do "
+    "not tell them it is booked until that has answered."
 )
 
 BACK_OFFICE_DOWN = (
@@ -150,7 +158,114 @@ def _flow_token() -> str:
     return turn.conversation_id if turn else "viewing"
 
 
-TOOLS = [offer_viewing_form]
+# Sent by the router in place of a form Meta refused to deliver. Canned rather
+# than written by the model, because by the time the refusal comes back the
+# model's turn is over -- and trilingual for that reason, like every other line
+# the model did not write (see test_every_canned_reply_is_written_in_all_three_languages).
+UNDELIVERED_FORM_MESSAGE = (
+    "抱歉，预约表格暂时打不开。请直接在这里回复：您的姓名、想看哪一套房源，以及方便的日期。 / "
+    "Sorry, the booking form could not be opened. Just reply here with your name, "
+    "which property you would like to see, and a date that suits you. / "
+    "Maaf, borang tempahan tidak dapat dibuka. Sila balas di sini dengan nama anda, "
+    "hartanah yang ingin dilihat, dan tarikh yang sesuai."
+)
+
+
+def undelivered_form_fallback(payload: dict) -> str | None:
+    """What to say in the chat if Meta refuses this payload, when it is our form.
+
+    None for anything else, including somebody else's Flow: a future food form
+    that failed must not answer with a line about viewing a house. Recognised by
+    the screen it opens on, which is the one thing in the payload this module
+    alone decided.
+    """
+    interactive = payload.get("interactive") if payload.get("type") == "interactive" else None
+    if not isinstance(interactive, dict) or interactive.get("type") != "flow":
+        return None
+    parameters = interactive.get("action", {}).get("parameters", {})
+    if parameters.get("flow_action_payload", {}).get("screen") != SCREEN:
+        return None
+    return UNDELIVERED_FORM_MESSAGE
+
+
+NO_SUCH_LISTING = (
+    "There is no listing with that id on the agency's books, so nothing was "
+    "saved. Do not guess which one they meant and do not invent an id: tell them "
+    "you could not find that property and ask which of the listings you showed "
+    "them they would like to see."
+)
+
+CHAT_DETAILS_UNREADABLE = (
+    "That could not be saved: the name is missing or the date is not a real "
+    "date. Nothing has been booked. Ask the customer for whichever detail is "
+    "missing -- do not make one up -- and try again once they have given it."
+)
+
+CHAT_NOT_SAVED = (
+    "The viewing could NOT be saved -- the property back office is unreachable. "
+    "Tell the customer plainly that it did not go through and that you will have "
+    "an agent call them back. Never tell them the viewing is booked."
+)
+
+
+@beta_tool
+def book_property_viewing(
+    customer_name: str, listing_id: str, viewing_date: str, preferred_time: str = ""
+) -> str:
+    """Save a viewing the customer has asked for in the conversation itself.
+
+    For when there was no form -- either none could be offered, or the one sent
+    could not be opened and they were asked to reply in the chat instead. Call it
+    once the customer has given their name, which property and which date, and
+    not before: this writes to the agency's back office and the booking appears
+    on its screen immediately.
+
+    Never call it after a submitted form. A form that came back is already saved
+    by the time you hear about it, and you will be told so in as many words;
+    calling this as well puts the same viewing on the screen twice.
+
+    Args:
+        customer_name: Their name, exactly as they gave it.
+        listing_id: The property's id as it appears in your listings, e.g.
+            "PROP-204". If they described it rather than naming it ("the second
+            one", "the KLCC studio"), work out which listing they mean from
+            what you showed them -- but only if it is unambiguous. If it is not,
+            ask.
+        viewing_date: The date they want, as YYYY-MM-DD. Turn "this Saturday" or
+            "20 Sept" into a real date first; if you cannot be sure which date
+            they mean, ask rather than guess.
+        preferred_time: A time of day if they gave one ("3pm", "petang"), in
+            their words. Leave it empty if they did not say.
+    """
+    viewing = _as_date(viewing_date)
+    name = str(customer_name or "").strip()
+    if not name or viewing is None:
+        return CHAT_DETAILS_UNREADABLE
+
+    customer = local.customer()
+    phone = (customer.phone if customer is not None else None) or ""
+    try:
+        booked = _file_viewing(
+            listing_id=str(listing_id or "").strip(),
+            customer_name=name,
+            viewing_date=viewing,
+            preferred_time=str(preferred_time or "").strip(),
+            phone=phone,
+        )
+    except _UnknownListing:
+        return NO_SUCH_LISTING
+    except StoreUnavailable:
+        logger.exception("a viewing given in chat could not be saved")
+        return CHAT_NOT_SAVED
+    except ValueError:
+        logger.exception("a viewing given in chat failed validation")
+        return CHAT_DETAILS_UNREADABLE
+    if booked is None:
+        return CHAT_NOT_SAVED
+    return _confirmation(booked, how="gave these details in the chat")
+
+
+TOOLS = [offer_viewing_form, book_property_viewing]
 
 
 # -- the way back in -----------------------------------------------------------
@@ -200,35 +315,74 @@ def book_from_form(payload: dict, phone: str) -> str:
         return FORM_UNREADABLE
 
     try:
-        request = models.ViewingRequest(
+        booked = _file_viewing(
             listing_id=listing_id,
-            customer_name=name[:128],
+            customer_name=name,
             viewing_date=viewing_date,
-            phone=phone[:32],
-            preferred_time=str(fields.get(FIELD_TIME) or "").strip()[:32],
+            preferred_time=str(fields.get(FIELD_TIME) or "").strip(),
+            phone=phone,
         )
-        booked = models.get_viewing(models.book_viewing(request))
+    except _UnknownListing:
+        # Only reachable with a form older than the listing it offered, or one
+        # somebody built by hand: the dropdown is filled from this same table.
+        logger.warning("a viewing form named a listing that does not exist: %r", listing_id)
+        return FORM_UNREADABLE
     except StoreUnavailable:
         logger.exception("a submitted viewing form could not be saved")
         return FORM_NOT_SAVED
     except ValueError:
-        # Pydantic refused what the form sent -- a name past the column, a
-        # listing id that is not one. The customer is owed the truth, not a
-        # traceback.
+        # Pydantic refused what the form sent -- a name past the column, say.
+        # The customer is owed the truth, not a traceback.
         logger.exception("a submitted viewing form failed validation")
         return FORM_UNREADABLE
 
     if booked is None:
         return FORM_NOT_SAVED
-    return _confirmation(booked)
+    return _confirmation(booked, how="filled in the booking form")
 
 
-def _confirmation(booked: models.Viewing) -> str:
+class _UnknownListing(ValueError):
+    """The id names no property on the books. Raised before anything is written."""
+
+
+def _file_viewing(
+    *,
+    listing_id: str,
+    customer_name: str,
+    viewing_date: date,
+    preferred_time: str,
+    phone: str,
+) -> models.Viewing | None:
+    """The one place a viewing is written, whichever way the details arrived.
+
+    The form and the chat used to be headed for two copies of this, and the
+    difference that would have crept in first is the one below: the HTTP route
+    checks the listing exists, and the form path did not. A booking against an
+    id that is not on the books is a row on the big screen with a blank property
+    beside it, in the middle of the scene that exists to show the back office.
+
+    Raises `_UnknownListing`, `StoreUnavailable`, or `ValueError` for a request
+    the model will not accept; returns None only if the row was written and then
+    could not be read back.
+    """
+    if not models.listing_exists(listing_id):
+        raise _UnknownListing(listing_id)
+    request = models.ViewingRequest(
+        listing_id=listing_id,
+        customer_name=customer_name[:128],
+        viewing_date=viewing_date,
+        phone=phone[:32],
+        preferred_time=preferred_time[:32],
+    )
+    return models.get_viewing(models.book_viewing(request))
+
+
+def _confirmation(booked: models.Viewing, *, how: str) -> str:
     where = " · ".join(part for part in (booked.property_type, booked.area) if part)
     price = f"RM {round(booked.price_rm):,}" if booked.price_rm is not None else "price unknown"
     when = booked.viewing_date + (f" ({booked.preferred_time})" if booked.preferred_time else "")
     return (
-        f"The customer filled in the booking form and it IS ALREADY SAVED in the "
+        f"The customer {how} and it IS ALREADY SAVED in the "
         f"property back office as viewing #{booked.id}: {booked.customer_name}, "
         f"{booked.listing_id} ({where}, {price}), on {when}. "
         "Do not book it again and do not ask them to confirm the details. "

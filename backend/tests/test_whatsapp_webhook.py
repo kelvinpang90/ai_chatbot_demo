@@ -27,6 +27,7 @@ from app.routers.whatsapp_webhook import (
 from app.services import doc_store, llm, notify, outbox, transcribe, whatsapp, whatsapp_media
 from app.services.user_store import user_store
 from app.tools import erp as erp_tools
+from app.tools import realestate as realestate_tools
 
 client = TestClient(app)
 
@@ -56,6 +57,9 @@ def test_every_canned_reply_is_written_in_all_three_languages():
         "erp.ORDER_PUSH": erp_tools.ORDER_PUSH,
         # The one that set the shape, so the two files cannot drift apart.
         "llm.FALLBACK_REPLY": llm.FALLBACK_REPLY,
+        # Sent by the send loop when Meta refuses the booking form (2026-09-13),
+        # after the model's turn has ended -- so the model never gets to translate it.
+        "realestate.UNDELIVERED_FORM_MESSAGE": realestate_tools.UNDELIVERED_FORM_MESSAGE,
     }
     for name, message in canned.items():
         parts = [part.strip() for part in message.split(" / ")]

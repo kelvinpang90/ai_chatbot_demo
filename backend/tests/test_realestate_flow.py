@@ -80,6 +80,13 @@ def listings():
         yield
 
 
+@pytest.fixture
+def listing_on_the_books():
+    """Every write checks the listing exists first, whichever way it arrived."""
+    with patch.object(models, "listing_exists", return_value=True):
+        yield
+
+
 def _form_reply(phone: str, fields: dict, seq: int = 1) -> dict:
     return {
         "id": f"wamid.{phone}.{seq}",
@@ -203,7 +210,7 @@ def test_the_flow_token_is_not_the_customers_phone_number(
 # --- the form coming back -----------------------------------------------------
 
 
-def test_a_submitted_form_becomes_a_booking():
+def test_a_submitted_form_becomes_a_booking(listing_on_the_books):
     with patch.object(models, "book_viewing", return_value=7) as written:
         with patch.object(models, "get_viewing", return_value=BOOKED):
             said = realestate.book_from_form(
@@ -266,7 +273,7 @@ def test_a_response_that_is_not_json_saves_nothing_and_says_so():
     assert said == realestate.FORM_UNREADABLE
 
 
-def test_a_back_office_that_is_down_is_told_to_the_customer_not_hidden():
+def test_a_back_office_that_is_down_is_told_to_the_customer_not_hidden(listing_on_the_books):
     """The worst thing this demo could do is say a viewing is confirmed over an
     empty back office. The store raises so that this line can exist."""
     with patch.object(models, "book_viewing", side_effect=StoreUnavailable("down")):
@@ -290,7 +297,7 @@ def test_a_back_office_that_is_down_is_told_to_the_customer_not_hidden():
 # --- through the webhook ------------------------------------------------------
 
 
-def test_a_form_submitted_on_a_phone_reaches_the_model_as_a_booking_made():
+def test_a_form_submitted_on_a_phone_reaches_the_model_as_a_booking_made(listing_on_the_books):
     """The acceptance for this task's code half: an nfm_reply must not sit there
     as an interactive message nobody handles."""
     phone = "60129993010"
@@ -320,7 +327,7 @@ def test_a_form_submitted_on_a_phone_reaches_the_model_as_a_booking_made():
     assert [m.role for m in user_store.get(phone).history] == ["user", "assistant"]
 
 
-def test_a_form_submitted_while_a_person_has_the_conversation_is_still_filed():
+def test_a_form_submitted_while_a_person_has_the_conversation_is_still_filed(listing_on_the_books):
     """Both halves matter: the booking is the customer's, so it is saved; the
     bot stays silent, because a colleague is typing."""
     phone = "60129993011"
@@ -353,3 +360,223 @@ def test_the_form_message_stays_inside_metas_limits(flow_configured, on_whatsapp
     parameters = outbox.drain("60129993001")[0]["interactive"]["action"]["parameters"]
 
     assert len(parameters["flow_cta"]) <= whatsapp.MAX_BUTTON_TITLE_CHARS
+
+
+def test_a_form_naming_a_listing_that_is_not_on_the_books_saves_nothing():
+    """The form path used to skip the check the HTTP route makes. A booking
+    against an id nobody lists is a row with a blank property on the big screen."""
+    with patch.object(models, "listing_exists", return_value=False):
+        with patch.object(models, "book_viewing") as written:
+            said = realestate.book_from_form(
+                {
+                    "response_json": json.dumps(
+                        {
+                            "customer_name": "Ali",
+                            "listing_id": "PROP-999",
+                            "viewing_date": "2026-09-21",
+                        }
+                    )
+                },
+                phone="60129993020",
+            )
+
+    assert said == realestate.FORM_UNREADABLE
+    written.assert_not_called()
+
+
+# --- 2026-09-13: Meta refused the form, and the bot had already said it was sent
+
+
+def test_the_bot_is_not_told_the_form_is_already_on_the_screen():
+    """It goes to Meta after the reply is written, and Meta can still say no --
+    which it did, to every form this account sent. What the model writes from
+    this line has to stay true when that happens."""
+    assert "on the customer's screen" not in realestate.FORM_SENT
+    assert "is being sent" in realestate.FORM_SENT
+
+
+def test_a_refused_form_is_recognised_as_ours():
+    form = whatsapp.build_flow_message(
+        "60129993030", "b", FLOW_ID, "tok", "Book", realestate.SCREEN
+    )
+
+    assert realestate.undelivered_form_fallback(form) == realestate.UNDELIVERED_FORM_MESSAGE
+
+
+def test_somebody_elses_refused_form_is_not_answered_with_a_line_about_houses():
+    """A food Flow that fails must not ask for a property and a viewing date."""
+    other_form = whatsapp.build_flow_message(
+        "60129993031", "b", FLOW_ID, "tok", "Order", "ORDER_FOOD"
+    )
+    text = whatsapp.build_text_message("60129993031", "hello")
+
+    assert realestate.undelivered_form_fallback(other_form) is None
+    assert realestate.undelivered_form_fallback(text) is None
+
+
+def _text_message(phone: str, body: str) -> dict:
+    return {"id": f"wamid.{phone}.t", "from": phone, "type": "text", "text": {"body": body}}
+
+
+def _refuse_flows(payload: dict):
+    """Meta, as it behaved on 2026-09-13: text goes through, a Flow does not."""
+    if payload.get("type") == "interactive" and payload["interactive"].get("type") == "flow":
+        raise whatsapp.WhatsAppSendError(
+            'WhatsApp refused a interactive message (HTTP 400): '
+            '{"error":{"message":"(#139000) Blocked by Integrity","code":139000}}'
+        )
+
+
+def test_a_refused_form_is_followed_by_the_question_in_the_chat(flow_configured, listings):
+    """The fix, end to end: the customer is asked for the details instead of
+    being left with a promise of a form that never comes."""
+    from app.console import events
+    from app.routers.whatsapp_webhook import _handle_incoming_message
+
+    phone = "60129993040"
+    _in_the_property_demo(phone)
+    events.clear()
+    sent = []
+
+    def reply_with_form(*_args, **_kwargs):
+        realestate.offer_viewing_form()
+        return "A form is coming for you."
+
+    def record_then_refuse(payload):
+        sent.append(payload)
+        _refuse_flows(payload)
+
+    with patch.object(llm, "get_reply", side_effect=reply_with_form):
+        with patch.object(whatsapp, "send_raw", side_effect=record_then_refuse):
+            _handle_incoming_message(_text_message(phone, "I want to see it"))
+
+    bodies = [p["text"]["body"] for p in sent if p.get("type") == "text"]
+    assert bodies[-1] == realestate.UNDELIVERED_FORM_MESSAGE
+    # The model reads it next turn, so their answer arrives in a conversation that
+    # already says the form failed.
+    assert user_store.get(phone).history[-1].content == realestate.UNDELIVERED_FORM_MESSAGE
+    # And the room still sees Meta said no.
+    failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
+    assert failures and "139000" in failures[0].output
+    events.clear()
+
+
+def test_a_refused_form_is_not_followed_up_while_a_person_has_the_conversation(
+    flow_configured, listings
+):
+    from app.routers.whatsapp_webhook import _say_instead_of_the_form
+
+    phone = "60129993041"
+    _in_the_property_demo(phone)
+    profile = user_store.get_or_create(phone)
+    handover.begin(profile, reason="asked for a manager")
+    user_store.save(profile)
+    form = whatsapp.build_flow_message(phone, "b", FLOW_ID, "tok", "Book", realestate.SCREEN)
+
+    with patch.object(whatsapp, "send_raw") as sent:
+        _say_instead_of_the_form(
+            form, realestate.UNDELIVERED_FORM_MESSAGE, whatsapp.WhatsAppSendError("no")
+        )
+
+    sent.assert_not_called()
+
+
+def test_a_refused_message_that_is_not_our_form_still_fails_loudly():
+    """The fallback is for the form only. Anything else Meta refuses goes down the
+    path it always did -- a console event, and no invented follow-up."""
+    from app.console import events
+    from app.routers.whatsapp_webhook import _handle_incoming_message
+
+    phone = "60129993042"
+    _in_the_property_demo(phone)
+    events.clear()
+    refused = whatsapp.WhatsAppSendError("WhatsApp refused a text message (HTTP 400): ...")
+
+    with patch.object(llm, "get_reply", return_value="Hello."):
+        with patch.object(whatsapp, "send_raw", side_effect=refused) as sent:
+            _handle_incoming_message(_text_message(phone, "hi"))
+
+    assert all(
+        realestate.UNDELIVERED_FORM_MESSAGE not in json.dumps(call.args[0], ensure_ascii=False)
+        for call in sent.call_args_list
+    )
+    assert [e.type for e in events.since(0)].count(events.SEND_FAILED) == 1
+    events.clear()
+
+
+# --- booking from the chat, when there was no form ----------------------------
+
+
+def test_details_given_in_the_chat_become_a_booking(listing_on_the_books):
+    """The degrade path used to stop at a CRM card. On 2026-09-13 it became the
+    only path, and a scene whose point is the back office cannot skip it."""
+    from app.bots.registry import get_bot
+    from app.tools import local
+
+    # A key that is not the number, on purpose. With the two equal, reading the
+    # key instead of the phone passed this test -- a mutation run caught it. A
+    # customer behind a username is exactly that case: filed under a BSUID, with
+    # the number (when there is one) somewhere else.
+    profile = user_store.get_or_create("60129993050")
+    profile.phone = "+60 12-999 3050"
+
+    with local.serving(get_bot("realestate"), profile):
+        with patch.object(models, "book_viewing", return_value=7) as written:
+            with patch.object(models, "get_viewing", return_value=BOOKED):
+                said = realestate.book_property_viewing(
+                    customer_name="陈家明",
+                    listing_id="PROP-202",
+                    viewing_date="2026-09-21",
+                    preferred_time="petang",
+                )
+
+    request = written.call_args.args[0]
+    assert request.phone == "+60 12-999 3050"
+    assert request.viewing_date == date(2026, 9, 21)
+    assert "#7" in said and "gave these details in the chat" in said
+
+
+def test_a_listing_the_model_made_up_is_refused_and_nothing_is_written():
+    with patch.object(models, "listing_exists", return_value=False):
+        with patch.object(models, "book_viewing") as written:
+            said = realestate.book_property_viewing("Ali", "PROP-999", "2026-09-21")
+
+    assert said == realestate.NO_SUCH_LISTING
+    written.assert_not_called()
+
+
+def test_a_date_the_model_could_not_pin_down_is_refused_and_nothing_is_written(
+    listing_on_the_books,
+):
+    """"This Saturday" has to become a real date before it reaches the back
+    office; the tool tells the model to ask rather than guess."""
+    with patch.object(models, "book_viewing") as written:
+        said = realestate.book_property_viewing("Ali", "PROP-202", "this Saturday")
+
+    assert said == realestate.CHAT_DETAILS_UNREADABLE
+    written.assert_not_called()
+
+
+def test_a_chat_booking_the_back_office_could_not_take_is_not_reported_as_booked(
+    listing_on_the_books,
+):
+    with patch.object(models, "book_viewing", side_effect=StoreUnavailable("down")):
+        said = realestate.book_property_viewing("Ali", "PROP-202", "2026-09-21")
+
+    assert said == realestate.CHAT_NOT_SAVED
+
+
+def test_on_the_web_chat_a_booking_is_still_made_without_a_phone(listing_on_the_books):
+    """No conversation open means no customer to read a number from. The row is
+    still worth having -- the name and the property are the booking."""
+    with patch.object(models, "book_viewing", return_value=7) as written:
+        with patch.object(models, "get_viewing", return_value=BOOKED):
+            realestate.book_property_viewing("Ali", "PROP-202", "2026-09-21")
+
+    assert written.call_args.args[0].phone == ""
+
+
+def test_the_property_bot_can_book_from_the_chat():
+    from app.tools import registry
+
+    assert "book_property_viewing" in [t.name for t in registry.get_tools("realestate")]
