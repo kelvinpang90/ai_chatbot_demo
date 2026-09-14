@@ -342,9 +342,14 @@
   padding-bottom: 14px;
 }
 
+/* A bubble is as wide as its text, like on the phone -- up to 88% of the pane.
+   Without the start alignment the bot's and colleague's bubbles stretched to
+   that limit however short the message. */
 .cx-msg {
   display: flex;
   flex-direction: column;
+  align-self: flex-start;
+  align-items: flex-start;
   gap: 2px;
   max-width: 88%;
 }
