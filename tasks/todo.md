@@ -1235,6 +1235,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 排除了前端去重（`seen` 只在内存里，整页刷新是空的）
   - 两层 nginx（`deploy/nginx/chatbot.acuventech.com.conf` 和 `frontend/nginx.conf`）对 `/console/stream` 都已 `proxy_buffering off`
   - **剩下的嫌疑是 Cloudflare**（推断：线上挂时返回的 `error code: 502` 是它的错误页格式）在缓冲或压缩流的尾巴。**未证实**，等用户的区分测试
+  - **用户的两个区分测试（2026-09-14）**：
+    1. 刷新后什么都不动、等 20 秒 → **缺的几条自己冒出来了**。时间对得上后端每 15 秒一次的 keepalive：后端下一次写出东西，才把前面憋住的那段推出去。**确认是中间某一层憋住了尾巴，数据没丢**
+    2. 导演台开着不刷新、手机发一条会触发工具的消息 → **工具调用隔了十几秒才出现**。所以**不只是刷新回放的问题，演示时的实时推送本身就慢**——这是更严重的那个，导演台就是卖点
+  - **修法（用户选的方案 1）**：事件流响应头从 `Cache-Control: no-cache` 改成 `no-cache, no-transform`。`no-transform` 是告诉代理「别压缩、别改写这个响应」的标准指令，而代理要压缩一个响应就得先把它攒着。测试先红后绿；原来那条把头精确钉成 `no-cache` 的老测试改成按指令集合判断。**856 passed**
+  - **没选方案 2**（每推完一批事件就补写一行注释把前面挤出去）：它不管是哪一层在憋都有效，但属于绕过而不是修原因。**如果方案 1 部署后实测没好，方案 2 就是下一步**
+  - ⚠️ **方案 1 管不管用只能在线上验**：本地没有 Cloudflare 这一层，单测只能证明头发出去了，证明不了代理会照做。「是 Cloudflare」本身也仍是推断
 
 - [ ] **任务 25：food 后端 + 点餐流程**
   文件：`backend/app/verticals/food/`、`backend/app/tools/food.py`（新增）、`backend/app/bots/data/food.json`

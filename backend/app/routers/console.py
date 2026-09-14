@@ -137,7 +137,14 @@ async def stream(replay: bool = False) -> StreamingResponse:
         _event_stream(replay),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            # `no-transform` is for the proxies past nginx. On 2026-09-14 a tool
+            # call reached the console ten-odd seconds late on the deployed site,
+            # and a refreshed feed stopped part-way and filled in later: sent, but
+            # held by a hop between here and the browser until the next keepalive
+            # pushed it out. Both nginx hops already had buffering off; a proxy
+            # that compresses a response has to hold it to do so, and this is the
+            # directive that tells it not to.
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",  # nginx must not sit on the chunks
         },
     )

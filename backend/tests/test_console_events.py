@@ -80,7 +80,9 @@ def test_the_endpoint_answers_as_an_event_stream():
     response = asyncio.run(console.stream(replay=True))
 
     assert response.media_type == "text/event-stream"
-    assert response.headers["cache-control"] == "no-cache"
+    # A set, not an exact string: `no-transform` joined it on 2026-09-14 -- see
+    # test_the_stream_tells_every_proxy_on_the_way_not_to_touch_it.
+    assert "no-cache" in {d.strip() for d in response.headers["cache-control"].split(",")}
     assert response.headers["x-accel-buffering"] == "no"  # or nginx sits on the chunks
 
 
@@ -131,6 +133,26 @@ def test_a_fresh_subscriber_gets_what_happens_next_not_the_backlog():
 
     assert "stale_tool" not in chunk
     assert "fresh_tool" in chunk
+
+
+def test_the_stream_tells_every_proxy_on_the_way_not_to_touch_it():
+    """Found on the deployed site on 2026-09-14: a tool call made on a phone
+    reached the console screen ten-odd seconds late, and a refresh showed a feed
+    that stopped part-way and filled itself in later. The rest had been sent; a
+    hop between here and the browser held it until the next keepalive pushed it
+    out. Both nginx hops already had buffering off, which points past them at
+    the edge proxy -- and `no-transform` is the directive that tells a proxy not
+    to compress or rewrite a response, which is what holds an event stream back.
+
+    Read off the response object rather than through a client: the stream never
+    ends, so reading it would never return.
+    """
+    response = asyncio.run(console.stream(replay=False))
+    try:
+        directives = {part.strip() for part in response.headers["cache-control"].split(",")}
+        assert "no-transform" in directives
+    finally:
+        asyncio.run(response.body_iterator.aclose())
 
 
 @pytest.mark.parametrize("query", ["", "?token=", "?token=not-the-token"])
