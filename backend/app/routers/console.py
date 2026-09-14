@@ -13,6 +13,8 @@ from app.console import events, summary
 from app.models import (
     ConversationDetail,
     ConversationSummary,
+    CustomerPage,
+    CustomerSummary,
     DemoSummaryRequest,
     DemoSummaryResult,
     HandoverCustomer,
@@ -302,6 +304,100 @@ def list_conversations(
             for row in rows
         ],
     )
+
+
+# Declared before `/history/{conversation_id}`, and it has to be: routes match in
+# the order they are declared, and that one would otherwise take "customers" for a
+# conversation id and answer 404. Under /history/ at all so that the prefix rules
+# nginx.conf and vite.config.ts already carry cover it -- see test_console_routing.
+@router.get(
+    "/history/customers",
+    response_model=CustomerPage,
+    dependencies=[Depends(require_console_token)],
+)
+def list_customers(
+    key: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> CustomerPage:
+    """Everybody who has run a demo, one row each, most recently active first.
+
+    `key` narrows it to one number, normalised the way /history normalises it.
+    """
+    limit = max(1, min(limit, MAX_LIMIT))
+    offset = max(0, offset)
+
+    where, params = [], []
+    if key:
+        try:
+            where.append("m.key_id = %s")
+            params.append(identity(key))
+        except ValueError:
+            return CustomerPage(customers=[], limit=limit, offset=offset)
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+
+    rows = audit_store.query(
+        "SELECT m.key_id, COUNT(DISTINCT m.conversation_id) AS conversations,"
+        " COUNT(*) AS messages, MAX(m.created_at) AS last_at,"
+        " GROUP_CONCAT(DISTINCT m.bot_id ORDER BY m.bot_id) AS bots,"
+        " GROUP_CONCAT(DISTINCT m.channel ORDER BY m.channel) AS channels"
+        f" FROM chat_messages m{clause}"
+        " GROUP BY m.key_id ORDER BY last_at DESC LIMIT %s OFFSET %s",
+        (*params, limit, offset),
+    )
+    if not rows:
+        return CustomerPage(customers=[], limit=limit, offset=offset)
+
+    # Counted separately, for the reason list_conversations gives: a join against
+    # two one-to-many tables multiplies the rows and COUNT(*) comes out wrong in a
+    # way that looks plausible. By key_id, which both tables carry. Neither has an
+    # index on it, which at demo volume is a scan of a few thousand rows.
+    keys = [row["key_id"] for row in rows]
+    placeholders = ", ".join(["%s"] * len(keys))
+    tools = {
+        row["key_id"]: row["n"]
+        for row in audit_store.query(
+            f"SELECT key_id, COUNT(*) AS n FROM tool_calls"
+            f" WHERE key_id IN ({placeholders}) GROUP BY key_id",
+            tuple(keys),
+        )
+    }
+    costs = {
+        row["key_id"]: row["cost_myr"]
+        for row in audit_store.query(
+            "SELECT key_id, COALESCE(SUM(cost_myr), 0) AS cost_myr FROM model_usage"
+            f" WHERE key_id IN ({placeholders}) GROUP BY key_id",
+            tuple(keys),
+        )
+    }
+
+    return CustomerPage(
+        limit=limit,
+        offset=offset,
+        customers=[
+            CustomerSummary(
+                key_id=row["key_id"],
+                display_name=_known_name(row["key_id"]),
+                conversations=row["conversations"],
+                messages=row["messages"],
+                tool_calls=tools.get(row["key_id"], 0),
+                cost_myr=float(costs.get(row["key_id"], 0)),
+                bots=_listed(row["bots"]),
+                channels=_listed(row["channels"]),
+                last_at=_at(row["last_at"]),
+            )
+            for row in rows
+        ],
+    )
+
+
+def _listed(concatenated) -> list[str]:
+    """A GROUP_CONCAT column back into the list it was built from."""
+    if not concatenated:
+        return []
+    if isinstance(concatenated, bytes):
+        concatenated = concatenated.decode("utf-8")
+    return [part for part in str(concatenated).split(",") if part]
 
 
 @router.get(

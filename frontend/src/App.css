@@ -394,6 +394,60 @@
   font-size: 12px;
 }
 
+/* One customer's conversations, opened under their row (task 37.7). Indented and
+   quieter than the customer row, so the list still reads as people first. */
+.history-customer {
+  margin-bottom: 8px;
+}
+
+.history-customer > .history-row {
+  margin-bottom: 0;
+}
+
+.history-caret {
+  margin-left: auto;
+  color: var(--con-dim);
+}
+
+.history-conversations {
+  margin: 6px 0 0 14px;
+  padding-left: 8px;
+  border-left: 1px solid var(--con-line);
+}
+
+.history-conversation,
+.history-more {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.history-conversation:hover,
+.history-conversation.active {
+  border-color: var(--con-accent);
+  background: var(--con-panel);
+}
+
+.history-more {
+  color: var(--con-accent);
+  text-align: center;
+  border-color: var(--con-line);
+}
+
+.history-more:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .pill {
   border: 1px solid var(--con-line);
   border-radius: 10px;

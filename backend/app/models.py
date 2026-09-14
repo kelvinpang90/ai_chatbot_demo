@@ -127,6 +127,33 @@ class HistoryPage(BaseModel):
     offset: int
 
 
+class CustomerSummary(BaseModel):
+    """Everything one customer did, added up across their conversations (task 37.7).
+
+    The console's list used to show a row per conversation, and one number that
+    demoed a dozen times filled it with a dozen rows of the same name. Their
+    conversations one by one are still the /history list, filtered by `key_id`.
+    """
+
+    key_id: str
+    display_name: str | None = None
+    conversations: int
+    messages: int
+    tool_calls: int
+    cost_myr: float
+    # Which demos and which channels, so the row says what this person has seen
+    # without opening it.
+    bots: list[str]
+    channels: list[str]
+    last_at: str
+
+
+class CustomerPage(BaseModel):
+    customers: list[CustomerSummary]
+    limit: int
+    offset: int
+
+
 class ToolSwitch(BaseModel):
     """Whether the bots may call tools at all -- the console's control arm."""
 

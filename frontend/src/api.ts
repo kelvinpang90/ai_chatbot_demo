@@ -228,10 +228,37 @@ export async function listConversations(
   token: string,
   search: string,
   offset = 0,
+  limit?: number,
 ): Promise<HistoryPage> {
   const params = new URLSearchParams({ offset: String(offset) })
   if (search.trim()) params.set('key', search.trim())
+  if (limit !== undefined) params.set('limit', String(limit))
   return consoleRequest<HistoryPage>(`/console/history?${params}`, token)
+}
+
+/** Everything one customer did, added up. Mirrors CustomerSummary in app/models.py. */
+export interface CustomerSummary {
+  key_id: string
+  display_name: string | null
+  conversations: number
+  messages: number
+  tool_calls: number
+  cost_myr: number
+  bots: string[]
+  channels: string[]
+  last_at: string
+}
+
+export interface CustomerPage {
+  customers: CustomerSummary[]
+  limit: number
+  offset: number
+}
+
+export async function listCustomers(token: string, search: string): Promise<CustomerPage> {
+  const params = new URLSearchParams()
+  if (search.trim()) params.set('key', search.trim())
+  return consoleRequest<CustomerPage>(`/console/history/customers?${params}`, token)
 }
 
 export async function readConversation(token: string, id: string): Promise<ConversationDetail> {

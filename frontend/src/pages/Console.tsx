@@ -17,7 +17,7 @@ import {
   type ConversationDetail,
   type HandoverCustomer,
 } from '../api'
-import { ConversationList, type ConsoleView } from '../components/ConversationList'
+import { CustomerList, type ConsoleView } from '../components/CustomerList'
 import { Transcript } from '../components/Transcript'
 import { toolUseIds } from '../transcript'
 
@@ -47,6 +47,12 @@ const POLL_FAILED = '读不到人工接管的状态'
 // is what brings in what was *said* -- the feed carries no messages -- and what
 // the database has priced. Same beat as the handover poll.
 const TRANSCRIPT_POLL_MS = 5000
+
+// How far before a customer was opened a live call may have started and still be
+// shown under their console (task 37.7). Covers a call already running at the
+// moment of the click, which the database has not got yet, and the difference
+// between this laptop's clock and the server's.
+const OPENED_SLACK_SECONDS = 5
 
 // Carried over from the transcript page this screen absorbed (task 37.6).
 const BAD_TOKEN_NOTE =
@@ -137,6 +143,8 @@ export default function Console() {
   // never shown under another's name while the next one loads.
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [detailNote, setDetailNote] = useState('')
+  // When the current customer view was opened, in epoch seconds like the events.
+  const [viewOpenedAt, setViewOpenedAt] = useState(0)
   const feedRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
   // event arrives again after a reconnect. Sequence numbers make that harmless -
@@ -362,9 +370,22 @@ export default function Console() {
   const liveRows = useMemo(
     () =>
       view.kind === 'customer'
-        ? rows.filter((row) => row.keyId === view.keyId && !pastIds.has(row.id))
+        ? rows.filter(
+            (row) =>
+              row.keyId === view.keyId &&
+              !pastIds.has(row.id) &&
+              // Only what has happened since this conversation was opened. Found
+              // in the browser test for task 37.7: opening one of a customer's
+              // older conversations listed every call from all their others as
+              // "live", because those are in the buffer under the same key and
+              // only this transcript was deduplicated against. Anything older than
+              // the click is already in the database, in whichever conversation it
+              // belongs to; anything newer is what is happening now, including a
+              // new demo they start while this is on screen.
+              row.at >= viewOpenedAt - OPENED_SLACK_SECONDS,
+          )
         : rows,
-    [rows, view, pastIds],
+    [rows, view, pastIds, viewOpenedAt],
   )
 
   // Newest at the bottom, like every other console; follow it down. Keyed on how
@@ -378,6 +399,7 @@ export default function Console() {
 
   function chooseView(next: ConsoleView) {
     setView(next)
+    setViewOpenedAt(Date.now() / 1000)
     setDetail(null)
     setDetailNote('')
     setClosingNote('')
@@ -526,7 +548,7 @@ export default function Console() {
       )}
 
       <div className="console-body">
-        <ConversationList token={token} view={view} onSelect={chooseView} onRefused={refuse} />
+        <CustomerList token={token} view={view} onSelect={chooseView} onRefused={refuse} />
 
         <main className="console-main">
           {view.kind === 'customer' && !holding && (
@@ -605,7 +627,7 @@ export default function Console() {
               ))}
 
             {view.kind === 'customer' && liveRows.length > 0 && (
-              <div className="console-live-divider">实时 · 还没进记录的调用</div>
+              <div className="console-live-divider">实时 · 这位顾客刚发生的调用</div>
             )}
 
             {view.kind === 'all' && liveRows.length === 0 ? (

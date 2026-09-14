@@ -44,12 +44,16 @@ def _when(day=8, hour=13, minute=30, second=0, ms=0):
 # --- the door ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", ["/console/stream", "/console/history", "/console/history/c-1"])
+@pytest.mark.parametrize(
+    "path", ["/console/stream", "/console/history", "/console/history/c-1", "/console/history/customers"]
+)
 def test_no_token_no_console(client, path):
     assert client.get(path).status_code == 401
 
 
-@pytest.mark.parametrize("path", ["/console/stream", "/console/history", "/console/history/c-1"])
+@pytest.mark.parametrize(
+    "path", ["/console/stream", "/console/history", "/console/history/c-1", "/console/history/customers"]
+)
 def test_an_unconfigured_console_is_closed_not_open(path):
     """The opposite of how the chat side reads an empty password, deliberately.
 
@@ -284,3 +288,128 @@ def test_a_conversation_reads_back_with_the_log_switched_off(client):
     assert client.get("/console/history", headers={"X-Console-Token": TOKEN}).json()[
         "conversations"
     ] == []
+
+
+# --- one row per customer (task 37.7) -----------------------------------------
+#
+# The console's list had a row per conversation, and one number that demoed a
+# dozen times filled it with a dozen rows of the same name. The list is now a row
+# per customer; that customer's conversations are the existing list above,
+# filtered by their number and paged.
+
+
+def _customer_rows():
+    return [
+        {
+            "key_id": "60168623902",
+            "conversations": 12,
+            "messages": 97,
+            "channels": "whatsapp",
+            "bots": "realestate,retail",
+            "last_at": _when(day=14, hour=10, minute=23),
+        }
+    ]
+
+
+def _customers(client):
+    return client.get("/console/history/customers", headers={"X-Console-Token": TOKEN})
+
+
+def test_a_customer_carries_the_totals_of_every_conversation_they_had(client, rows):
+    rows.append(_customer_rows())
+    rows.append([{"key_id": "60168623902", "n": 61}])
+    rows.append([{"key_id": "60168623902", "cost_myr": 8.1234}])
+
+    response = _customers(client)
+
+    assert response.status_code == 200
+    got = response.json()["customers"][0]
+    assert got["key_id"] == "60168623902"
+    assert got["conversations"] == 12
+    assert got["messages"] == 97
+    assert got["tool_calls"] == 61
+    assert got["cost_myr"] == 8.1234, "priced by the backend, not recomputed on the page"
+    assert got["bots"] == ["realestate", "retail"]
+    assert got["channels"] == ["whatsapp"]
+    assert got["last_at"] == "2026-09-14 10:23:00.000"
+
+
+def test_the_customers_path_is_not_read_as_a_conversation_id(client, rows):
+    """`/history/{conversation_id}` would take "customers" for an id and answer
+    404 -- or a transcript -- if it were declared first. Asserted on the shape of
+    the answer, which only the customers route gives."""
+    rows.append([])
+
+    response = _customers(client)
+
+    assert response.status_code == 200
+    assert response.json()["customers"] == []
+
+
+def test_a_customer_with_no_tools_and_no_usage_still_lists(client, rows):
+    rows.append(_customer_rows())
+    rows.append([])
+    rows.append([])
+
+    got = _customers(client).json()["customers"][0]
+
+    assert (got["tool_calls"], got["cost_myr"]) == (0, 0.0)
+
+
+def test_a_customer_is_named_where_their_profile_is_still_alive(client, rows):
+    rows.append(_customer_rows())
+    rows.append([])
+    rows.append([])
+    profile = UserProfile(key_id="60168623902", phone="60168623902", display_name="Kelvin Peng")
+
+    with patch.object(console.user_store, "get", return_value=profile):
+        got = _customers(client).json()["customers"][0]
+
+    assert got["display_name"] == "Kelvin Peng"
+
+
+def test_the_customer_search_normalises_the_number_like_the_conversation_search(client):
+    seen = []
+
+    def query(sql, params=()):
+        seen.append((sql, params))
+        return []
+
+    with patch.object(console.audit_store, "query", side_effect=query):
+        client.get(
+            "/console/history/customers",
+            params={"key": "+60 16-862 3902"},
+            headers={"X-Console-Token": TOKEN},
+        )
+
+    sql, params = seen[0]
+    assert "key_id = %s" in sql
+    assert "60168623902" in params
+
+
+def test_an_unusable_number_finds_no_customer_rather_than_all_of_them(client, rows):
+    got = client.get(
+        "/console/history/customers",
+        params={"key": "not a number"},
+        headers={"X-Console-Token": TOKEN},
+    ).json()
+
+    assert got["customers"] == []
+
+
+def test_the_customer_page_size_is_capped(client):
+    seen = []
+
+    def query(sql, params=()):
+        seen.append(params)
+        return []
+
+    with patch.object(console.audit_store, "query", side_effect=query):
+        body = client.get(
+            "/console/history/customers",
+            params={"limit": 100000},
+            headers={"X-Console-Token": TOKEN},
+        ).json()
+
+    assert body["limit"] == console.MAX_LIMIT
+    assert console.MAX_LIMIT in seen[0]
