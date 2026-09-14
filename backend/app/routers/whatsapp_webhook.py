@@ -773,8 +773,12 @@ def _handle_text_message(
         # exotic one. Re-read rather than trusted from the copy loaded before the
         # model was called: this object has been in hand the whole time and knows
         # nothing about it. Found by a cold review of task 20.
+        #
+        # Unless this turn handed over itself: `request_human_help` sets the flag
+        # on `profile`, and then the reply is the "passing you to a colleague"
+        # line the customer must still get. Task 26's phone run lost exactly that.
         taken = user_store.get(sender.key)
-        if handover.active(taken):
+        if handover.active(taken) and not handover.active(profile):
             logger.info("dropping the bot's answer to %s: a person took over mid-turn", sender.key)
             # Written onto the record as it is NOW, not onto the copy this turn
             # has been holding. The first version saved the stale copy and was

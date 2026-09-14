@@ -523,6 +523,29 @@ def test_a_person_taking_over_mid_turn_stops_the_answer_going_out():
     assert handover.active(user_store.get(phone)) is True
 
 
+def test_the_bot_handing_over_itself_still_tells_the_customer():
+    """Task 26 on a real phone, scene 3: the customer asked for the rider to
+    leave it at the door, the model called `request_human_help` -- and the phone
+    got nothing. `handover.begin` saves the flag as it runs, so the mid-turn
+    guard above read this turn's own handover as a person barging in and
+    dropped the "passing you to a colleague" line."""
+    phone = "60129998027"
+    _customer(phone)
+
+    def hand_over_from_the_tool(_bot, profile, *_args, **_kwargs):
+        # What `request_human_help` does: the record the router is holding.
+        handover.begin(profile, reason="wants it left at the door")
+        return "好的，我帮您转接同事。"
+
+    with patch.object(llm, "get_reply", side_effect=hand_over_from_the_tool):
+        sent = dispatch_message(_said(phone, "能让骑手放门口吗？", seq=27))
+
+    assert [p["text"]["body"] for p in sent] == ["好的，我帮您转接同事。"]
+    stored = user_store.get(phone)
+    assert [m.role for m in stored.history] == ["user", "assistant"]
+    assert handover.active(stored) is True
+
+
 def test_the_console_types_to_the_newest_handover_not_the_oldest():
     """One conversation nobody handed back last week is enough to make the
     default wrong for every demo after it: the banner names the wrong customer
