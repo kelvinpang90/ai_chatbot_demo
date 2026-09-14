@@ -132,11 +132,30 @@ def test_the_customer_never_leaks_into_the_cached_prefix():
     assert "60198704432" not in stable_first["text"]
 
 
-def test_each_tier_gets_the_model_its_bot_declares():
-    assert llm.model_for(get_bot("retail")) == "claude-opus-5"  # flagship
-    assert llm.model_for(get_bot("food")) == "claude-opus-5"  # deep vertical
-    assert llm.model_for(get_bot("hotel")) == "claude-sonnet-5"  # light tier
-    assert llm.model_for(get_bot("saas")) == "claude-sonnet-5"
+def test_no_bot_hard_codes_a_model_so_the_setting_decides():
+    """Until 2026-09-14 every bot named its own model, which left ANTHROPIC_MODEL
+    in .env doing nothing at all -- the one knob that looked like it chose the
+    model chose nothing. Now it does, for all of them, and a bot names a model of
+    its own only when there is a reason it has to differ."""
+    from app.bots.registry import list_bots
+
+    for bot in list_bots():
+        assert bot.model is None, f"{bot.id} hard-codes {bot.model}"
+        assert llm.model_for(bot) == llm.settings.anthropic_model
+
+
+def test_the_model_a_fresh_deployment_gets_is_haiku():
+    """Read off the field's declared default rather than off `settings`, which a
+    .env on the machine running the tests would be free to override."""
+    from app.config import Settings
+
+    assert Settings.model_fields["anthropic_model"].default == "claude-haiku-4-5"
+
+
+def test_a_bot_can_still_name_a_model_of_its_own():
+    bot = get_bot("retail").model_copy(update={"model": "claude-opus-5"})
+
+    assert llm.model_for(bot) == "claude-opus-5"
 
 
 def test_a_bot_that_declares_no_model_falls_back_to_the_setting():
@@ -211,7 +230,7 @@ def test_the_tool_path_uses_the_same_model_and_cached_system_blocks():
             llm.get_reply(bot, customer, history=[])
 
     kwargs = mock_parse.call_args.kwargs
-    assert kwargs["model"] == "claude-opus-5"
+    assert kwargs["model"] == llm.model_for(bot)
     # Tools render before system, so the one breakpoint covers them too.
     assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
 

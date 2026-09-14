@@ -5,7 +5,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-5"
+    # The model every bot answers with, unless a bot's JSON names one of its own.
+    # Haiku by default (2026-09-14, the owner's call on cost): about a fifth of
+    # Opus 5 per token. Until that day each bot hard-coded its model and this
+    # setting was dead weight -- see test_no_bot_hard_codes_a_model_so_the_setting_decides.
+    anthropic_model: str = "claude-haiku-4-5"
 
     # Transcription (task 36). Declared ahead of the code that reads it because
     # an undeclared key with a value in `.env` is not ignored -- it fails
