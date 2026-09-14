@@ -52,7 +52,7 @@ const HANDOVER_POLL_MS = 5000
 // and nothing on either screen would say why.
 const MAX_REPLY_CHARS = 4096
 
-const POLL_FAILED = '读不到人工接管的状态'
+const POLL_FAILED = 'Could not read who is taken over'
 
 // How often the conversation on screen is read again. The feed carries no
 // messages, so this is what brings in what was *said*. Three seconds rather than
@@ -75,8 +75,8 @@ const START_SLACK_SECONDS = 5
 
 // Carried over from the transcript page this screen absorbed (task 37.6).
 const BAD_TOKEN_NOTE =
-  'token 不对。如果是从服务器 .env 复制的，注意值两边不要带引号——docker compose 会把引号也当成 token 的一部分。'
-const NOT_CONFIGURED_NOTE = '后端没有配 CONSOLE_TOKEN，这个页面打不开。'
+  'Wrong token. If you copied it from the server .env, leave out the quotes around the value -- docker compose counts them as part of the token.'
+const NOT_CONFIGURED_NOTE = 'The backend has no CONSOLE_TOKEN set, so this page cannot open.'
 
 // How long the same enquiry takes a person. Not measured, deliberately
 // conservative, and on screen because "it is fast" means nothing next to a
@@ -85,14 +85,15 @@ const HUMAN_MINUTES = 3
 
 const TECH_STORAGE_KEY = 'console_tech_mode'
 const LIST_STORAGE_KEY = 'console_customer_list'
+const THEME_STORAGE_KEY = 'console_theme_light'
 
 const BOT_LABELS: Record<string, string> = {
-  retail: '零售',
-  food: '餐饮',
-  realestate: '房产',
-  hotel: '酒店',
+  retail: 'Retail',
+  food: 'Food',
+  realestate: 'Property',
+  hotel: 'Hotel',
   saas: 'SaaS',
-  banking: '银行',
+  banking: 'Banking',
 }
 
 type Connection = 'connecting' | 'live' | 'error'
@@ -195,6 +196,7 @@ export default function Console() {
   const [feedTick, setFeedTick] = useState(0)
   const [techMode, setTechMode] = useState(() => readFlag(TECH_STORAGE_KEY))
   const [showList, setShowList] = useState(() => readFlag(LIST_STORAGE_KEY))
+  const [light, setLight] = useState(() => readFlag(THEME_STORAGE_KEY))
   const phoneRef = useRef<HTMLDivElement>(null)
   const streamRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
@@ -286,7 +288,7 @@ export default function Console() {
       // worked a minute ago has not gone bad because the backend restarted.
       if (source.readyState === EventSource.CLOSED) {
         if (!proven()) {
-          giveUp('订阅被拒绝：token 不对，或者后端没有配 CONSOLE_TOKEN。')
+          giveUp('Subscription refused: wrong token, or the backend has no CONSOLE_TOKEN.')
           return
         }
         source.close()
@@ -299,7 +301,7 @@ export default function Console() {
       if (proven()) return
       failures += 1
       if (failures >= MAX_FAILED_ATTEMPTS) {
-        giveUp('连不上后端，试了几次都没成。')
+        giveUp('Cannot reach the backend after several tries.')
       }
     }
     source.addEventListener('hello', hello as EventListener)
@@ -323,13 +325,13 @@ export default function Console() {
     let stale = false
     readToolSwitch(token)
       .then(({ enabled }) => !stale && setToolsEnabled(enabled))
-      .catch(() => !stale && setSwitchNote('读不到工具开关的状态'))
+      .catch(() => !stale && setSwitchNote('Could not read the tools switch'))
     return () => {
       stale = true
     }
   }, [token])
 
-  const statusText = { connecting: '连接中…', live: '实时', error: '连接中断，重试中…' }[connection]
+  const statusText = { connecting: 'Connecting…', live: 'Live', error: 'Disconnected, retrying…' }[connection]
 
   function flipTools() {
     if (toolsEnabled === null) return
@@ -342,7 +344,7 @@ export default function Console() {
         setToolsEnabled(enabled)
         setSwitchNote('')
       })
-      .catch(() => setSwitchNote('开关没拨动，后端没接受'))
+      .catch(() => setSwitchNote('Switch not thrown: the backend refused'))
   }
 
   useEffect(() => {
@@ -435,7 +437,7 @@ export default function Console() {
           setDetail(got)
           setDetailNote('')
         })
-        .catch(() => !stale && setDetailNote('这通对话读不出来'))
+        .catch(() => !stale && setDetailNote('Could not read this conversation'))
     const soon = window.setTimeout(read, nudge ? NUDGE_DELAY_MS : 0)
     const timer = window.setInterval(read, TRANSCRIPT_POLL_MS)
     return () => {
@@ -528,7 +530,7 @@ export default function Console() {
           name: customer.display_name || row.key_id,
         })
       })
-      .catch(() => setHandoverNote('打不开这位客户的对话'))
+      .catch(() => setHandoverNote("Could not open this customer's conversation"))
   }
 
   function takeOver() {
@@ -538,7 +540,7 @@ export default function Console() {
         setHeld(customers)
         setHandoverNote('')
       })
-      .catch(() => setHandoverNote('接管不了，后端没接受'))
+      .catch(() => setHandoverNote('Could not take over: the backend refused'))
   }
 
   function sendReply() {
@@ -557,7 +559,7 @@ export default function Console() {
       })
       .catch((failure: unknown) => {
         setHandoverNote(
-          failure instanceof ApiError ? `没发出去：${failure.message}` : '没发出去，后端没接受',
+          failure instanceof ApiError ? `Not sent: ${failure.message}` : 'Not sent: the backend refused',
         )
       })
       .finally(() => setSending(false))
@@ -570,7 +572,7 @@ export default function Console() {
         setHeld(customers)
         setHandoverNote('')
       })
-      .catch(() => setHandoverNote('交不回去，后端没接受'))
+      .catch(() => setHandoverNote('Could not hand back: the backend refused'))
   }
 
   function closeDemo() {
@@ -582,11 +584,11 @@ export default function Console() {
         const who = sent.display_name ?? sent.key_id
         // Who it went to, said out loud. In a room with three customers in it,
         // this line is the difference between right and lucky.
-        setClosingNote(`已发给 ${who} · ${sent.minutes} 分钟 · ${sent.tool_calls} 次真实调用`)
+        setClosingNote(`Sent to ${who} · ${sent.minutes} min · ${sent.tool_calls} real calls`)
       })
       .catch((failure: unknown) => {
         setClosingNote(
-          failure instanceof ApiError ? `没发出去：${failure.message}` : '没发出去，后端没接受',
+          failure instanceof ApiError ? `Not sent: ${failure.message}` : 'Not sent: the backend refused',
         )
       })
       .finally(() => setClosing(false))
@@ -595,6 +597,13 @@ export default function Console() {
   function toggleTech() {
     setTechMode((on) => {
       storeFlag(TECH_STORAGE_KEY, !on)
+      return !on
+    })
+  }
+
+  function toggleTheme() {
+    setLight((on) => {
+      storeFlag(THEME_STORAGE_KEY, !on)
       return !on
     })
   }
@@ -617,12 +626,12 @@ export default function Console() {
 
   if (!token) {
     return (
-      <div className="console">
+      <div className="console" data-theme={light ? 'light' : 'dark'}>
         <div className="console-gate">
-          <h1>导演台</h1>
+          <h1>Director's console</h1>
           {gateNote && <p className="console-gate-note">{gateNote}</p>}
           <p>
-            这条流里有真实的订单和客户资料，需要 CONSOLE_TOKEN 才能订阅。也可以直接打开
+            This feed carries real orders and customer details, so it needs CONSOLE_TOKEN. You can also open
             <code> /console?token=…</code>。
           </p>
           <input
@@ -633,7 +642,7 @@ export default function Console() {
             onChange={(e) => setDraftToken(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && saveToken()}
           />
-          <button onClick={saveToken}>连接</button>
+          <button onClick={saveToken}>Connect</button>
         </div>
       </div>
     )
@@ -642,24 +651,24 @@ export default function Console() {
   const botId = shown?.bot_id ?? latest?.bot_id ?? ''
 
   return (
-    <div className="console" data-tech={techMode}>
+    <div className="console" data-tech={techMode} data-theme={light ? 'light' : 'dark'}>
       <header className="cx-bar">
         <button className="cx-btn" aria-pressed={showList} onClick={toggleList}>
-          客户列表
+          Customers
         </button>
         {target ? (
           <>
             <span className="cx-who">{target.name}</span>
-            {shown && <span className="cx-tag">{shown.channel === 'whatsapp' ? 'WhatsApp' : '网页'}</span>}
+            {shown && <span className="cx-tag">{shown.channel === 'whatsapp' ? 'WhatsApp' : 'Web'}</span>}
             {botId && <span className="cx-tag">{BOT_LABELS[botId] ?? botId}</span>}
             <span className="cx-state" data-held={!!holding}>
-              {holding ? '人工接管中 · bot 已静默' : 'bot 在回复'}
+              {holding ? 'Human has it · bot silent' : 'Bot is replying'}
             </span>
           </>
         ) : (
-          <span className="cx-who cx-dim">还没有对话</span>
+          <span className="cx-who cx-dim">No conversation yet</span>
         )}
-        <span className="cx-mode">{view.kind === 'all' ? '跟随最新' : '已固定这通对话'}</span>
+        <span className="cx-mode">{view.kind === 'all' ? 'Following latest' : 'Pinned'}</span>
         <span className="cx-live" data-state={connection}>
           {statusText}
         </span>
@@ -667,28 +676,31 @@ export default function Console() {
         <span className="cx-spacer" />
 
         {shown && (
-          <span className="cx-cost" title="这通对话在 Claude 上的全部花费，每次调用当时计价">
-            本场 <b>{formatRinggit(shown.cost_myr)}</b>
+          <span className="cx-cost" title="Everything this conversation cost on Claude, priced per call when it happened">
+            This chat <b>{formatRinggit(shown.cost_myr)}</b>
             <small>
-              {tokens(shown.input_tokens + shown.cache_read_tokens + shown.cache_write_tokens)} 入 ·{' '}
-              {tokens(shown.output_tokens)} 出 · {shown.api_turns} 次调用
+              {tokens(shown.input_tokens + shown.cache_read_tokens + shown.cache_write_tokens)} in ·{' '}
+              {tokens(shown.output_tokens)} out · {shown.api_turns} calls
             </small>
           </span>
         )}
-        <span className="cx-compare">人工客服约 {HUMAN_MINUTES} 分钟</span>
+        <span className="cx-compare">A person takes ~{HUMAN_MINUTES} min</span>
 
+        <button className="cx-btn" onClick={toggleTheme} title="Switch between a light and a dark background">
+          {light ? 'Dark background' : 'Light background'}
+        </button>
         <label className="cx-toggle">
           <input type="checkbox" checked={techMode} onChange={toggleTech} />
-          技术模式
+          Tech mode
         </label>
         {target &&
           (holding ? (
             <button className="cx-btn cx-btn-hot" onClick={releaseHandover}>
-              交回 bot
+              Hand back to bot
             </button>
           ) : (
             <button className="cx-btn" onClick={takeOver}>
-              人工接管
+              Take over
             </button>
           ))}
         <button
@@ -697,10 +709,10 @@ export default function Console() {
           disabled={toolsEnabled === null}
           onClick={flipTools}
         >
-          {toolsEnabled === false ? '工具已关闭 · 接回' : '关掉工具（对照组）'}
+          {toolsEnabled === false ? 'Tools off · turn back on' : 'Turn tools off (control)'}
         </button>
         <button className="cx-btn" disabled={closing || !target} onClick={closeDemo}>
-          {closing ? '正在发…' : '结束演示 · 发总结'}
+          {closing ? 'Sending…' : 'End demo · send summary'}
         </button>
       </header>
 
@@ -709,7 +721,7 @@ export default function Console() {
           {switchNote && <span className="cx-note">{switchNote}</span>}
           {handoverNote && <span className="cx-note">{handoverNote}</span>}
           {closingNote && (
-            <span className="cx-note" data-ok={!closingNote.startsWith('没发出去')}>
+            <span className="cx-note" data-ok={!closingNote.startsWith('Not sent')}>
               {closingNote}
             </span>
           )}
@@ -718,14 +730,14 @@ export default function Console() {
 
       {toolsEnabled === false && (
         <div className="console-control-banner">
-          对照组：所有工具已关闭。同一个 bot、同一个问题，现在它只能从提示词里的 JSON 里答——
-          <strong>听起来一样自信，但没有一个数字是查来的。</strong>
+          Control arm: every tool is off. Same bot, same question -- now it can only answer from the JSON in its prompt.{' '}
+          <strong>It sounds just as sure, but not one number was looked up.</strong>
         </div>
       )}
 
       {heldElsewhere.length > 0 && (
         <div className="cx-held-elsewhere">
-          还有人在人工接管中，bot 不会回他们：
+          Still taken over, and the bot will not answer them:
           {heldElsewhere.map((customer) => (
             <button key={customer.key_id} className="cx-btn cx-btn-hot" onClick={() => openHeld(customer)}>
               {customer.display_name ?? customer.key_id}
@@ -739,11 +751,11 @@ export default function Console() {
 
         <main className="cx-main">
           <section className="cx-phone">
-            <div className="cx-pane-label">客户手机</div>
+            <div className="cx-pane-label">Customer's phone</div>
             <div className="cx-phone-scroll" ref={phoneRef}>
-              {!target && <p className="cx-empty">等待第一条消息…（在手机上给这个号码发点什么）</p>}
-              {target && !shown && <p className="cx-empty">{detailNote || '读取这通对话…'}</p>}
-              {shown && detailNote && <p className="cx-note">{detailNote}，下面是上一次读到的内容</p>}
+              {!target && <p className="cx-empty">Waiting for the first message… (send this number something from a phone)</p>}
+              {target && !shown && <p className="cx-empty">{detailNote || 'Reading this conversation…'}</p>}
+              {shown && detailNote && <p className="cx-note">{detailNote} -- showing the last copy read</p>}
               {shown?.messages.map((message, i) => {
                 const at = klTime(klEpoch(message.at))
                 const previous = shown.messages[i - 1]
@@ -755,8 +767,8 @@ export default function Console() {
                   <div key={message.id} className={`cx-msg cx-msg-${who}`}>
                     {(stamp || who === 'human') && (
                       <span className="cx-msg-meta">
-                        {who === 'human' && '同事 · '}
-                        {message.source === 'voice' && '语音 · '}
+                        {who === 'human' && 'Colleague · '}
+                        {message.source === 'voice' && 'Voice · '}
                         {at.slice(0, 5)}
                       </span>
                     )}
@@ -769,7 +781,7 @@ export default function Console() {
               <div className="cx-reply">
                 <input
                   value={draftReply}
-                  placeholder="以同事身份回复，Enter 发送"
+                  placeholder="Reply as a colleague, Enter to send"
                   disabled={sending}
                   maxLength={MAX_REPLY_CHARS}
                   onChange={(e) => setDraftReply(e.target.value)}
@@ -781,7 +793,7 @@ export default function Console() {
                   }}
                 />
                 <button className="cx-btn" disabled={sending} onClick={sendReply}>
-                  {sending ? '发送中…' : '发送'}
+                  {sending ? 'Sending…' : 'Send'}
                 </button>
               </div>
             )}
@@ -789,8 +801,8 @@ export default function Console() {
 
           <section className="cx-system">
             <div className="cx-stream" ref={streamRef}>
-              <div className="cx-pane-label">系统在做什么</div>
-              {shown && entries.length === 0 && <p className="cx-empty">这段对话还没有调用任何系统</p>}
+              <div className="cx-pane-label">What the system is doing</div>
+              {shown && entries.length === 0 && <p className="cx-empty">No system has been called in this conversation yet</p>}
               {entries.map((entry) => (
                 <CardView key={entry.key} entry={entry} slowest={slowest} />
               ))}
@@ -814,7 +826,7 @@ export default function Console() {
 /**
  * Cards for a time-ordered run of calls, with a model's handover folded into
  * one: `request_human_help` starts a `handover` span with the same reason, and
- * two cards saying "转给同事" and "人工接管中" side by side read as two events.
+ * two cards saying "handed to a colleague" and "human has it" side by side read as two events.
  */
 function cards(calls: Omit<Entry, 'card'>[]): Entry[] {
   const entries: Entry[] = []
@@ -831,8 +843,8 @@ function cards(calls: Omit<Entry, 'card'>[]): Entry[] {
           ...asked.card,
           detail:
             item.call.status === 'running'
-              ? `${asked.card.detail} · 人工接管中`
-              : `${asked.card.detail} · 人工处理 ${span((item.call.durationMs ?? 0) / 1000)} 后交回`,
+              ? `${asked.card.detail} · human has it`
+              : `${asked.card.detail} · handed back after ${span((item.call.durationMs ?? 0) / 1000)}`,
         }
         continue
       }
@@ -910,7 +922,7 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
         id: `switch:${event.seq}`,
         seq: event.seq,
         at: event.at,
-        tool: off ? '工具已关闭 —— 对照组开始' : '工具已接回 —— 对照组结束',
+        tool: off ? 'Tools turned off -- control arm starts' : 'Tools back on -- control arm ends',
         input: null,
         output: null,
         durationMs: null,

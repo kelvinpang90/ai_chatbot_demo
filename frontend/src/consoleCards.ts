@@ -1,10 +1,10 @@
 // What the director's console says about one tool call (task 27).
 //
 // The owner watched the console beside a real phone on 2026-09-14 and decided:
-// by default the screen tells the business story ("放进购物车：…", "主动通知客户"),
-// and the function name, arguments and timing only appear behind a switch. The
-// instruction text a tool hands back to the model is shown in neither mode --
-// `request_human_help` put it on the projector that day.
+// by default the screen tells the business story ("Added to cart: …", "Told
+// the customer"), and the function name, arguments and timing only appear
+// behind a switch. The instruction text a tool hands back to the model is shown
+// in neither mode -- `request_human_help` put it on the projector that day.
 //
 // Two facts about the outputs drive everything below (see backend/app/tools):
 // a tool that did its job returns JSON; a tool that refused, or found the back
@@ -35,15 +35,15 @@ export function klEpoch(naive: string): number {
   return Number.isNaN(ms) ? 0 : ms / 1000
 }
 
-/** "0.004 秒", "12.3 秒". */
+/** "0.004 s", "12.3 s". */
 export function seconds(ms: number): string {
-  return `${(ms / 1000).toFixed(ms < 10000 ? 3 : 1)} 秒`
+  return `${(ms / 1000).toFixed(ms < 10000 ? 3 : 1)} s`
 }
 
-/** "1 分 16 秒", "45 秒". */
+/** "1 min 16 s", "45 s". */
 export function span(totalSeconds: number): string {
   const s = Math.max(0, Math.round(totalSeconds))
-  return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`
 }
 
 /** One tool call as the console knows it, from the live feed or the audit log. */
@@ -76,7 +76,7 @@ export interface Card {
   badge?: string
 }
 
-/** A row the back-office panel lists under "写入了什么". */
+/** A row the back-office panel lists under what was written. */
 export interface Write {
   system: string
   ref: string
@@ -84,38 +84,38 @@ export interface Write {
 }
 
 const NAMES: Record<string, string> = {
-  food_update_cart: '更新购物车',
-  food_place_order: '下单',
-  food_order_status: '查订单',
-  erp_search_sku: '查商品',
-  erp_get_inventory: '查库存',
-  erp_find_customer: '查 ERP 客户',
-  erp_create_customer: '建 ERP 客户',
-  erp_list_orders: '查历史订单',
-  erp_create_sales_order: '开销售单',
-  erp_generate_einvoice: '开电子发票',
-  erp_find_order_by_sku: '找购买记录',
-  erp_create_credit_note: '开退货单',
-  crm_lookup_customer: '查 CRM 客户',
-  crm_create_lead: '写入 CRM 商机',
-  offer_viewing_form: '发看房表单',
-  book_property_viewing: '登记看房',
-  hotel_search_rooms: '查空房',
-  hotel_create_booking: '订房',
-  hotel_get_booking: '查订房',
-  hotel_modify_booking: '改订房',
-  saas_search_known_issues: '查已知问题',
-  saas_create_ticket: '开工单',
-  saas_get_tickets: '查工单',
-  request_human_help: '转给同事',
-  handover: '人工接管',
-  'notify.push': '主动通知客户',
-  'human.reply': '同事的回复',
-  'voice.transcribe': '听语音',
-  'image.download': '收图片',
-  'document.download': '收文件',
-  'whatsapp.send': '回复',
-  'whatsapp.receive': '收消息',
+  food_update_cart: 'Update cart',
+  food_place_order: 'Place order',
+  food_order_status: 'Check order',
+  erp_search_sku: 'Search products',
+  erp_get_inventory: 'Check stock',
+  erp_find_customer: 'Find ERP customer',
+  erp_create_customer: 'Create ERP customer',
+  erp_list_orders: 'List past orders',
+  erp_create_sales_order: 'Create sales order',
+  erp_generate_einvoice: 'Issue e-invoice',
+  erp_find_order_by_sku: 'Find purchase',
+  erp_create_credit_note: 'Issue credit note',
+  crm_lookup_customer: 'Find CRM customer',
+  crm_create_lead: 'Create CRM lead',
+  offer_viewing_form: 'Send viewing form',
+  book_property_viewing: 'Book viewing',
+  hotel_search_rooms: 'Search rooms',
+  hotel_create_booking: 'Book room',
+  hotel_get_booking: 'Look up booking',
+  hotel_modify_booking: 'Change booking',
+  saas_search_known_issues: 'Search known issues',
+  saas_create_ticket: 'Open ticket',
+  saas_get_tickets: 'Look up tickets',
+  request_human_help: 'Hand to a colleague',
+  handover: 'Human takeover',
+  'notify.push': 'Message the customer',
+  'human.reply': "Colleague's reply",
+  'voice.transcribe': 'Transcribe voice note',
+  'image.download': 'Receive image',
+  'document.download': 'Receive document',
+  'whatsapp.send': 'Reply',
+  'whatsapp.receive': 'Receive message',
 }
 
 export function toolName(tool: string): string {
@@ -123,10 +123,10 @@ export function toolName(tool: string): string {
 }
 
 const FOOD_STATUS: Record<string, string> = {
-  received: '已接单',
-  preparing: '制作中',
-  on_the_way: '配送中',
-  delivered: '已送达',
+  received: 'Received',
+  preparing: 'Preparing',
+  on_the_way: 'On the way',
+  delivered: 'Delivered',
 }
 
 // Prefixes of the fixed sentences some tools answer with. Matched on the start
@@ -194,120 +194,121 @@ export function describe(call: Call): Card | null {
   const { tool, input, output, status } = call
   const name = toolName(tool)
 
-  if (status === 'note') return card('note', '关', tool)
+  if (status === 'note') return card('note', '⏻', tool)
 
   if (tool === 'handover') {
     const reason = str(input?.reason)
-    const why = reason === CONSOLE_TAKEOVER ? '在导演台手动接管' : reason && `原因：${reason}`
+    const why = reason === CONSOLE_TAKEOVER ? 'Taken over from the console' : reason && `Reason: ${reason}`
     return status === 'running'
-      ? card('hand', '人', '人工接管中', joined([why, 'bot 已静默']))
-      : card('back', '回', '人工接管 · 已交回 bot', joined([why, `人工处理了 ${span((call.durationMs ?? 0) / 1000)}`]))
+      ? card('hand', 'H', 'Human has the conversation', joined([why, 'bot is silent']))
+      : card('back', '↩', 'Human takeover · handed back to bot', joined([why, `a person handled it for ${span((call.durationMs ?? 0) / 1000)}`]))
   }
 
   if (tool === 'human.reply') {
-    return status === 'error' ? card('fail', '!', '同事的回复没送达', firstLine(output)) : null
+    return status === 'error' ? card('fail', '!', "Colleague's reply did not arrive", firstLine(output)) : null
   }
 
   if (status === 'error') {
     // A send that never reached the phone is the one thing worth stopping a demo
     // for: on the customer's side it looks exactly like a pause.
     if (tool === 'notify.push' || tool === 'whatsapp.send') {
-      return card('fail', '!', `${name}没送达，客户什么都没收到`, firstLine(output))
+      return card('fail', '!', `${name} did not arrive -- the customer got nothing`, firstLine(output))
     }
-    return card('fail', '!', `${name}出错`, '系统异常，bot 不会编一个结果出来')
+    return card('fail', '!', `${name} failed`, 'System error -- the bot will not make a result up')
   }
 
   if (status === 'running') {
-    return card(kindOf(tool), iconOf(tool), name, '进行中…')
+    return card(kindOf(tool), iconOf(tool), name, 'Running…')
   }
 
   const data = parse(output)
   const obj = data && typeof data === 'object' && !Array.isArray(data) ? (data as Json) : null
   const rows = Array.isArray(data) ? (data as Json[]) : null
-  const refused = (detail = '没办成，bot 会照实告诉客户') => card('refused', '×', name, detail)
+  const refused = (detail = 'Did not go through -- the bot will tell the customer as it is') =>
+    card('refused', '×', name, detail)
 
   switch (tool) {
     case 'food_update_cart': {
       if (!obj) return refused()
       const cart = list(obj.cart)
-      if (cart.length === 0) return card('cart', '车', '清空购物车')
+      if (cart.length === 0) return card('cart', 'C', 'Emptied the cart')
       return card(
         'cart',
-        '车',
-        '放进购物车',
-        joined([...cart.map((l) => `${str(l.name)} ×${str(l.quantity)}`), `合计 ${str(obj.total)}`]),
+        'C',
+        'Added to cart',
+        joined([...cart.map((l) => `${str(l.name)} ×${str(l.quantity)}`), `total ${str(obj.total)}`]),
       )
     }
     case 'food_place_order':
       if (!obj) return refused()
       return card(
         'order',
-        '单',
-        `下单 ${str(obj.order_no)}`,
-        joined([list(obj.items).map(dish).join('、'), str(obj.total), `送往 ${str(obj.delivery_address)}`]),
+        'O',
+        `Order ${str(obj.order_no)} placed`,
+        joined([list(obj.items).map(dish).join(', '), str(obj.total), `to ${str(obj.delivery_address)}`]),
       )
     case 'food_order_status': {
       const order = obj ? list(obj.orders)[0] : undefined
-      if (!order) return refused('没查到订单')
+      if (!order) return refused('No order found')
       const eta = order.arrives_in_minutes
       return card(
         'lookup',
-        '查',
-        `查订单 ${str(order.order_no)}`,
-        joined([FOOD_STATUS[str(order.status)] ?? str(order.status), eta != null ? `预计 ${str(eta)} 分钟送达` : '']),
+        '?',
+        `Checked order ${str(order.order_no)}`,
+        joined([FOOD_STATUS[str(order.status)] ?? str(order.status), eta != null ? `arrives in ~${str(eta)} min` : '']),
       )
     }
     case 'erp_search_sku': {
-      if (!obj) return refused('没找到这款商品')
+      if (!obj) return refused('No such product')
       const products = list(obj.products)
       return card(
         'lookup',
-        '查',
-        `查商品「${str(input?.keyword)}」`,
+        '?',
+        `Searched products for "${str(input?.keyword)}"`,
         joined([
-          `找到 ${str(obj.total_matches ?? products.length)} 款`,
-          products.slice(0, 3).map((p) => `${str(p.name_zh || p.name)} ${rm(p.unit_price_incl_tax)}`).join('、'),
+          `${str(obj.total_matches ?? products.length)} found`,
+          products.slice(0, 3).map((p) => `${str(p.name)} ${rm(p.unit_price_incl_tax)}`).join(', '),
         ]),
       )
     }
     case 'erp_get_inventory': {
       const sku = rows?.[0]
-      if (!sku) return refused('没查到库存')
+      if (!sku) return refused('No stock record')
       const where = list(sku.by_warehouse).map((w) => `${str(w.warehouse)} ${str(w.available)}`)
-      return card('lookup', '查', `查库存 ${str(sku.code)}`, joined([`${str(sku.name)} 可售 ${str(sku.total_available)}`, where.join('、')]))
+      return card('lookup', '?', `Checked stock of ${str(sku.code)}`, joined([`${str(sku.name)}: ${str(sku.total_available)} available`, where.join(', ')]))
     }
     case 'erp_find_customer':
     case 'crm_lookup_customer': {
-      if (!rows) return refused('没有这位客户的档案')
+      if (!rows) return refused('No record of this customer')
       const who = rows[0]
       const history =
         tool === 'crm_lookup_customer' && who
-          ? `成交 ${str(who.deal_count)} 笔 · ${rm(who.total_deal_amount)}`
+          ? `${str(who.deal_count)} deals · ${rm(who.total_deal_amount)}`
           : ''
-      return card('lookup', '查', name, joined([`找到 ${rows.length} 位`, str(who?.name), str(who?.company), history]))
+      return card('lookup', '?', name, joined([`${rows.length} found`, str(who?.name), str(who?.company), history]))
     }
     case 'erp_list_orders':
     case 'erp_find_order_by_sku': {
-      if (!rows) return refused('没有找到订单')
+      if (!rows) return refused('No orders found')
       const latest = rows[0]
-      return card('lookup', '查', name, joined([`${rows.length} 张单`, str(latest?.order_no), str(latest?.status)]))
+      return card('lookup', '?', name, joined([`${rows.length} orders`, str(latest?.order_no), str(latest?.status)]))
     }
     case 'erp_create_customer':
       if (!obj) return refused()
       return card(
         'write',
-        '写',
-        obj.created ? 'ERP 新建客户' : 'ERP 已有这位客户',
+        '+',
+        obj.created ? 'Created ERP customer' : 'ERP customer already existed',
         joined([str(obj.code), str(obj.name), str(obj.phone)]),
       )
     case 'erp_create_sales_order':
       if (!obj) return refused()
       return card(
         'order',
-        '单',
-        `开销售单 ${str(obj.order_no)}`,
+        'O',
+        `Sales order ${str(obj.order_no)} created`,
         joined([
-          list(obj.lines).map((l) => `${str(l.name)} ×${str(l.qty)}`).join('、'),
+          list(obj.lines).map((l) => `${str(l.name)} ×${str(l.qty)}`).join(', '),
           rm(obj.total_incl_tax),
           str(obj.warehouse),
         ]),
@@ -316,34 +317,34 @@ export function describe(call: Call): Card | null {
       if (!obj) return refused()
       return card(
         'write',
-        '票',
-        `开电子发票 ${str(obj.invoice_no)}`,
-        joined([str(obj.order_no), str(obj.status), rm(obj.total_incl_tax), obj.pdf_sent ? 'PDF 已发到手机' : 'PDF 未发出']),
+        '+',
+        `E-invoice ${str(obj.invoice_no)} issued`,
+        joined([str(obj.order_no), str(obj.status), rm(obj.total_incl_tax), obj.pdf_sent ? 'PDF sent to phone' : 'PDF not sent']),
       )
     case 'erp_create_credit_note': {
       if (!obj) return refused()
       const item = (obj.item ?? {}) as Json
       return card(
         'write',
-        '退',
-        `开退货单 ${str(obj.credit_note_no)}`,
-        joined([`${str(item.name)} ×${str(item.qty_returned)}`, rm(obj.total_incl_tax), `原单 ${str(obj.order_no)}`]),
+        '+',
+        `Credit note ${str(obj.credit_note_no)} issued`,
+        joined([`${str(item.name)} ×${str(item.qty_returned)}`, rm(obj.total_incl_tax), `order ${str(obj.order_no)}`]),
       )
     }
     case 'crm_create_lead':
       if (!obj) return refused()
-      return card('write', '写', '写入 CRM 商机', joined([str(obj.contact_name), str(obj.title), rm(obj.amount)]))
+      return card('write', '+', 'Created CRM lead', joined([str(obj.contact_name), str(obj.title), rm(obj.amount)]))
     case 'offer_viewing_form':
-      if (str(output).startsWith(FORM_SENT)) return card('push', '表', '发出看房表单')
-      if (str(output).startsWith(NO_FORM)) return card('note', '表', '这条线发不了表单', '改在聊天里问姓名、房源、日期')
-      return refused('读不到房源，表单没发')
+      if (str(output).startsWith(FORM_SENT)) return card('push', 'F', 'Sent the viewing form')
+      if (str(output).startsWith(NO_FORM)) return card('note', 'F', 'No form on this channel', 'Asking for name, listing and date in the chat')
+      return refused('Listings unreadable -- form not sent')
     case 'book_property_viewing': {
-      if (!str(output).includes(VIEWING_SAVED)) return refused('没登记上')
+      if (!str(output).includes(VIEWING_SAVED)) return refused('Not booked')
       const id = /#(\d+)/.exec(str(output))?.[1]
       return card(
         'write',
-        '约',
-        `登记看房${id ? ` #${id}` : ''}`,
+        '+',
+        `Viewing${id ? ` #${id}` : ''} booked`,
         joined([str(input?.customer_name), str(input?.listing_id), `${str(input?.viewing_date)} ${str(input?.preferred_time)}`.trim()]),
       )
     }
@@ -351,35 +352,35 @@ export function describe(call: Call): Card | null {
     case 'hotel_get_booking':
     case 'saas_search_known_issues':
     case 'saas_get_tickets':
-      if (!rows) return refused('没有结果')
-      return card('lookup', '查', name, `${rows.length} 条结果`)
+      if (!rows) return refused('Nothing found')
+      return card('lookup', '?', name, `${rows.length} results`)
     case 'hotel_create_booking':
     case 'hotel_modify_booking':
       if (!obj) return refused()
       return card(
         'write',
-        '订',
+        '+',
         `${name} ${str(obj.booking_id)}`,
-        joined([str(obj.room_type), `${str(obj.check_in)} → ${str(obj.check_out)}`, `${str(obj.nights)} 晚`, rm(obj.total_rm)]),
+        joined([str(obj.room_type), `${str(obj.check_in)} → ${str(obj.check_out)}`, `${str(obj.nights)} nights`, rm(obj.total_rm)]),
       )
     case 'saas_create_ticket':
       if (!obj) return refused()
-      return card('write', '单', `开工单 ${str(obj.ticket_id)}`, joined([str(obj.subject), str(obj.priority)]))
+      return card('write', '+', `Ticket ${str(obj.ticket_id)} opened`, joined([str(obj.subject), str(obj.priority)]))
     case 'request_human_help':
       return str(output).startsWith(HANDED_OVER)
-        ? card('hand', '人', 'bot 判断超出范围，转给同事', `原因：${str(input?.reason)}`)
-        : card('refused', '人', '想转同事，但这条线没人可接', 'bot 留在对话里，改为记下联系方式')
+        ? card('hand', 'H', 'Bot judged it out of scope and handed to a colleague', `Reason: ${str(input?.reason)}`)
+        : card('refused', 'H', 'Wanted a colleague, but nobody is on this channel', 'The bot stays and takes contact details instead')
     case 'notify.push':
       if (str(output).startsWith(SUMMARY_MARK)) {
-        return card('push', '推', '发出演示总结', firstLine(output).replace(SUMMARY_MARK, '').trim())
+        return card('push', '↗', 'Sent the demo summary', firstLine(output).replace(SUMMARY_MARK, '').trim())
       }
-      return card('push', '推', '主动通知客户', `「${firstLine(output)}」`, '客户没问')
+      return card('push', '↗', 'Messaged the customer first', `"${firstLine(output)}"`, 'unasked')
     case 'voice.transcribe':
-      return card('media', '听', '听懂一条语音', `「${str(output)}」`)
+      return card('media', '♪', 'Understood a voice note', `"${str(output)}"`)
     case 'image.download':
-      return card('media', '图', '收到一张图片')
+      return card('media', '▣', 'Received an image')
     case 'document.download':
-      return card('media', '文', '收到一份文件', str(input?.filename))
+      return card('media', '▤', 'Received a document', str(input?.filename))
     default:
       return card('lookup', '·', name)
   }
@@ -393,7 +394,7 @@ function kindOf(tool: string): CardKind {
 }
 
 function iconOf(tool: string): string {
-  return { request_human_help: '人', 'notify.push': '推', 'voice.transcribe': '听' }[tool] ?? '…'
+  return { request_human_help: 'H', 'notify.push': '↗', 'voice.transcribe': '♪' }[tool] ?? '…'
 }
 
 /**
@@ -408,28 +409,28 @@ export function written(call: Call): Write | null {
   if (!obj) return null
   switch (call.tool) {
     case 'erp_create_customer':
-      return obj.created ? { system: 'ERP 客户', ref: str(obj.code), detail: joined([str(obj.name), str(obj.phone)]) } : null
+      return obj.created ? { system: 'ERP customer', ref: str(obj.code), detail: joined([str(obj.name), str(obj.phone)]) } : null
     case 'erp_create_sales_order':
       return {
-        system: 'ERP 销售单',
+        system: 'ERP sales order',
         ref: str(obj.order_no),
         detail: joined([str(obj.status), rm(obj.total_incl_tax), str(obj.warehouse)]),
       }
     case 'erp_generate_einvoice':
       return {
-        system: 'ERP 电子发票',
+        system: 'ERP e-invoice',
         ref: str(obj.invoice_no),
         detail: joined([str(obj.order_no), str(obj.status), str(obj.lhdn_uin)]),
       }
     case 'erp_create_credit_note':
-      return { system: 'ERP 退货单', ref: str(obj.credit_note_no), detail: joined([str(obj.status), rm(obj.total_incl_tax)]) }
+      return { system: 'ERP credit note', ref: str(obj.credit_note_no), detail: joined([str(obj.status), rm(obj.total_incl_tax)]) }
     case 'crm_create_lead':
-      return { system: 'CRM 商机', ref: str(obj.contact_name), detail: joined([str(obj.title), rm(obj.amount), str(obj.status)]) }
+      return { system: 'CRM lead', ref: str(obj.contact_name), detail: joined([str(obj.title), rm(obj.amount), str(obj.status)]) }
     case 'hotel_create_booking':
     case 'hotel_modify_booking':
-      return { system: '订房', ref: str(obj.booking_id), detail: joined([str(obj.room_type), str(obj.status), rm(obj.total_rm)]) }
+      return { system: 'Booking', ref: str(obj.booking_id), detail: joined([str(obj.room_type), str(obj.status), rm(obj.total_rm)]) }
     case 'saas_create_ticket':
-      return { system: '工单', ref: str(obj.ticket_id), detail: joined([str(obj.subject), str(obj.status)]) }
+      return { system: 'Ticket', ref: str(obj.ticket_id), detail: joined([str(obj.subject), str(obj.status)]) }
     default:
       return null
   }

@@ -4,7 +4,7 @@ import { klEpoch, klTime, type Write } from '../consoleCards'
 
 // The console's lower right (task 27, layout B): what the back office looks like
 // now, for this conversation only. Food and property are read from their own
-// back offices, so a row moving from 制作中 to 配送中 is the database's word, not
+// back offices, so a row moving from preparing to on the way is the database's word, not
 // the bot's. Retail has no endpoint of its own here -- its ERP and CRM changes
 // are only what the tool calls wrote, and that is what the list shows.
 
@@ -15,18 +15,18 @@ const POLL_MS = 5000
 const SLACK_SECONDS = 60
 
 const STAGES: { status: FoodOrder['status']; label: string; at: keyof FoodOrder }[] = [
-  { status: 'received', label: '已接单', at: 'placed_at' },
-  { status: 'preparing', label: '制作中', at: 'preparing_at' },
-  { status: 'on_the_way', label: '配送中', at: 'ready_at' },
-  { status: 'delivered', label: '已送达', at: 'delivered_at' },
+  { status: 'received', label: 'Received', at: 'placed_at' },
+  { status: 'preparing', label: 'Preparing', at: 'preparing_at' },
+  { status: 'on_the_way', label: 'On the way', at: 'ready_at' },
+  { status: 'delivered', label: 'Delivered', at: 'delivered_at' },
 ]
 
 const TITLES: Record<string, string> = {
-  food: '后台 · 餐厅订单',
-  realestate: '后台 · 看房预约与 CRM',
-  retail: '后台 · ERP 与 CRM 写入',
-  hotel: '后台 · 订房',
-  saas: '后台 · 工单',
+  food: 'Back office · restaurant orders',
+  realestate: 'Back office · viewings and CRM',
+  retail: 'Back office · written to ERP and CRM',
+  hotel: 'Back office · bookings',
+  saas: 'Back office · tickets',
 }
 
 /** The last nine digits: enough to tell two Malaysian numbers apart in any spelling. */
@@ -95,19 +95,19 @@ export function BackOffice({
 
   return (
     <section className="cx-backoffice">
-      <div className="cx-pane-label">{TITLES[botId] ?? '后台 · 数据变化'}</div>
-      {failed && <p className="cx-note">读不到后台，下面是上一次读到的</p>}
-      {empty && <p className="cx-empty">这段对话还没有改动后台数据</p>}
+      <div className="cx-pane-label">{TITLES[botId] ?? 'Back office · changes'}</div>
+      {failed && <p className="cx-note">Could not read the back office -- showing the last copy read</p>}
+      {empty && <p className="cx-empty">This conversation has not changed any back-office data yet</p>}
 
       {orders.length > 0 && (
         <div className="cx-table-scroll">
           <table className="cx-table">
             <thead>
               <tr>
-                <th>单号</th>
-                <th>菜品</th>
-                <th>金额</th>
-                <th>状态流转</th>
+                <th>Order</th>
+                <th>Items</th>
+                <th>Total</th>
+                <th>Progress</th>
               </tr>
             </thead>
             <tbody>
@@ -148,11 +148,11 @@ export function BackOffice({
           <table className="cx-table">
             <thead>
               <tr>
-                <th>预约</th>
-                <th>客户</th>
-                <th>房源</th>
-                <th>看房时间</th>
-                <th>登记于</th>
+                <th>Viewing</th>
+                <th>Customer</th>
+                <th>Listing</th>
+                <th>When</th>
+                <th>Booked at</th>
               </tr>
             </thead>
             <tbody>
@@ -163,7 +163,7 @@ export function BackOffice({
                   <td>
                     {viewing.listing_id}
                     <div className="cx-dim">
-                      {viewing.property_type ? `${viewing.property_type} · ${viewing.area}` : '房源已下架'}
+                      {viewing.property_type ? `${viewing.property_type} · ${viewing.area}` : 'Listing withdrawn'}
                     </div>
                   </td>
                   <td>
@@ -181,7 +181,7 @@ export function BackOffice({
         <ul className="cx-writes">
           {writes.map((write, i) => (
             <li key={`${write.ref}:${i}`}>
-              <span className="cx-plus">新增</span>
+              <span className="cx-plus">New</span>
               <span className="cx-sysname">{write.system}</span>
               <span className="cx-ref">{write.ref}</span>
               <span className="cx-dim">{write.detail}</span>

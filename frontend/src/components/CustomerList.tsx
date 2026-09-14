@@ -19,7 +19,7 @@ import { money } from '../transcript'
 // on their phone is the one the operator wants to click.
 const LIST_POLL_MS = 10000
 
-// How many of one customer's conversations to show before "加载更早". The owner's
+// How many of one customer's conversations to show before "Load older". The owner's
 // own number had a dozen within a week of testing; twenty covers a real customer
 // whole and keeps a long-lived number from arriving as one enormous list.
 const PAGE_SIZE = 20
@@ -43,7 +43,7 @@ interface Opened {
  *
  * The refresh only re-reads the first page, so older pages the operator asked for
  * stay. A conversation that started since pushes the rest down, so the next
- * "加载更早" can return one already shown -- deduplicated here -- but never skips one.
+ * "Load older" can return one already shown -- deduplicated here -- but never skips one.
  */
 function merged(fresh: ConversationSummary[], loaded: ConversationSummary[]): ConversationSummary[] {
   const byId = new Map<string, ConversationSummary>()
@@ -81,7 +81,7 @@ export function CustomerList({
       }
       // Kept, not cleared: a refresh that failed once should not empty a list the
       // operator is about to click on.
-      setError(failure instanceof ApiError ? failure.message : '读不到记录')
+      setError(failure instanceof ApiError ? failure.message : 'Could not read the records')
     },
     [onRefused],
   )
@@ -119,7 +119,7 @@ export function CustomerList({
               ? {
                   ...current,
                   conversations: merged(page.conversations, current.conversations),
-                  // Only a first read decides "more"; after that, "加载更早" does.
+                  // Only a first read decides "more"; after that, "Load older" does.
                   more:
                     current.conversations.length === 0
                       ? page.conversations.length === PAGE_SIZE
@@ -175,9 +175,9 @@ export function CustomerList({
         onClick={() => onSelect({ kind: 'all' })}
       >
         <div className="history-row-top">
-          <strong>跟随最新对话</strong>
+          <strong>Follow the latest</strong>
         </div>
-        <div className="history-row-meta">谁最近在聊就显示谁，投屏用</div>
+        <div className="history-row-meta">Whoever spoke last -- for the projector</div>
       </button>
 
       <form
@@ -188,13 +188,13 @@ export function CustomerList({
           setSearch(String(term ?? ''))
         }}
       >
-        <input name="term" placeholder="手机号，任意写法" defaultValue={search} />
-        <button type="submit">查</button>
+        <input name="term" placeholder="Phone number, any format" defaultValue={search} />
+        <button type="submit">Find</button>
       </form>
 
-      {!loaded && <p className="history-note">读取中…</p>}
+      {!loaded && <p className="history-note">Loading…</p>}
       {error && <p className="history-note error">{error}</p>}
-      {loaded && !error && customers.length === 0 && <p className="history-note">没有记录。</p>}
+      {loaded && !error && customers.length === 0 && <p className="history-note">No records.</p>}
 
       {customers.map((customer) => {
         const isOpen = openedKey === customer.key_id
@@ -218,18 +218,18 @@ export function CustomerList({
                 <span className="history-caret">{isOpen ? '▾' : '▸'}</span>
               </div>
               <div className="history-row-meta">
-                {customer.last_at.slice(0, 16)} · {customer.conversations} 通对话 ·{' '}
+                {customer.last_at.slice(0, 16)} · {customer.conversations} chats ·{' '}
                 {customer.bots.join(' / ')}
               </div>
               <div className="history-row-meta">
-                {customer.messages} 条 · {customer.tool_calls} 次工具 · {money(customer.cost_myr)}
+                {customer.messages} msgs · {customer.tool_calls} tool calls · {money(customer.cost_myr)}
               </div>
             </button>
 
             {isOpen && opened && (
               <div className="history-conversations">
                 {opened.conversations.length === 0 && (
-                  <p className="history-note">读取对话…</p>
+                  <p className="history-note">Loading chats…</p>
                 )}
                 {opened.conversations.map((row) => (
                   <button
@@ -253,7 +253,7 @@ export function CustomerList({
                       <span className="pill">{row.bot_id}</span>
                     </div>
                     <div className="history-row-meta">
-                      {row.messages} 条 · {row.tool_calls} 次工具 · {money(row.cost_myr)}
+                      {row.messages} msgs · {row.tool_calls} tool calls · {money(row.cost_myr)}
                     </div>
                   </button>
                 ))}
@@ -263,7 +263,7 @@ export function CustomerList({
                     disabled={opened.loadingOlder}
                     onClick={loadOlder}
                   >
-                    {opened.loadingOlder ? '读取中…' : '加载更早'}
+                    {opened.loadingOlder ? 'Loading…' : 'Load older'}
                   </button>
                 )}
               </div>
