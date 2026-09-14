@@ -1297,6 +1297,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - ❌ **没查到 VPS 上的 `.env`**：SSH 只读检查被权限分类器以「读生产」拦下，按规则没换花样重试。所以下面两件**要你自己看一眼**：
     1. `ANTHROPIC_MODEL` 是不是 Haiku（`.env.example` 旧值是 Sonnet，见上面「部署陷阱」）——`sed -n "s/^ANTHROPIC_MODEL=//p" /opt/ai_chatbot/backend/.env`
     2. `PUSH_DELAY_SECONDS` 是否是你想要的（默认 30 秒 = 剧本 3 那声「叮」）
+    → **2026-09-14 用户核对**：`ANTHROPIC_MODEL` 是 Haiku；`PUSH_DELAY_SECONDS` 未配置 → 走代码默认 30 秒（`config.py`），与剧本 3 一致，不需要改
   - 剧本 4a **只能演降级版**：Flow 仍被 #139000 拦着（阻塞项 B），线上 `WHATSAPP_FLOW_ID` 09-13 已清空。降级版 09-13/14 已真机成立过，这次要重验的是**换 Haiku 之后**模型还会不会自己调 `book_property_viewing` → `crm_create_lead`（串行）、年份错了会不会自己改
   - 验收里的「暗号接管回来」**实际是导演台上的「交回 bot」按钮**（任务 20 偏离 2），不要去找暗号词
 
