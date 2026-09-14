@@ -22,6 +22,7 @@ import {
 import { BackOffice } from '../components/BackOffice'
 import { CustomerList, type ConsoleView } from '../components/CustomerList'
 import {
+  boldRuns,
   describe,
   klEpoch,
   klTime,
@@ -828,7 +829,11 @@ export default function Console() {
                         {at.slice(0, 5)}
                       </span>
                     )}
-                    <div className="cx-bubble">{message.content}</div>
+                    <div className="cx-bubble">
+                      {boldRuns(message.content).map((run, j) =>
+                        run.bold ? <strong key={j}>{run.text}</strong> : run.text,
+                      )}
+                    </div>
                   </div>
                 )
               })}

@@ -46,6 +46,25 @@ export function span(totalSeconds: number): string {
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`
 }
 
+// What the customer's phone shows in bold. The bot's **markdown** goes out as
+// WhatsApp's *bold* (backend/app/services/whatsapp.py) but is logged as written,
+// and a push can carry *bold* of its own. Like WhatsApp: no space just inside
+// the stars, and never across a line -- so "* item" stays a plain line.
+const BOLD = /\*\*(\S(?:.*?\S)?)\*\*|\*(\S(?:[^*\n]*?\S)?)\*/g
+
+/** A message cut into plain and bold runs, the way the phone renders it. */
+export function boldRuns(text: string): { text: string; bold: boolean }[] {
+  const runs: { text: string; bold: boolean }[] = []
+  let last = 0
+  for (const match of text.matchAll(BOLD)) {
+    if (match.index > last) runs.push({ text: text.slice(last, match.index), bold: false })
+    runs.push({ text: match[1] ?? match[2], bold: true })
+    last = match.index + match[0].length
+  }
+  if (last < text.length) runs.push({ text: text.slice(last), bold: false })
+  return runs
+}
+
 /** One tool call as the console knows it, from the live feed or the audit log. */
 export interface Call {
   tool: string
