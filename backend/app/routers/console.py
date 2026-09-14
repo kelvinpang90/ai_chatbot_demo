@@ -117,6 +117,13 @@ async def _event_stream(replay: bool) -> AsyncIterator[str]:
             silent_for = 0.0
             for event in batch:
                 yield _format(event)
+            # A comment, straight after the batch. On the deployed site a replay
+            # burst stopped part-way and filled in on the next keepalive: a hop
+            # between here and the browser held the tail until something else was
+            # written. `no-transform` fixed that for single live events but not
+            # for the burst. Now the something else comes at once, and whatever
+            # is held is this line, which EventSource ignores.
+            yield ": flush\n\n"
         else:
             silent_for += POLL_INTERVAL_SECONDS
             if silent_for >= KEEPALIVE_SECONDS:

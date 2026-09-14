@@ -116,6 +116,27 @@ def test_replay_sends_the_buffered_calls_in_sse_frames():
     assert payloads[1]["status"] == "ok"
 
 
+def test_every_batch_is_followed_straight_away_by_something_that_pushes_it_out():
+    """Found on the deployed site on 2026-09-14, after `no-transform` had fixed
+    the live feed: a refreshed console still showed a replay that stopped
+    part-way and filled in on the next keepalive, up to fifteen seconds later.
+    Something on the way held the tail of the burst until another write came.
+
+    So a write comes at once: a comment frame, which EventSource ignores, right
+    after the last event of every batch. Whatever is holding "the last bytes"
+    is then holding the comment, not a tool call.
+    """
+    _emit_call()
+
+    _hello, start, end, after = asyncio.run(_take(console._event_stream(replay=True), count=4))
+
+    assert start.startswith("event: tool_start\n")
+    assert end.startswith("event: tool_end\n")
+    # A comment in SSE is a line starting with a colon. It must arrive now, not
+    # after KEEPALIVE_SECONDS -- `_take` gives up after five.
+    assert after.startswith(":")
+
+
 async def _take(stream, count: int) -> list[str]:
     frames = []
     try:
