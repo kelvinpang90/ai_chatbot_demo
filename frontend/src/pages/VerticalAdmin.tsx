@@ -32,7 +32,7 @@ const STORE_DOWN_NOTE = '读不到后台：房产数据库连不上，或者后�
 
 /** The token box.
  *
- * Deliberately not shared with the console's (`History.tsx` has its own): the
+ * Deliberately not shared with the console's (`Console.tsx` has its own): the
  * part worth sharing -- where the token is kept, and the URL-to-storage hop --
  * is already one implementation in `api.ts`. What is left is a form that has to
  * look like the screen it stands in front of, and this screen is the client's

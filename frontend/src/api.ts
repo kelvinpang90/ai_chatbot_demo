@@ -143,6 +143,10 @@ export interface ConsoleEvent {
   model: string | null
   tokens: Record<string, number> | null
   cost_myr: number | null
+  // Whose event this is: the customer's filing key, blank for what belongs to
+  // nobody (the tools switch, a message nobody could be identified from). What
+  // the console filters one customer's live calls on (task 37.6).
+  key_id: string
 }
 
 /**
@@ -156,9 +160,12 @@ export function consoleStreamUrl(token: string, replay = true): string {
   return `/console/stream?token=${encodeURIComponent(token)}&replay=${replay}`
 }
 
-// The transcript endpoints can send a header, so they do.
-function consoleRequest<T>(path: string): Promise<T> {
-  return request<T>(path, { headers: { 'X-Console-Token': storedToken() } })
+// The transcript endpoints can send a header, so they do. The token is passed in
+// rather than read back out of storage, like every other console call below: the
+// console may be holding a token localStorage refused to keep, and a list that
+// 401s beside a live feed would read as the list being broken.
+function consoleRequest<T>(path: string, token: string): Promise<T> {
+  return request<T>(path, { headers: { 'X-Console-Token': token } })
 }
 
 export interface ConversationSummary {
@@ -217,14 +224,18 @@ export interface HistoryPage {
   offset: number
 }
 
-export async function listConversations(search: string, offset = 0): Promise<HistoryPage> {
+export async function listConversations(
+  token: string,
+  search: string,
+  offset = 0,
+): Promise<HistoryPage> {
   const params = new URLSearchParams({ offset: String(offset) })
   if (search.trim()) params.set('key', search.trim())
-  return consoleRequest<HistoryPage>(`/console/history?${params}`)
+  return consoleRequest<HistoryPage>(`/console/history?${params}`, token)
 }
 
-export async function readConversation(id: string): Promise<ConversationDetail> {
-  return consoleRequest<ConversationDetail>(`/console/history/${encodeURIComponent(id)}`)
+export async function readConversation(token: string, id: string): Promise<ConversationDetail> {
+  return consoleRequest<ConversationDetail>(`/console/history/${encodeURIComponent(id)}`, token)
 }
 
 /** Whether the bots may call tools at all - the console's control arm. */

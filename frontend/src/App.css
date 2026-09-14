@@ -310,49 +310,12 @@
   cursor: not-allowed;
 }
 
-/* --- the transcript reader (#history, task 37.2) --------------------------- */
-/* Its own dark palette rather than the chat's variables: this screen is read on
-   the operator's laptop next to two back-office tabs, and it should not be
-   mistaken at a glance for the customer-facing demo beside it. */
+/* --- the conversation list and transcript (task 37.2, folded into the console
+   in task 37.6) ------------------------------------------------------------- */
+/* Styled against --con-* rather than the chat's variables. They used to be set
+   by the transcript page's own container; the console now points them at its
+   palette (Console.css), which is the only place these rules are used. */
 
-.history,
-.history-gate {
-  --con-bg: #12151a;
-  --con-panel: #181c23;
-  --con-line: #262c36;
-  --con-text: #d7dce4;
-  --con-dim: #8b93a1;
-  --con-accent: #5aa9e6;
-  position: absolute;
-  inset: 0;
-  background: var(--con-bg);
-  color: var(--con-text);
-  font-size: 13px;
-}
-
-.history {
-  display: flex;
-}
-
-.history-gate {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-}
-
-.history-gate h2 {
-  margin: 0;
-  font-size: 18px;
-}
-
-.history-gate p {
-  margin: 0;
-  color: var(--con-dim);
-}
-
-.history-gate input,
 .history-search input {
   background: var(--con-panel);
   border: 1px solid var(--con-line);
@@ -363,7 +326,6 @@
   min-width: 260px;
 }
 
-.history-gate button,
 .history-search button {
   background: var(--con-accent);
   border: none;
@@ -439,12 +401,6 @@
   font-size: 11px;
   color: var(--con-dim);
   margin-left: 6px;
-}
-
-.history-detail {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 20px;
 }
 
 .transcript-head {

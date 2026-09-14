@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './Console.css'
 import {
   ApiError,
   consoleStreamUrl,
   forgetToken,
+  readConversation,
   readHandovers,
   readToolSwitch,
   rememberToken,
@@ -13,8 +14,12 @@ import {
   setToolSwitch,
   storedToken,
   type ConsoleEvent,
+  type ConversationDetail,
   type HandoverCustomer,
 } from '../api'
+import { ConversationList, type ConsoleView } from '../components/ConversationList'
+import { Transcript } from '../components/Transcript'
+import { toolUseIds } from '../transcript'
 
 // How many times to let a stream that has never opened fail before giving up on
 // it. Once it has opened, failures are the backend's, not the token's.
@@ -36,6 +41,17 @@ const HANDOVER_POLL_MS = 5000
 const MAX_REPLY_CHARS = 4096
 
 const POLL_FAILED = '读不到人工接管的状态'
+
+// How often one customer's transcript is read again while they are selected
+// (task 37.6). The live feed shows their tool calls the moment they happen; this
+// is what brings in what was *said* -- the feed carries no messages -- and what
+// the database has priced. Same beat as the handover poll.
+const TRANSCRIPT_POLL_MS = 5000
+
+// Carried over from the transcript page this screen absorbed (task 37.6).
+const BAD_TOKEN_NOTE =
+  'token 不对。如果是从服务器 .env 复制的，注意值两边不要带引号——docker compose 会把引号也当成 token 的一部分。'
+const NOT_CONFIGURED_NOTE = '后端没有配 CONSOLE_TOKEN，这个页面打不开。'
 
 // How long the same enquiry takes a person. Not measured, deliberately
 // conservative, and on screen because "it is fast" means nothing next to a
@@ -63,6 +79,9 @@ interface ToolRow {
   // earns a line because the stretch of demo where nothing is called has to be
   // told apart from the stretch where nothing was asked.
   status: 'ok' | 'error' | 'running' | 'note'
+  // Whose call it was (task 37.6). Blank for what belongs to nobody, which is
+  // then shown on the everybody feed only.
+  keyId: string
 }
 
 function formatTime(at: number): string {
@@ -107,8 +126,17 @@ export default function Console() {
   const [draftReply, setDraftReply] = useState('')
   const [sending, setSending] = useState(false)
   const [handoverNote, setHandoverNote] = useState('')
-  const [selected, setSelected] = useState<string | null>(null)
+  // Which of several taken-over customers the everybody view's panel is on. Named
+  // apart from `view` below: that one is which customer the whole screen is on.
+  const [heldPick, setHeldPick] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  // Everybody's live feed, or one customer's console (task 37.6).
+  const [view, setView] = useState<ConsoleView>({ kind: 'all' })
+  // That customer's past, as the audit log has it. Re-read while they are on
+  // screen; cleared the moment the view changes, so one customer's transcript is
+  // never shown under another's name while the next one loads.
+  const [detail, setDetail] = useState<ConversationDetail | null>(null)
+  const [detailNote, setDetailNote] = useState('')
   const feedRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
   // event arrives again after a reconnect. Sequence numbers make that harmless -
@@ -233,11 +261,6 @@ export default function Console() {
     }
   }, [token])
 
-  useEffect(() => {
-    // Newest at the bottom, like every other console; follow it down.
-    feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight })
-  }, [rows])
-
   const statusText = useMemo(
     () =>
       ({
@@ -274,7 +297,7 @@ export default function Console() {
           // set, `holding` silently falls through to whoever is next on the list
           // -- which can happen between a keystroke and Enter, because this runs
           // every five seconds.
-          setSelected((current) =>
+          setHeldPick((current) =>
             current && customers.some((c) => c.key_id === current) ? current : null,
           )
           // A poll that worked clears a note left by one that did not, or a
@@ -295,7 +318,80 @@ export default function Console() {
   // was silent to the bot and invisible here, which a cold review of task 20
   // pointed out is not hypothetical: one conversation nobody handed back last
   // week is enough to make the default wrong for every demo after it.
-  const holding = held.find((c) => c.key_id === selected) ?? held[0] ?? null
+  const holdingAny = held.find((c) => c.key_id === heldPick) ?? held[0] ?? null
+  // On one customer's console the panel is about that customer and nobody else
+  // (task 37.6): replying to "whoever is newest" from a screen headed with this
+  // customer's name would put words on the wrong phone.
+  const holding =
+    view.kind === 'customer' ? (held.find((c) => c.key_id === view.keyId) ?? null) : holdingAny
+
+  // That customer's past, re-read on a beat. See TRANSCRIPT_POLL_MS.
+  useEffect(() => {
+    if (!token || view.kind !== 'customer') return
+    let stale = false
+    const read = () =>
+      readConversation(token, view.conversationId)
+        .then((got) => {
+          if (stale) return
+          setDetail(got)
+          setDetailNote('')
+        })
+        .catch(() => !stale && setDetailNote('这通对话读不出来'))
+    read()
+    const timer = window.setInterval(read, TRANSCRIPT_POLL_MS)
+    return () => {
+      stale = true
+      window.clearInterval(timer)
+    }
+  }, [token, view])
+
+  // Stable, because the list keys its polling on it. Only setters inside.
+  const refuse = useCallback((status: number) => {
+    // A token the server will not take is the one error worth forgetting, so the
+    // gate comes back -- saying why, rather than as an empty box.
+    forgetToken()
+    setGateNote(status === 503 ? NOT_CONFIGURED_NOTE : BAD_TOKEN_NOTE)
+    setToken('')
+  }, [])
+
+  const pastIds = useMemo(() => toolUseIds(detail), [detail])
+  // What the feed area shows. On one customer's console: their calls from the
+  // live stream that the transcript above does not already have -- a call can be
+  // in both when the screen is opened mid-turn, and the transcript catches up on
+  // its next read.
+  const liveRows = useMemo(
+    () =>
+      view.kind === 'customer'
+        ? rows.filter((row) => row.keyId === view.keyId && !pastIds.has(row.id))
+        : rows,
+    [rows, view, pastIds],
+  )
+
+  // Newest at the bottom, like every other console; follow it down. Keyed on how
+  // much there is rather than on the objects themselves: the transcript is re-read
+  // every few seconds, and snapping to the bottom on a read that brought nothing
+  // new would yank an operator who had scrolled up to read.
+  const contentSize = liveRows.length + (detail?.messages.length ?? 0)
+  useEffect(() => {
+    feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight })
+  }, [contentSize, view])
+
+  function chooseView(next: ConsoleView) {
+    setView(next)
+    setDetail(null)
+    setDetailNote('')
+    setClosingNote('')
+  }
+
+  function takeOver() {
+    if (view.kind !== 'customer') return
+    setHandover(token, view.keyId, true)
+      .then(({ customers }) => {
+        setHeld(customers)
+        setHandoverNote('')
+      })
+      .catch(() => setHandoverNote('接管不了，后端没接受'))
+  }
 
   function sendReply() {
     if (!holding || sending) return
@@ -332,13 +428,15 @@ export default function Console() {
     if (closing) return
     setClosing(true)
     setClosingNote('')
-    sendDemoSummary(token)
+    // On one customer's console, to that customer. On the everybody feed the
+    // backend still picks the most recent conversation, as it always has.
+    sendDemoSummary(token, view.kind === 'customer' ? view.keyId : undefined)
       .then((sent) => {
         const who = sent.display_name ?? sent.key_id
-        // Who it went to, said out loud: the feed carries no customer on it, so
-        // the screen genuinely does not know who is being served and the backend
-        // picked the most recent conversation. In a room with three customers in
-        // it, this line is the difference between right and lucky.
+        // Who it went to, said out loud: on the everybody feed the screen does
+        // not choose, the backend picks the most recent conversation. In a room
+        // with three customers in it, this line is the difference between right
+        // and lucky.
         setClosingNote(`已发给 ${who} · ${sent.minutes} 分钟 · ${sent.tool_calls} 次真实调用`)
       })
       .catch((failure: unknown) => {
@@ -409,7 +507,15 @@ export default function Console() {
             {closingNote}
           </span>
         )}
-        <span className="console-cost">本次会话成本 {formatRinggit(costMyr)}</span>
+        {/* Two numbers that mean two things, so they are labelled apart. The
+            everybody feed can only add up what this page has heard since it
+            opened; one customer's figure is the audit log's, priced when each
+            call happened, and is right however long ago the page was opened. */}
+        <span className="console-cost">
+          {view.kind === 'customer'
+            ? `这通对话 ${formatRinggit(detail?.cost_myr ?? 0)}`
+            : `全部 · 本页打开以来 ${formatRinggit(costMyr)}`}
+        </span>
       </header>
 
       {toolsEnabled === false && (
@@ -419,72 +525,109 @@ export default function Console() {
         </div>
       )}
 
-      {holding && (
-        <div className="console-handover">
-          <div className="console-handover-head">
-            <strong>人工接管中</strong>
-            <span>{holding.display_name ?? holding.key_id}</span>
-            <span className="console-handover-dim">bot 已静默，客户看到的每一句都是你打的</span>
-            <button className="console-switch" onClick={releaseHandover}>
-              交回 bot
-            </button>
-          </div>
-          {held.length > 1 && (
-            <div className="console-handover-head">
-              <span className="console-handover-dim">还有别人也在接管中，点一下切换：</span>
-              {held.map((customer) => (
-                <button
-                  key={customer.key_id}
-                  className="console-switch"
-                  data-off={customer.key_id !== holding.key_id}
-                  onClick={() => setSelected(customer.key_id)}
-                >
-                  {customer.display_name ?? customer.key_id}
-                </button>
-              ))}
+      <div className="console-body">
+        <ConversationList token={token} view={view} onSelect={chooseView} onRefused={refuse} />
+
+        <main className="console-main">
+          {view.kind === 'customer' && !holding && (
+            <div className="console-handover-head console-customer-bar">
+              <strong>{view.name}</strong>
+              <span className="console-handover-dim">bot 正在回复这位客户</span>
+              <button className="console-switch" onClick={takeOver}>
+                人工接管
+              </button>
+              {handoverNote && <span className="console-switch-note">{handoverNote}</span>}
             </div>
           )}
-          <div className="console-handover-line">
-            <input
-              value={draftReply}
-              placeholder="打字回复这位客户，Enter 发送"
-              disabled={sending}
-              maxLength={MAX_REPLY_CHARS}
-              onChange={(e) => setDraftReply(e.target.value)}
-              onKeyDown={(e) => {
-                // `isComposing` because this panel is in Chinese: picking a
-                // candidate off the IME is an Enter too, and without the guard
-                // the half-composed fragment goes to a live customer.
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) sendReply()
-              }}
-            />
-            <button className="console-switch" disabled={sending} onClick={sendReply}>
-              {sending ? '发送中…' : '发送'}
-            </button>
-          </div>
-          {handoverNote && <span className="console-switch-note">{handoverNote}</span>}
-        </div>
-      )}
 
-      <div className="console-feed" ref={feedRef}>
-        {rows.length === 0 ? (
-          <p className="console-empty">等待第一条消息…（在手机上给这个号码发点什么）</p>
-        ) : (
-          rows.map((row) => (
-            <Row
-              key={row.key}
-              row={row}
-              expanded={expanded.has(row.key)}
-              onToggle={() =>
-                setExpanded((current) => {
-                  const next = new Set(current)
-                  if (!next.delete(row.key)) next.add(row.key)
-                  return next
-                })
-              }
-            />
-          ))
-        )}
+          {holding && (
+            <div className="console-handover">
+              <div className="console-handover-head">
+                <strong>人工接管中</strong>
+                <span>{holding.display_name ?? holding.key_id}</span>
+                <span className="console-handover-dim">bot 已静默，客户看到的每一句都是你打的</span>
+                <button className="console-switch" onClick={releaseHandover}>
+                  交回 bot
+                </button>
+              </div>
+              {/* The picker belongs to the everybody feed. On one customer's console
+                  there is nobody else to switch to. */}
+              {view.kind === 'all' && held.length > 1 && (
+                <div className="console-handover-head">
+                  <span className="console-handover-dim">还有别人也在接管中，点一下切换：</span>
+                  {held.map((customer) => (
+                    <button
+                      key={customer.key_id}
+                      className="console-switch"
+                      data-off={customer.key_id !== holding.key_id}
+                      onClick={() => setHeldPick(customer.key_id)}
+                    >
+                      {customer.display_name ?? customer.key_id}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="console-handover-line">
+                <input
+                  value={draftReply}
+                  placeholder="打字回复这位客户，Enter 发送"
+                  disabled={sending}
+                  maxLength={MAX_REPLY_CHARS}
+                  onChange={(e) => setDraftReply(e.target.value)}
+                  onKeyDown={(e) => {
+                    // `isComposing` because this panel is in Chinese: picking a
+                    // candidate off the IME is an Enter too, and without the guard
+                    // the half-composed fragment goes to a live customer.
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) sendReply()
+                  }}
+                />
+                <button className="console-switch" disabled={sending} onClick={sendReply}>
+                  {sending ? '发送中…' : '发送'}
+                </button>
+              </div>
+              {handoverNote && <span className="console-switch-note">{handoverNote}</span>}
+            </div>
+          )}
+
+          <div className="console-feed" ref={feedRef}>
+            {/* Said even while an older copy is still on screen. Found in the
+                browser test: with the database down the transcript simply stopped
+                moving, and nothing said it had -- an operator reading it would take
+                a stale page for a quiet customer. The live calls below carry on. */}
+            {view.kind === 'customer' && detail && detailNote && (
+              <p className="console-switch-note">{detailNote}，下面是上一次读到的内容</p>
+            )}
+            {view.kind === 'customer' &&
+              (detail ? (
+                <Transcript detail={detail} />
+              ) : (
+                <p className="console-empty">{detailNote || '读取这通对话…'}</p>
+              ))}
+
+            {view.kind === 'customer' && liveRows.length > 0 && (
+              <div className="console-live-divider">实时 · 还没进记录的调用</div>
+            )}
+
+            {view.kind === 'all' && liveRows.length === 0 ? (
+              <p className="console-empty">等待第一条消息…（在手机上给这个号码发点什么）</p>
+            ) : (
+              liveRows.map((row) => (
+                <Row
+                  key={row.key}
+                  row={row}
+                  expanded={expanded.has(row.key)}
+                  onToggle={() =>
+                    setExpanded((current) => {
+                      const next = new Set(current)
+                      if (!next.delete(row.key)) next.add(row.key)
+                      return next
+                    })
+                  }
+                />
+              ))
+            )}
+          </div>
+        </main>
       </div>
     </div>
   )
@@ -512,6 +655,7 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
         output: event.output,
         durationMs: null,
         status: 'error',
+        keyId: event.key_id ?? '',
       },
     ]
   }
@@ -530,6 +674,7 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
         output: null,
         durationMs: null,
         status: 'note',
+        keyId: event.key_id ?? '',
       },
     ]
   }
@@ -547,6 +692,7 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
         output: null,
         durationMs: null,
         status: 'running',
+        keyId: event.key_id ?? '',
       },
     ]
   }
@@ -569,6 +715,9 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
     output: event.output,
     durationMs: event.duration_ms,
     status: event.status === 'error' ? 'error' : 'ok',
+    // The start's, when there was one: the end of a call belongs to whoever the
+    // call was for, and a backend older than task 37.6 sends no key at all.
+    keyId: (index === -1 ? event.key_id : rows[index].keyId || event.key_id) ?? '',
   }
   if (index === -1) return [...rows, merged]
   return rows.map((row, i) => (i === index ? merged : row))
