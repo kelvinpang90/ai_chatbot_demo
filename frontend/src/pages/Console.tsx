@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import './Console.css'
 import {
   ApiError,
@@ -86,6 +86,16 @@ const HUMAN_MINUTES = 3
 const TECH_STORAGE_KEY = 'console_tech_mode'
 const LIST_STORAGE_KEY = 'console_customer_list'
 const THEME_STORAGE_KEY = 'console_theme_light'
+const LIST_WIDTH_KEY = 'console_list_width'
+const PHONE_WIDTH_KEY = 'console_phone_width'
+
+// The three panes' widths, dragged from the bars between them. The system pane
+// takes what is left and is never squeezed below SYSTEM_MIN_WIDTH, because it is
+// the one the room is meant to be reading.
+const LIST_WIDTH = { initial: 320, min: 200, max: 560 }
+const PHONE_WIDTH = { initial: 380, min: 260, max: 900 }
+const SYSTEM_MIN_WIDTH = 360
+const SPLITTER_STEP = 20
 
 const BOT_LABELS: Record<string, string> = {
   retail: 'Retail',
@@ -144,6 +154,23 @@ function storeFlag(key: string, value: boolean): void {
   }
 }
 
+function readWidth(key: string, fallback: number): number {
+  try {
+    const stored = Number(window.localStorage.getItem(key))
+    return Number.isFinite(stored) && stored > 0 ? stored : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function storeWidth(key: string, value: number): void {
+  try {
+    window.localStorage.setItem(key, String(Math.round(value)))
+  } catch {
+    // A browser refusing storage still works; it forgets on reload.
+  }
+}
+
 function formatRinggit(total: number): string {
   // Below one sen, two decimals reads as free and looks broken. Four decimals
   // reads as a real, very small number, which is the actual point being made.
@@ -197,6 +224,8 @@ export default function Console() {
   const [techMode, setTechMode] = useState(() => readFlag(TECH_STORAGE_KEY))
   const [showList, setShowList] = useState(() => readFlag(LIST_STORAGE_KEY))
   const [light, setLight] = useState(() => readFlag(THEME_STORAGE_KEY))
+  const [listWidth, setListWidth] = useState(() => readWidth(LIST_WIDTH_KEY, LIST_WIDTH.initial))
+  const [phoneWidth, setPhoneWidth] = useState(() => readWidth(PHONE_WIDTH_KEY, PHONE_WIDTH.initial))
   const phoneRef = useRef<HTMLDivElement>(null)
   const streamRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
@@ -649,6 +678,18 @@ export default function Console() {
   }
 
   const botId = shown?.bot_id ?? latest?.bot_id ?? ''
+  // Whatever the window leaves after the other panes, so dragging one bar can
+  // never push the system pane off the screen.
+  const room = window.innerWidth
+  const listMax = Math.max(LIST_WIDTH.min, Math.min(LIST_WIDTH.max, room - phoneWidth - SYSTEM_MIN_WIDTH))
+  const phoneMax = Math.max(
+    PHONE_WIDTH.min,
+    Math.min(PHONE_WIDTH.max, room - (showList ? listWidth : 0) - SYSTEM_MIN_WIDTH),
+  )
+  const widths = {
+    '--list-width': `${Math.min(listWidth, listMax)}px`,
+    '--phone-width': `${Math.min(phoneWidth, phoneMax)}px`,
+  } as CSSProperties
 
   return (
     <div className="console" data-tech={techMode} data-theme={light ? 'light' : 'dark'}>
@@ -746,8 +787,23 @@ export default function Console() {
         </div>
       )}
 
-      <div className="console-body">
-        {showList && <CustomerList token={token} view={view} onSelect={chooseView} onRefused={refuse} />}
+      <div className="console-body" style={widths}>
+        {showList && (
+          <>
+            <CustomerList token={token} view={view} onSelect={chooseView} onRefused={refuse} />
+            <Splitter
+              label="Resize the customer list"
+              value={Math.min(listWidth, listMax)}
+              min={LIST_WIDTH.min}
+              max={listMax}
+              initial={LIST_WIDTH.initial}
+              onChange={(next) => {
+                setListWidth(next)
+                storeWidth(LIST_WIDTH_KEY, next)
+              }}
+            />
+          </>
+        )}
 
         <main className="cx-main">
           <section className="cx-phone">
@@ -799,6 +855,18 @@ export default function Console() {
             )}
           </section>
 
+          <Splitter
+            label="Resize the customer's phone"
+            value={Math.min(phoneWidth, phoneMax)}
+            min={PHONE_WIDTH.min}
+            max={phoneMax}
+            initial={PHONE_WIDTH.initial}
+            onChange={(next) => {
+              setPhoneWidth(next)
+              storeWidth(PHONE_WIDTH_KEY, next)
+            }}
+          />
+
           <section className="cx-system">
             <div className="cx-stream" ref={streamRef}>
               <div className="cx-pane-label">What the system is doing</div>
@@ -820,6 +888,61 @@ export default function Console() {
         </main>
       </div>
     </div>
+  )
+}
+
+/**
+ * A bar between two panes: drag it, or focus it and use the arrow keys.
+ * Double-click puts the pane back to its starting width.
+ */
+function Splitter({
+  label,
+  value,
+  min,
+  max,
+  initial,
+  onChange,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  initial: number
+  onChange: (next: number) => void
+}) {
+  const clamp = (n: number) => Math.min(max, Math.max(min, n))
+  const drag = useRef<{ x: number; width: number } | null>(null)
+
+  return (
+    <div
+      className="cx-splitter"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuenow={Math.round(value)}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      tabIndex={0}
+      title={`${label} -- drag, or double-click to reset`}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId)
+        drag.current = { x: e.clientX, width: value }
+      }}
+      onPointerMove={(e) => {
+        if (drag.current) onChange(clamp(drag.current.width + e.clientX - drag.current.x))
+      }}
+      onPointerUp={() => {
+        drag.current = null
+      }}
+      onPointerCancel={() => {
+        drag.current = null
+      }}
+      onDoubleClick={() => onChange(clamp(initial))}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowLeft') onChange(clamp(value - SPLITTER_STEP))
+        if (e.key === 'ArrowRight') onChange(clamp(value + SPLITTER_STEP))
+      }}
+    />
   )
 }
 

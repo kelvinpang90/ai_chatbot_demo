@@ -251,7 +251,7 @@
   color: var(--console-text);
 }
 
-/* ---- the two columns ---- */
+/* ---- the three panes ---- */
 
 .console-body {
   flex: 1;
@@ -259,12 +259,45 @@
   min-height: 0;
 }
 
+/* Widths come from the bars between the panes (--list-width, --phone-width,
+   set on .console-body); the system pane takes the rest. */
+.console-body > .history-list {
+  width: var(--list-width, 320px);
+}
+
 .cx-main {
   flex: 1;
-  display: grid;
-  grid-template-columns: minmax(300px, 400px) 1fr;
+  display: flex;
   min-width: 0;
   min-height: 0;
+}
+
+.cx-splitter {
+  flex: none;
+  width: 8px;
+  margin: 0 -4px;
+  position: relative;
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.cx-splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 3px;
+  border-radius: 1px;
+  transition: background 0.15s;
+}
+
+.cx-splitter:hover::after,
+.cx-splitter:focus-visible::after,
+.cx-splitter:active::after {
+  background: var(--console-accent);
+}
+
+.cx-splitter:focus-visible {
+  outline: none;
 }
 
 .cx-pane-label {
@@ -290,6 +323,8 @@
 /* Left: the customer's phone. */
 
 .cx-phone {
+  flex: 0 0 var(--phone-width, 380px);
+  min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -370,6 +405,7 @@
 /* Right: the system. The stream scrolls; the back office stays in view. */
 
 .cx-system {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -647,15 +683,21 @@
     overflow-y: auto;
   }
 
-  .console-body {
+  .console-body,
+  .cx-main {
     flex-direction: column;
   }
 
-  .cx-main {
-    grid-template-columns: 1fr;
+  .cx-splitter {
+    display: none;
+  }
+
+  .console-body > .history-list {
+    width: auto;
   }
 
   .cx-phone {
+    flex: none;
     border-right: 0;
     border-bottom: 1px solid var(--console-line);
     max-height: 60vh;
