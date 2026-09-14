@@ -1645,13 +1645,32 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **拆成两个子任务**（按 CLAUDE.md「超 3 个文件先拆分」）：
 
-  - [ ] **37.6a 后端：每条事件带上 `key_id` 和 `conversation_id`**
+  - [x] **37.6a 后端：每条事件带上 `key_id` 和 `conversation_id`**——**2026-09-14 完成，871 passed（859 → 871），变异 7/7 全红；线上没验**。**实际只加了 `key_id`，和计划有两处偏离，见本条末尾「完成记录」**
     文件：`backend/app/console/events.py`、`backend/app/services/handover.py`、`backend/app/services/notify.py`、`backend/app/routers/whatsapp_webhook.py`、测试
     - `ConsoleEvent` 加两个可选字段 `key_id` / `conversation_id`
     - **在 `events.emit` 里统一补上**：调用时没传就读 `audit.current()`（当前这一轮对话本来就知道自己属于谁）。已查过不会循环引用：`events.py` 不依赖任何 app 模块，`audit.py` 也不引用 `events`。这样对话内发出的事件（22 处里的大多数，模型的工具调用、语音/图片/文件下载、计费）**一行调用处都不用改**
     - **对话之外发出的要在调用处显式传**：handover 的开始/结束（从导演台 POST 触发）、主动推送（后台线程晚点才发）、发送循环里的 `send_failed`（那时这一轮已经关了）。`tools_switched` 是全局开关，本来就不属于任何顾客，保持为空
     - 验收：单测覆盖「对话内自动带上」「对话外显式传入」「全局事件为空」三种；**再加一条守卫测试**：跑一遍完整的一轮（webhook → 模型 → 工具 → 发送），断言期间发出的每条事件都带了 `key_id`——漏一个调用点，那条事件就只会出现在「全部」视图里，而这种漏法看界面是看不出来的
     - 不改路由：前端照旧订阅同一条 `/console/stream`，所以 `nginx.conf` / `vite.config.ts` 不用动，掉不进任务 19.1 那个「部署了但打不到」的坑
+
+    **完成记录（2026-09-14）**
+    文件：`backend/app/console/events.py`、`backend/app/routers/whatsapp_webhook.py`、`backend/app/routers/chat.py`、`backend/app/services/handover.py`、`backend/app/services/notify.py`、`backend/app/session_store.py`、`backend/tests/conftest.py`、`backend/tests/test_console_event_identity.py`（新增）
+
+    **偏离 1：计划里「从当前这一轮对话读取顾客身份，对话内的事件调用处都不用改」，这句是错的。** 动手前逐处核对才发现：**语音转写、图片下载、文件下载这几类事件，是在这一轮对话开始之前发出的**——它们在 `dispatch_message` 里先跑，`_handle_text_message` 才打开审计这一轮。按计划做，这几类事件会一律没有顾客。
+    改成：**在识别出发件人的那一刻记下「正在服务的顾客」**（`events.set_customer`，ContextVar，和 outbox / 推送队列同一个做法），这期间发出的所有事件自动带上。设在两个入口：WhatsApp 的 `dispatch_message`、网页聊天的 `send_message`。发送循环里的 `send_failed` 和 `dispatch_message` 在同一个上下文里，也自动带上。
+    **对话之外发出的显式传**：人工接管的开始 / 结束（从导演台按按钮，没有正在服务的顾客）、主动推送（`threading.Timer` 线程**不继承任何上下文**）。推送的收件地址是 `profile.phone`，是号码的书写形式、未必是记录的归档 key，所以用 `identity()` 归一化后再放上去。`tools_switched` 是全局开关，本来就不属于谁，留空。
+
+    **偏离 2：没加 `conversation_id`。** 按计划本身的设计，37.6b 实时部分**按 `key_id` 筛**、去重**按 `tool_use_id`**、过去记录**从数据库按对话取**——实时事件上的 `conversation_id` 没有任何消费方；而推送、接管这些事件拿不到它，只会变成一个时有时无的字段。不写投机性代码。
+
+    **顺带修的一个测试隔离问题**：新测试文件加进来后，一条老测试（`test_the_file_is_still_in_front_of_the_model_on_the_question_after_it`）**只在全套跑时挂**、单独跑能过。原因：两边都发了 `wamid.60129996002.1`，WhatsApp 的「处理过的消息 id」记录在测试之间**不清空**，新测试先跑，老测试的第二条消息被当成重复消息跳过了。**根因是去重记录（和每日计数）没有测试间重置**，任何两条复用消息 id 的测试都会互相干扰、谁输取决于文件顺序。给 `SessionStore` 补了 `reset()`、conftest 加了 autouse 重置——和 `user_store.reset()` / `doc_store.clear()` 同一个做法。**我的测试号码一个没改**，全套照样通过，证明是重置修好的，不是换号绕过去的。
+
+    **验证**：
+    - 新测试 12 条，**从真实入口驱动**，不是单测 `emit`：语音消息、照片、Meta 拒收的回复、识别不出发件人的消息、网页聊天、人工接管、主动推送、写法不同的号码。每条都断言**这一条入口发出的所有事件**都带着正确的 `key_id`——漏一处，事件只会出现在「全部」视图里，界面上看不出来
+    - 模型的工具调用用「打桩的 `get_reply` 在调用内部发事件」模拟：真实的 tool runner 就是从同一条调用栈发的
+    - **变异 7/7 全红**：webhook 不记顾客 / 网页聊天不记 / emit 不读上下文 / emit 不认显式传入 / 接管开始不显式传 / 推送不归一化 / 推送不显式传
+    - **871 passed**
+    - **没验**：线上事件是否真的带上了 `key_id`。这一步对现有页面没有可见变化，要看事件本身（见下面的验证命令）
+    - **没动**：`frontend/src/api.ts` 的 `ConsoleEvent` 类型。多出来的字段前端直接忽略，按计划属于 37.6b
 
   - [ ] **37.6b 前端：合并成一个页面**
     文件：`frontend/src/pages/Console.tsx`、`frontend/src/pages/History.tsx`（列表和详情组件并过去，页面本身删掉）、`frontend/src/main.tsx`、`frontend/src/api.ts`、样式

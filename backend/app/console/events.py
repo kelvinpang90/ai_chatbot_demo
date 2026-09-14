@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextvars import ContextVar
 
 from pydantic import BaseModel
 
@@ -51,6 +52,11 @@ class ConsoleEvent(BaseModel):
     model: str | None = None  # USAGE only
     tokens: dict | None = None  # USAGE only: input / output / cache_write / cache_read
     cost_myr: float | None = None  # USAGE only
+    # Whose event this is: the customer's filing key (a phone number, or a BSUID
+    # for someone behind a username). Blank for what belongs to nobody -- the
+    # tools switch, a message nobody could be identified from. What a page that
+    # shows one customer's console filters on (task 37.6).
+    key_id: str = ""
 
 
 # The chat request runs in FastAPI's sync threadpool while the SSE endpoint runs on
@@ -60,6 +66,29 @@ class ConsoleEvent(BaseModel):
 _lock = threading.Lock()
 _events: deque[ConsoleEvent] = deque(maxlen=MAX_EVENTS)
 _counter = itertools.count(1)
+
+# The customer whose inbound message is being handled, stamped on everything
+# emitted while it is. Set once, where the sender is first known, rather than
+# threaded through every function that might emit: a voice note's transcription
+# span, a photo download, the model's tool calls and the send that follows all
+# happen under it, and the first of those fire before any audit turn opens -- so
+# the turn could not have supplied the key.
+#
+# A ContextVar for the outbox's reason: each inbound message is handled in its own
+# context, so one customer's key cannot reach another's events. What runs on a
+# thread of its own -- a timed push -- inherits nothing and names its customer
+# at the call instead.
+_customer: ContextVar[str] = ContextVar("console_event_customer", default="")
+
+
+def set_customer(key_id: str) -> None:
+    """File what this context emits from here on under this customer."""
+    _customer.set(key_id or "")
+
+
+def clear_customer() -> None:
+    """Stop filing under anybody. For tests; production never reuses a context."""
+    _customer.set("")
 
 
 def emit(
@@ -74,6 +103,10 @@ def emit(
     model: str | None = None,
     tokens: dict | None = None,
     cost_myr: float | None = None,
+    # Named outright by a caller that knows better than the context does -- a
+    # handover started from the console, a push on a timer thread. Otherwise the
+    # customer being served.
+    key_id: str | None = None,
 ) -> ConsoleEvent:
     with _lock:
         event = ConsoleEvent(
@@ -89,6 +122,7 @@ def emit(
             model=model,
             tokens=tokens,
             cost_myr=cost_myr,
+            key_id=_customer.get() if key_id is None else key_id,
         )
         _events.append(event)
     return event

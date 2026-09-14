@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from app.bots.registry import BotConfig, LocalizedText, get_bot, list_bots
+from app.console import events
 from app.models import (
     BotDetail,
     BotSummary,
@@ -152,6 +153,10 @@ def send_message(key: str, body: SendMessageRequest) -> SendMessageResponse:
     bot = get_bot(profile.bot_id)
     if not bot:
         raise HTTPException(status_code=409, detail="This demo no longer exists")
+
+    # The same customer on the console as on the phone: the tool calls this turn
+    # makes are filed under the same key WhatsApp would file them under.
+    events.set_customer(profile.key_id)
 
     # Opened around the whole exchange, not just the writes: the tool calls the
     # model makes in between are recorded off this same turn, and outside one

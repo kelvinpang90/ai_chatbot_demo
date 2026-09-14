@@ -100,6 +100,9 @@ def begin(profile, reason: str = "") -> bool:
         tool=HANDOVER_TOOL,
         tool_use_id=key_id,
         input={"customer": profile.display_name or key_id, "reason": reason},
+        # Named outright: this is usually pressed on the console, where nobody
+        # is being served and the context would file it under no one.
+        key_id=key_id,
     )
     logger.info("handover started for %s: %s", key_id, reason or "(no reason given)")
     return True
@@ -128,6 +131,7 @@ def end(profile) -> bool:
         output=f"{profile.display_name or key_id}: back with the bot after {held_for}s",
         duration_ms=held_for * 1000,
         status="ok",
+        key_id=key_id,
     )
     logger.info("handover ended for %s after %ss", key_id, held_for)
     return True

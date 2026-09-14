@@ -31,7 +31,7 @@ from typing import NamedTuple
 
 from app.console import events
 from app.services import audit, handover, whatsapp, whatsapp_media
-from app.services.user_store import user_store
+from app.services.user_store import identity, user_store
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +210,12 @@ def _send(
     screen is the only one who can notice.
     """
     span = f"{to}:{int(time.time())}"
+    # This runs on a timer thread, which inherits nobody's context, so the
+    # customer is named on every event below rather than left to
+    # events.set_customer. Normalised to the filing key the console filters on:
+    # the closing summary is addressed to `profile.phone`, which is the number as
+    # it was written down, not necessarily as the record is filed.
+    key_id = _filing_key(to)
     started = time.monotonic()
     try:
         # Checked at the moment it fires, not when it was queued. The order that
@@ -238,6 +244,7 @@ def _send(
             tool=label,
             tool_use_id=span,
             input={"to": to, "kind": payload.get("type", "")},
+            key_id=key_id,
         )
         whatsapp_media.send_message(payload)
         events.emit(
@@ -247,6 +254,7 @@ def _send(
             output=push.text,
             duration_ms=int((time.monotonic() - started) * 1000),
             status="ok",
+            key_id=key_id,
         )
         _remember(to, push.text, source)
     except Exception as failure:
@@ -257,7 +265,18 @@ def _send(
             tool_use_id=span,
             output=f"{type(failure).__name__}: {failure}",
             status="error",
+            key_id=key_id,
         )
+
+
+def _filing_key(to: str) -> str:
+    """The key this customer's record is filed under, from however they were addressed."""
+    try:
+        return identity(to)
+    except ValueError:
+        # Not a number or a user id anything is filed under. Still better on the
+        # event than nothing: it is what the console's everybody feed shows.
+        return to
 
 
 def _remember(to: str, text: str, source: str = audit.TEXT) -> None:

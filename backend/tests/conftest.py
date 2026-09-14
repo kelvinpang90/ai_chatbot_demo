@@ -17,8 +17,10 @@ from unittest.mock import patch
 import pytest
 
 from app.config import settings
+from app.console import events
 from app.services import audit, crm_client, doc_store, erp_client, notify, outbox
 from app.services.user_store import user_store
+from app.session_store import session_store
 from app.verticals import db as verticals_db
 
 
@@ -115,6 +117,36 @@ def _no_documents_on_file():
     doc_store.clear()
     yield
     doc_store.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_message_already_seen():
+    """Every test starts with no WhatsApp message id handled and nothing counted.
+
+    Found 2026-09-14 when a new test file made an old test fail only in the full
+    run: both sent `wamid.60129996002.1`, the first one got there first, and the
+    old test's second message was skipped as a duplicate -- so the model never saw
+    the question the test was about. Any two tests reusing a message id interfered
+    that way, and which one lost depended on the order the files ran in. The
+    per-number daily count had the same shape, just further from the cap.
+    """
+    session_store.reset()
+    yield
+    session_store.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_customer_left_on_the_console():
+    """Every test starts emitting console events on behalf of nobody.
+
+    The same ContextVar hazard as the outbox: in production each inbound message
+    is handled in its own context, while a test suite runs in one. Without this,
+    the last WhatsApp message any earlier test dispatched would decide whose name
+    goes on the events of a test that never mentioned a customer.
+    """
+    events.clear_customer()
+    yield
+    events.clear_customer()
 
 
 @pytest.fixture(autouse=True)

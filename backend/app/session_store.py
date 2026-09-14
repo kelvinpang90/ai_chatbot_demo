@@ -51,5 +51,10 @@ class SessionStore:
         self._seen_message_ids[message_id] = time.time()
         return False
 
+    def reset(self) -> None:
+        """Forget every message id and every count. Tests."""
+        self._daily_counts.clear()
+        self._seen_message_ids.clear()
+
 
 session_store = SessionStore(daily_msg_limit=settings.whatsapp_daily_msg_limit)

@@ -345,6 +345,13 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
         )
         return []
 
+    # Everything the console hears about this message from here on is this
+    # customer's -- the voice or photo download that runs before the turn opens,
+    # the model's tool calls, and the send loop in _handle_incoming_message after
+    # this returns (same context). Not reset on the way out, like the outbox: the
+    # next message gets a context of its own. See events.set_customer.
+    events.set_customer(sender.key)
+
     # A tool that produces a file cannot send it: this function is the one place
     # that decides what goes out, and the gateway path below returns payloads
     # rather than sending them. So a tool leaves the file here and it travels
