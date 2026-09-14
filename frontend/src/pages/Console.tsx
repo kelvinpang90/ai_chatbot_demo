@@ -6,11 +6,13 @@ import {
   forgetToken,
   listConversations,
   readConversation,
+  readFaultDrill,
   readHandovers,
   readToolSwitch,
   rememberToken,
   replyAsHuman,
   sendDemoSummary,
+  setFaultDrill,
   setHandover,
   setToolSwitch,
   storedToken,
@@ -114,6 +116,10 @@ type Connection = 'connecting' | 'live' | 'error'
 // restarts mid-demo can hand out an id a row above already carries.
 let nextRowKey = 1
 
+// What every failure-drill line on the feed starts with, which is also how its
+// card tells itself apart from a tools-switch line in tech mode.
+const DRILL_LABEL = 'Failure drill'
+
 /** One tool call, both halves of it, as a single line on the screen. */
 interface ToolRow extends Call {
   key: number
@@ -199,6 +205,9 @@ export default function Console() {
   // the switch cannot start out claiming a position it has not been told.
   const [toolsEnabled, setToolsEnabled] = useState<boolean | null>(null)
   const [switchNote, setSwitchNote] = useState('')
+  // Whether the next ERP call is set to fail (task 27.1). Disarms itself when it
+  // fires, which this screen hears about from the feed.
+  const [drillArmed, setDrillArmed] = useState<boolean | null>(null)
   // Closing the demo off. In flight rather than a plain boolean's worth of
   // "done", because the button sends a real message to a real phone and a
   // nervous double-click would send two.
@@ -289,6 +298,10 @@ export default function Console() {
         setToolsEnabled(event.status === 'on')
         setSwitchNote('')
       }
+      if (event.type === 'fault_drill') {
+        setDrillArmed(event.status === 'armed')
+        setSwitchNote('')
+      }
 
       setRows((current) => mergeEvent(current, event))
     }
@@ -335,7 +348,7 @@ export default function Console() {
       }
     }
     source.addEventListener('hello', hello as EventListener)
-    for (const type of ['tool_start', 'tool_end', 'send_failed', 'usage', 'tools_switched']) {
+    for (const type of ['tool_start', 'tool_end', 'send_failed', 'usage', 'tools_switched', 'fault_drill']) {
       source.addEventListener(type, apply as EventListener)
     }
 
@@ -356,6 +369,9 @@ export default function Console() {
     readToolSwitch(token)
       .then(({ enabled }) => !stale && setToolsEnabled(enabled))
       .catch(() => !stale && setSwitchNote('Could not read the tools switch'))
+    readFaultDrill(token)
+      .then(({ armed }) => !stale && setDrillArmed(armed))
+      .catch(() => !stale && setSwitchNote('Could not read the failure drill'))
     return () => {
       stale = true
     }
@@ -375,6 +391,17 @@ export default function Console() {
         setSwitchNote('')
       })
       .catch(() => setSwitchNote('Switch not thrown: the backend refused'))
+  }
+
+  function flipDrill() {
+    if (drillArmed === null) return
+    // Not optimistic, for the tools switch's reason.
+    setFaultDrill(token, !drillArmed)
+      .then(({ armed }) => {
+        setDrillArmed(armed)
+        setSwitchNote('')
+      })
+      .catch(() => setSwitchNote('Drill not armed: the backend refused'))
   }
 
   useEffect(() => {
@@ -753,6 +780,15 @@ export default function Console() {
         >
           {toolsEnabled === false ? 'Tools off · turn back on' : 'Turn tools off (control)'}
         </button>
+        <button
+          className="cx-btn"
+          data-off={drillArmed === true}
+          disabled={drillArmed === null}
+          onClick={flipDrill}
+          title="Make the next ERP call fail, once, the way an unreachable ERP fails"
+        >
+          {drillArmed ? 'Drill armed · call off' : 'Break next ERP call (drill)'}
+        </button>
         <button className="cx-btn" disabled={closing || !target} onClick={closeDemo}>
           {closing ? 'Sending…' : 'End demo · send summary'}
         </button>
@@ -997,7 +1033,13 @@ function CardView({ entry, slowest }: { entry: Entry; slowest: number }) {
       {/* Function name, arguments and timing -- never the output, which for a
           refusal or a handover is text written for the model, not the room. */}
       <div className="cx-tech">
-        <span className="cx-fn">{call.status === 'note' ? 'tools_switched' : call.tool}</span>
+        <span className="cx-fn">
+          {call.status === 'note'
+            ? call.tool.startsWith(DRILL_LABEL)
+              ? 'fault_drill'
+              : 'tools_switched'
+            : call.tool}
+        </span>
         {ms != null && (
           <>
             <span className="cx-ms">{seconds(ms)}</span>
@@ -1051,6 +1093,29 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
         seq: event.seq,
         at: event.at,
         tool: off ? 'Tools turned off -- control arm starts' : 'Tools back on -- control arm ends',
+        input: null,
+        output: null,
+        durationMs: null,
+        status: 'note',
+        keyId: event.key_id ?? '',
+      },
+    ]
+  }
+
+  if (event.type === 'fault_drill') {
+    const label = {
+      armed: `${DRILL_LABEL} armed -- the next ERP call will fail`,
+      fired: `${DRILL_LABEL}: this ERP call was cut off on purpose`,
+      disarmed: `${DRILL_LABEL} called off`,
+    }[event.status as 'armed' | 'fired' | 'disarmed']
+    return [
+      ...rows,
+      {
+        key: nextRowKey++,
+        id: `drill:${event.seq}`,
+        seq: event.seq,
+        at: event.at,
+        tool: label ?? DRILL_LABEL,
         input: null,
         output: null,
         durationMs: null,

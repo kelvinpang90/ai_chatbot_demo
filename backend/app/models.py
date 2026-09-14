@@ -160,6 +160,12 @@ class ToolSwitch(BaseModel):
     enabled: bool
 
 
+class FaultDrill(BaseModel):
+    """Whether the next ERP call is set to fail -- the console's failure drill."""
+
+    armed: bool
+
+
 class HandoverCustomer(BaseModel):
     """One conversation a person has taken off the bot."""
 

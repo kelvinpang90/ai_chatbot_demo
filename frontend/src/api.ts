@@ -132,14 +132,15 @@ export function forgetToken(): void {
 export interface ConsoleEvent {
   seq: number
   at: number
-  type: 'tool_start' | 'tool_end' | 'send_failed' | 'usage' | 'tools_switched'
+  type: 'tool_start' | 'tool_end' | 'send_failed' | 'usage' | 'tools_switched' | 'fault_drill'
   tool: string
   tool_use_id: string
   input: Record<string, unknown> | null
   output: string | null
   duration_ms: number | null
-  // 'ok' | 'error' on tool_end; 'on' | 'off' on tools_switched.
-  status: 'ok' | 'error' | 'on' | 'off' | null
+  // 'ok' | 'error' on tool_end; 'on' | 'off' on tools_switched;
+  // 'armed' | 'disarmed' | 'fired' on fault_drill.
+  status: 'ok' | 'error' | 'on' | 'off' | 'armed' | 'disarmed' | 'fired' | null
   model: string | null
   tokens: Record<string, number> | null
   cost_myr: number | null
@@ -283,6 +284,23 @@ export function setToolSwitch(token: string, enabled: boolean): Promise<ToolSwit
     method: 'POST',
     headers: { 'X-Console-Token': token },
     body: JSON.stringify({ enabled }),
+  })
+}
+
+/** Whether the next ERP call is set to fail - the console's failure drill (task 27.1). */
+export interface FaultDrill {
+  armed: boolean
+}
+
+export function readFaultDrill(token: string): Promise<FaultDrill> {
+  return request<FaultDrill>('/console/fault-drill', { headers: { 'X-Console-Token': token } })
+}
+
+export function setFaultDrill(token: string, armed: boolean): Promise<FaultDrill> {
+  return request<FaultDrill>('/console/fault-drill', {
+    method: 'POST',
+    headers: { 'X-Console-Token': token },
+    body: JSON.stringify({ armed }),
   })
 }
 

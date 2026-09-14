@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from app.config import settings
+from app.console import events
 from app.services import phone
-from app.services.api_client import JsonApiClient
+from app.services.api_client import ApiClientError, JsonApiClient
 
 # The VPS runs on UTC and the shop does not. Between midnight and 8am local time
 # `date.today()` would date an order to yesterday, which is what the customer and
@@ -93,6 +95,41 @@ def _outstanding(line: dict) -> Decimal:
     return ordered - shipped
 
 
+# The failure drill (task 27.1). Armed from the director's console, it makes the
+# next ERP request fail as if the ERP could not be reached, once, and then
+# disarms itself. Broken here rather than in the tools so that every ERP tool
+# answers with its own failure path -- the one a real outage would take -- and
+# the demo shows what actually happens, not a rehearsed stand-in for it.
+#
+# Process-global and not persisted, for the tools switch's reason: a restart
+# comes back with the ERP working, which is the safe way round.
+_fault_drill_lock = threading.Lock()
+_fault_drill_armed = False
+
+
+def fault_drill_armed() -> bool:
+    return _fault_drill_armed
+
+
+def set_fault_drill(armed: bool) -> bool:
+    global _fault_drill_armed
+    with _fault_drill_lock:
+        _fault_drill_armed = armed
+        return _fault_drill_armed
+
+
+def _fire_fault_drill() -> bool:
+    """Disarm and say whether it was armed, in one step.
+
+    Under the lock because replies run in a threadpool: two conversations
+    calling the ERP in the same instant must not both be the "next" call.
+    """
+    global _fault_drill_armed
+    with _fault_drill_lock:
+        fired, _fault_drill_armed = _fault_drill_armed, False
+    return fired
+
+
 class ErpClient(JsonApiClient):
     """erp_os over its own REST routes.
 
@@ -108,6 +145,14 @@ class ErpClient(JsonApiClient):
             email=settings.erp_email,
             password=settings.erp_password,
         )
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        if _fire_fault_drill():
+            events.emit(type=events.FAULT_DRILL, status="fired")
+            # Before any connection is attempted, so it truly never reached the
+            # ERP and a write reports "not placed" rather than "being checked".
+            raise ApiClientError(f"{self.name} api: {method} {path} failed: failure drill")
+        return super()._request(method, path, **kwargs)
 
     def search_skus(self, keyword: str, *, limit: int = DEFAULT_RESULT_LIMIT) -> SkuMatches:
         """Products matching a name or code fragment, and how many matched in all.

@@ -154,6 +154,7 @@ const HANDED_OVER = 'A colleague has been brought in'
 const FORM_SENT = 'A booking form is being sent'
 const NO_FORM = 'There is no form available'
 const VIEWING_SAVED = 'IS ALREADY SAVED'
+const OUTAGE = 'could not be reached'
 const CONSOLE_TAKEOVER = 'taken over from the console'
 // The demo summary goes out through the same push as everything else; its text
 // is what tells it apart (backend/app/console/summary.py).
@@ -245,6 +246,14 @@ export function describe(call: Call): Card | null {
   const rows = Array.isArray(data) ? (data as Json[]) : null
   const refused = (detail = 'Did not go through -- the bot will tell the customer as it is') =>
     card('refused', '×', name, detail)
+
+  // An outage is not a "no": the per-tool wording below ("No such product",
+  // "No orders found") would claim the back office answered. Every back office
+  // words its outage this way (erp.py / crm.py / food.py UNAVAILABLE), and the
+  // failure drill (task 27.1) puts exactly this on screen.
+  if (!data && str(output).includes(OUTAGE)) {
+    return refused('System unreachable -- nothing looked up, nothing made up')
+  }
 
   switch (tool) {
     case 'food_update_cart': {

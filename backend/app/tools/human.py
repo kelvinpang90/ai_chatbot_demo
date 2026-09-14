@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 HANDED_OVER = (
     "A colleague has been brought in and will answer from here. Tell the customer "
     "plainly that you are passing them to a colleague who will take it from here, "
-    "in one short sentence, and then stop -- do not attempt the request yourself, "
+    "in one short sentence -- if it is because a system could not be checked, that "
+    "sentence says so -- and then stop -- do not attempt the request yourself, "
     "do not promise what the colleague will decide, and do not ask them anything "
     "else. Everything they say from now on goes to that person, not to you."
 )

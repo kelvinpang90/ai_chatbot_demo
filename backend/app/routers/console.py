@@ -17,6 +17,7 @@ from app.models import (
     CustomerSummary,
     DemoSummaryRequest,
     DemoSummaryResult,
+    FaultDrill,
     HandoverCustomer,
     HandoverList,
     HandoverReplyRequest,
@@ -27,7 +28,7 @@ from app.models import (
     ToolSwitch,
     TranscriptMessage,
 )
-from app.services import audit, handover, notify
+from app.services import audit, erp_client, handover, notify
 from app.services.audit import audit_store
 from app.services.user_store import identity, user_store
 from app.tools import registry as tool_registry
@@ -182,6 +183,30 @@ def flip_tool_switch(switch: ToolSwitch) -> ToolSwitch:
     if changed:
         events.emit(type=events.TOOLS_SWITCHED, status="on" if enabled else "off")
     return ToolSwitch(enabled=enabled)
+
+
+@router.get(
+    "/fault-drill", response_model=FaultDrill, dependencies=[Depends(require_console_token)]
+)
+def read_fault_drill() -> FaultDrill:
+    return FaultDrill(armed=erp_client.fault_drill_armed())
+
+
+@router.post(
+    "/fault-drill", response_model=FaultDrill, dependencies=[Depends(require_console_write)]
+)
+def set_fault_drill(drill: FaultDrill) -> FaultDrill:
+    """Arm the failure drill (task 27.1), or call it off before it fires.
+
+    Armed, the next ERP call anybody's conversation makes fails as an
+    unreachable ERP would, and the drill disarms itself. The console learns it
+    fired from the feed. Evented only on a real change, like the tools switch.
+    """
+    changed = drill.armed != erp_client.fault_drill_armed()
+    armed = erp_client.set_fault_drill(drill.armed)
+    if changed:
+        events.emit(type=events.FAULT_DRILL, status="armed" if armed else "disarmed")
+    return FaultDrill(armed=armed)
 
 
 def _at(value) -> str:

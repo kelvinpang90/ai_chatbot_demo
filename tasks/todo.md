@@ -1375,11 +1375,38 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 窗口缩放时上限只在下次渲染时重算（任何轮询都会触发，最多几秒），没专门监听 resize
   - 已知边角：菜名是英文（菜单只有英文名，中文只在提示词里），没加翻译表；`push` / `handover` / 语音事件不进审计库，后端重启或 200 条缓冲滚掉后这些卡片会从历史里消失（消息气泡还在）
 
-- [ ] **任务 27.1：故障演练开关**
+- [x] **任务 27.1：故障演练开关**——**2026-09-15 完成（代码 + 本地真模型端到端；真 WhatsApp 手机没演）**
   文件：`frontend/src/pages/Console.tsx`、`backend/app/tools/`（注入失败）
   目标：导演台上一个开关，故意让下一次 ERP 调用失败。展示 bot **不崩、不编**，说「系统暂时查不到，帮您转同事」，然后走人工接管
   **「坏了怎么办」是老板一定会想、但未必会问出口的问题。** 主动演一遍比等他问更有力。做成开关而不是真断网，风险可控——演示时你完全掌握它什么时候坏
   验收：拨开关后下一次调用失败，客户侧收到得体的说明而不是报错或胡编，接管流程正常走完
+
+  **怎么演**：导演台顶栏「Break next ERP call (drill)」→ 变红「Drill armed · call off」→ 客户在 **retail** 问任何要查 ERP 的事（有货吗 / 我的单到哪了）→ bot 转同事、顶栏变「Human has it」→ 导演台回复 → 「Hand back to bot」→ 再问同一句，ERP 正常答。**只有 retail 用 ERP**，其他行业拨了不会触发（会一直挂着等下一次 ERP 调用，记得「call off」）
+
+  **做了什么**：
+  - **注入点在 `ErpClient._request`，不在工具里**（`services/erp_client.py`）：一次性标志，触发时在建连之前抛 `ApiClientError(may_have_landed=False)`，然后自动解除（加锁，并发两个对话不会都算「下一次」）。所以每个 ERP 工具走的都是**自己真实的断网分支**——演示的就是真断网时会发生的事，不是排练版。写操作也因此报「没下成」而不是「在核实中」。进程内全局、不落盘（同对照组开关：重启后 ERP 是好的）
+  - `GET/POST /console/fault-drill`（写要 header token）；`fault_drill` 事件：`armed` / `disarmed`（操作员拨）、`fired`（带客户 key，落在那段对话里）；nginx + vite 登记新路由（`test_console_routing` 守着）
+  - **偏离 / 顺带改的两句提示词**（不改的话验收做不到）：
+    1. `erp.UNAVAILABLE` 原来只说「查不了」，模型不会转人工。改成「别猜、别重试，调 `request_human_help`，回复里说系统暂时查不到 + 同事接手」。**这是生产行为变化**：真实 ERP 挂掉时 retail bot 现在也会自动转人工（这正是演练要证明的事，所以两者必须一致）
+    2. `human.HANDED_OVER` 加一句「如果是因为系统查不到，那句话里说出来」。第一版只改 1 时，Haiku 3 次里 0 次说原因——它听后来那条「一句话说转同事」的
+  - 前端：顶栏按钮（沿用对照组开关的红色 `data-off` 样式）+ 卡片流里 `⏻ Failure drill…` 提示行，技术模式显示 `fault_drill`
+  - **顺带修的前端 bug**（`consoleCards.ts`）：工具非 JSON 输出一律套用该工具的「没找到」文案，所以断网在屏上显示成 **「Search products · No such product」**——等于屏幕替 bot 编了一句「没这个货」。现在识别三个后台共用的 `could not be reached` 措辞，显示「System unreachable -- nothing looked up, nothing made up」。这个 bug 任务 27 起就在，演练才让它露出来
+
+  **验证到什么程度**：
+  - pytest 新增 `tests/test_fault_drill.py` 8 条，先红（8 errors）后绿；全套 **920 passed / 7 skipped**（7 = 真模型评测；这次挂了整个 worktree，nginx 配置那 3 条也跑了）。**变异验证**：把 `_request` 里的触发改成 `if False` → 3 条变红
+  - `npm run build` + oxlint 0 警告
+  - **本地真模型端到端**（docker compose 起 backend/mysql/redis，网页渠道，WhatsApp 凭据故意置空，ERP/CRM 是真的）：
+    - Sonnet 一次 + **Haiku（与线上一致）6 次**，中 / 英 / 马来语各 2：**6/6 首个 ERP 调用失败（`erp_search_sku` 或 `erp_find_customer`）→ 模型自己调 `request_human_help` → 接管中 → 开关自动复位**；**0 次编造**
+    - **说出原因 4/6**：「Our system is down at the moment, but a colleague will take it from here.」「系统暂时无法连接，我正在转接一位同事为您处理。」「Sistem tidak dapat dicapai sekarang…」；**另 2 次只说「A colleague will take it from here.」**——得体、不编，但没解释。是模型遵从度的方差，没再加码提示词
+    - 接管 → 导演台回复（凭据为空发送失败，红卡，符合预期）→ 交回 → 同一问题 ERP 正常返回 337 件、RM 328.90，证明只坏一次
+    - Chrome 里点按钮：文字变「Drill armed · call off」、红框、后端 `armed:true`；发消息后按钮自己复位；卡片依次为演练提示 → 「System unreachable」→ 转人工卡（带模型写的原因）；页面文字里没有给模型的指令原文。**没看截图**，只读了 DOM
+  - 中文第一次测试回了阿拉伯语：是 Git Bash 把 curl 参数里的中文按系统代码页转坏了（模型收到的是乱码），改用 `\u` 转义后正常。不是代码问题
+
+  **没验 / 已知边角**：
+  - ❌ **真 WhatsApp 手机**没演——建议并进任务 26 剧本 4a 那次一起走（retail 发 `menu` 切过去）
+  - ⚠️ **网页渠道根本不执行接管静默**：接管中网页客户再发一句，bot 照答（`routers/chat.py` 没有 handover 检查，只有 WhatsApp webhook 有）。这次演练本地跑时撞见的，**不是本任务引入的**，没修。演示走 WhatsApp 不受影响
+  - 转人工卡片标题是「Bot judged it out of scope and handed to a colleague」，断网场景下不太贴切（任务 27 的文案），没改
+  - 演练对所有人生效：同一时刻别人的对话先调到 ERP，坏的是别人那条。演示现场一般只有一个客户在聊
 
 - [ ] **任务 28：网页聊天线视觉重做**
   文件：`frontend/src/App.css`、`frontend/src/pages/*.tsx`

@@ -34,6 +34,10 @@ USAGE = "usage"
 # demo where the bot answers from nothing looks identical to a stretch where
 # nothing happened to be asked. `status` carries "on" or "off".
 TOOLS_SWITCHED = "tools_switched"
+# The failure drill (task 27.1): `status` is "armed" or "disarmed" when the
+# operator throws it, and "fired" when it breaks an ERP call -- that one carries
+# the customer being served, so it lands in their conversation on the screen.
+FAULT_DRILL = "fault_drill"
 
 
 class ConsoleEvent(BaseModel):
@@ -47,7 +51,8 @@ class ConsoleEvent(BaseModel):
     input: dict | None = None
     output: str | None = None
     duration_ms: int | None = None
-    # "ok" | "error" on TOOL_END; "on" | "off" on TOOLS_SWITCHED.
+    # "ok" | "error" on TOOL_END; "on" | "off" on TOOLS_SWITCHED;
+    # "armed" | "disarmed" | "fired" on FAULT_DRILL.
     status: str | None = None
     model: str | None = None  # USAGE only
     tokens: dict | None = None  # USAGE only: input / output / cache_write / cache_read

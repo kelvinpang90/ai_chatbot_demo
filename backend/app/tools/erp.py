@@ -19,7 +19,16 @@ logger = logging.getLogger(__name__)
 # What a tool says when the back office is unreachable. It is phrased for the model
 # to relay, not for a log: the honest answer to "got stock or not" is "I could not
 # check", and a bot that says so is worth more than one that guesses.
-UNAVAILABLE = "The ERP system could not be reached, so this could not be checked."
+#
+# It ends in a handover (task 27.1) because nothing else is left: every fact this
+# bot could give depends on the system that just failed, and a person can still
+# check by other means. The failure drill exists to show exactly this sentence.
+UNAVAILABLE = (
+    "The ERP system could not be reached, so this could not be checked. Do not "
+    "guess and do not try again. Call request_human_help, and make your reply "
+    "say both things: that the system cannot be checked right now, and that a "
+    "colleague will take it from here."
+)
 NOT_FOUND = "No matching product found in the ERP system."
 
 # A write needs its own vocabulary. "Could not be checked" is the wrong thing to
