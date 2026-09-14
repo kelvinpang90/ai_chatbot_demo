@@ -191,3 +191,14 @@
   background: #e4f4e8;
   color: #237a3b;
 }
+
+/* The restaurant's order stages (task 25): cooking is amber, on the road is blue. */
+.va-tag.busy {
+  background: #fff3cd;
+  color: #8a5a00;
+}
+
+.va-tag.moving {
+  background: #e3eefc;
+  color: #1f5fbf;
+}

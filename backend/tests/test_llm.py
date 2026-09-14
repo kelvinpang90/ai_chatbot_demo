@@ -265,6 +265,15 @@ def test_the_property_bot_is_held_to_one_tool_call_at_a_time():
     assert choice == {"type": "auto", "disable_parallel_tool_use": True}
 
 
+def test_the_restaurant_bot_is_held_to_one_tool_call_at_a_time():
+    """Setting the cart and placing the order are one write that depends on
+    another, the same shape as the property bot's booking and lead. A cart takes
+    every dish in one call, so there is nothing to gain from parallel calls."""
+    choice = _tool_choice_sent_for("food")
+
+    assert choice == {"type": "auto", "disable_parallel_tool_use": True}
+
+
 def test_a_bot_that_does_not_ask_for_it_keeps_parallel_tool_calls():
     """Retail looks stock up in three warehouses at once, and that is worth the
     speed. The rule is per bot because the hazard is per bot."""

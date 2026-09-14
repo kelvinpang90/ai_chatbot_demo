@@ -3,14 +3,14 @@ from __future__ import annotations
 from anthropic.lib.tools import BetaFunctionTool
 
 from app.bots.registry import list_bots
-from app.tools import crm, erp, human, local, realestate
+from app.tools import crm, erp, food, human, local, realestate
 
 # Every tool that exists, keyed by the name the model calls it by. That same name
 # is what a bot's JSON lists, so one tool has one identity across the catalogue,
 # the bot config and the console screen.
 CATALOGUE: dict[str, BetaFunctionTool] = {
     tool.name: tool
-    for tool in (*erp.TOOLS, *crm.TOOLS, *local.TOOLS, *realestate.TOOLS, *human.TOOLS)
+    for tool in (*erp.TOOLS, *crm.TOOLS, *local.TOOLS, *realestate.TOOLS, *food.TOOLS, *human.TOOLS)
 }
 
 

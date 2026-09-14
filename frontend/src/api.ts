@@ -399,3 +399,38 @@ export function readListings(token: string): Promise<Listing[]> {
     headers: { 'X-Console-Token': token },
   })
 }
+
+/** One dish on an order, priced as it was when the order was placed. */
+export interface FoodOrderLine {
+  item_id: string
+  name: string
+  unit_price_rm: number
+  quantity: number
+}
+
+/** One order in Nasi Lemak Express's back office (task 25). `status` is where
+ * the order's own timeline says it is at the moment the backend answered. */
+export interface FoodOrder {
+  id: number
+  order_no: string
+  customer_key: string
+  customer_name: string
+  phone: string
+  delivery_address: string
+  lines: FoodOrderLine[]
+  subtotal_rm: number
+  delivery_fee_rm: number
+  total_rm: number
+  status: 'received' | 'preparing' | 'on_the_way' | 'delivered'
+  // Naive local time, sliced rather than parsed -- see `Viewing.created_at`.
+  placed_at: string
+  preparing_at: string
+  ready_at: string
+  delivered_at: string
+}
+
+export function readFoodOrders(token: string): Promise<FoodOrder[]> {
+  return request<FoodOrder[]>('/api/verticals/food/orders', {
+    headers: { 'X-Console-Token': token },
+  })
+}

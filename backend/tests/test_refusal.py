@@ -122,13 +122,14 @@ EVAL_CASES = [
         "something this business does not do",
         OUT_OF_SCOPE_ADMISSIONS,
     ),
-    # The two bots with no tools at all, each asked the one question its own
-    # quick-question list used to invite. They have no order system and no
-    # appointment book, so there is nothing here but the persona holding the line.
+    # Each asked about something it holds no record of. `food` has had an order
+    # system since task 25, and an eval number has never ordered anything, so
+    # this is the tool answering "nothing on file" and the bot not dressing that
+    # up as a rider on the way.
     (
         "food",
         "Where is my delivery? I ordered about forty minutes ago.",
-        "an order this bot has no way to see",
+        "an order that is not on file",
         ADMISSIONS,
     ),
     (
@@ -166,11 +167,12 @@ def test_the_contract_covers_the_three_ways_a_demo_gets_broken(bot):
 
 
 def test_a_bot_with_no_tools_gets_the_same_contract_as_one_with_tools():
-    """`food` answers out of its context data alone, which is exactly the bot
-    with the least to fall back on and the most room to improvise."""
-    toolless = get_bot("food")
-    # One tool, and it is the way out rather than a way to answer: `food` still
-    # has nothing to look anything up in, which is the point of this test.
+    """`banking` answers out of its context data alone, which is exactly the bot
+    with the least to fall back on and the most room to improvise. (It was
+    `food` until task 25 gave the restaurant an order system.)"""
+    toolless = get_bot("banking")
+    # One tool, and it is the way out rather than a way to answer: `banking`
+    # still has nothing to look anything up in, which is the point of this test.
     assert toolless.tools == ["request_human_help"]
 
     assert llm.NEVER_INVENT in llm.build_system_blocks(toolless, None)[0]["text"]

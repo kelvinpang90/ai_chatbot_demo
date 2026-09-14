@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import Console from './pages/Console.tsx'
+import FoodAdmin from './pages/FoodAdmin.tsx'
 import VerticalAdmin from './pages/VerticalAdmin.tsx'
 
 // Three screens, one bundle, and still no router: two of them are screens in the
@@ -17,6 +18,7 @@ const SCREENS: Record<string, React.ReactElement> = {
   // still opens it, so a bookmark from before does not land on the customer demo.
   '/history': <Console />,
   '/vertical-admin': <VerticalAdmin />,
+  '/food-admin': <FoodAdmin />,
 }
 
 createRoot(document.getElementById('root')!).render(

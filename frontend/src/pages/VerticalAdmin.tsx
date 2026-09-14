@@ -38,7 +38,18 @@ const STORE_DOWN_NOTE = '读不到后台：房产数据库连不上，或者后�
  * look like the screen it stands in front of, and this screen is the client's
  * own back office rather than the operator's dark console.
  */
-function TokenGate({ note, onUnlocked }: { note: string; onUnlocked: () => void }) {
+export function TokenGate({
+  note,
+  onUnlocked,
+  title = '🏡 KL Homes Realty',
+  blurb = '看房预约后台。需要 console token（服务器上的 CONSOLE_TOKEN）。',
+}: {
+  note: string
+  onUnlocked: () => void
+  // The restaurant's back office (task 25) stands behind the same gate.
+  title?: string
+  blurb?: string
+}) {
   const [value, setValue] = useState('')
   return (
     <form
@@ -50,8 +61,8 @@ function TokenGate({ note, onUnlocked }: { note: string; onUnlocked: () => void 
         onUnlocked()
       }}
     >
-      <h2>🏡 KL Homes Realty</h2>
-      <p>看房预约后台。需要 console token（服务器上的 CONSOLE_TOKEN）。</p>
+      <h2>{title}</h2>
+      <p>{blurb}</p>
       {note && <p className="va-gate-note">{note}</p>}
       <input
         type="password"

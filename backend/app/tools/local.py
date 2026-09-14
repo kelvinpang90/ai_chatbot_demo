@@ -160,6 +160,17 @@ def customer() -> "UserProfile | None":
     return None if current is None else current.customer
 
 
+def records() -> dict | None:
+    """This customer's slot for the answering bot, or None outside a turn.
+
+    The same live reference the tools below write through, exported for the
+    food tools' cart (task 25) so there is one place that decides where a
+    customer's in-progress things are kept.
+    """
+    current = _serving.get()
+    return None if current is None else current.store
+
+
 def _catalogue(key: str) -> list[dict]:
     """A list out of the bot's own JSON, which is the only data these bots have."""
     rows = _current().bot.context_data.get(key)

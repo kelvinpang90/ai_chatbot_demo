@@ -12,29 +12,31 @@
     "en": "This is demo data for a fictional restaurant, not a real food delivery platform.",
     "ms": "Ini adalah data demo untuk restoran fiksyen, bukan platform penghantaran makanan sebenar."
   },
-  "persona_prompt": "You are the WhatsApp ordering assistant for 'Nasi Lemak Express', a Malaysian restaurant in Kuala Lumpur that delivers.\n\nThe menu, the prices and the delivery answers in your context data are everything you have. There is no kitchen screen and no order system in front of you: you cannot look up an order that has already been placed, say where the driver is, or hand out an order number. If a customer asks about an order they have already made, say plainly that you cannot see it from here and offer to have a colleague call them back.\n\nWhat you can do is help them choose, add the menu prices up for them, and take down what they want, how many, and where it is going - then tell them a colleague will confirm the order before it reaches the kitchen. Only the dishes on the menu exist: if they ask for something that is not on it, say so and suggest the closest thing that is.\n\nAll prices are in Malaysian Ringgit (RM). Keep replies concise, a few sentences at most.",
+  "persona_prompt": "You are the WhatsApp ordering assistant for 'Nasi Lemak Express', a Malaysian restaurant in Kuala Lumpur that delivers.\n\nThe menu, the prices and the delivery answers in your context data are everything you know about the food. Only the dishes on the menu exist: if a customer asks for something that is not on it, say so and suggest the closest thing that is. Customers will name dishes their own way - 椰浆饭 is Nasi Lemak Special, 拉茶 is Teh Tarik - so match what they say to the menu, and ask only if it could be two different dishes.\n\nYou take orders yourself, through your tools, and they go straight to the kitchen:\n1. As soon as the customer names dishes, set the cart with food_update_cart - every dish they named in one call.\n2. Tell them what is in the cart and the total the tool gave you, including delivery, and ask them to confirm. If there is no delivery address on file, ask for it in the same message.\n3. Once they say yes and you have the address, place it with food_place_order and give them the order number and the total it returns.\n4. When they ask where an order is, check with food_order_status. Never guess where an order is or when it will arrive.\n\nNever add prices up yourself and never quote a total or an order number that a tool did not give you. If the customer asks for something the kitchen or the rider would have to agree to - a change to an order already placed, special delivery instructions, an extra that is not on the menu - that is for a colleague: use request_human_help.\n\nAll prices are in Malaysian Ringgit (RM). Keep replies concise, a few sentences at most.",
   "context_data": {
     "menu": [
-      {"name": "Nasi Lemak Special", "price_rm": 12.90, "category": "Rice", "description": "Coconut rice with sambal, fried chicken, egg, anchovies, peanuts"},
-      {"name": "Chicken Rendang Rice", "price_rm": 14.50, "category": "Rice", "description": "Slow-cooked spicy chicken rendang with steamed rice"},
-      {"name": "Mee Goreng Mamak", "price_rm": 10.90, "category": "Noodles", "description": "Spicy fried yellow noodles with tofu, egg, prawns"},
-      {"name": "Char Kway Teow", "price_rm": 13.50, "category": "Noodles", "description": "Stir-fried flat rice noodles with prawns, cockles, egg"},
-      {"name": "Roti Canai (2pcs)", "price_rm": 6.00, "category": "Bread", "description": "Flaky flatbread served with dhal curry"},
-      {"name": "Satay Chicken (10 sticks)", "price_rm": 15.00, "category": "Grill", "description": "Grilled chicken skewers with peanut sauce"},
-      {"name": "Curry Laksa", "price_rm": 13.90, "category": "Noodles", "description": "Spicy coconut curry noodle soup with chicken and tofu puffs"},
-      {"name": "Teh Tarik", "price_rm": 4.50, "category": "Drinks", "description": "Malaysian pulled milk tea"},
-      {"name": "Iced Milo", "price_rm": 5.00, "category": "Drinks", "description": "Chocolate malt drink served iced"},
-      {"name": "Cendol", "price_rm": 7.00, "category": "Dessert", "description": "Shaved ice dessert with coconut milk, palm sugar, pandan jelly"},
-      {"name": "Fried Wonton (8pcs)", "price_rm": 9.90, "category": "Appetizer", "description": "Crispy fried dumplings with sweet chili sauce"},
-      {"name": "Butter Prawns", "price_rm": 22.00, "category": "Seafood", "description": "Crispy prawns tossed in creamy butter curry leaf sauce"}
+      {"item_id": "F01", "name": "Nasi Lemak Special", "price_rm": 12.90, "category": "Rice", "description": "Coconut rice with sambal, fried chicken, egg, anchovies, peanuts"},
+      {"item_id": "F02", "name": "Chicken Rendang Rice", "price_rm": 14.50, "category": "Rice", "description": "Slow-cooked spicy chicken rendang with steamed rice"},
+      {"item_id": "F03", "name": "Mee Goreng Mamak", "price_rm": 10.90, "category": "Noodles", "description": "Spicy fried yellow noodles with tofu, egg, prawns"},
+      {"item_id": "F04", "name": "Char Kway Teow", "price_rm": 13.50, "category": "Noodles", "description": "Stir-fried flat rice noodles with prawns, cockles, egg"},
+      {"item_id": "F05", "name": "Roti Canai (2pcs)", "price_rm": 6.00, "category": "Bread", "description": "Flaky flatbread served with dhal curry"},
+      {"item_id": "F06", "name": "Satay Chicken (10 sticks)", "price_rm": 15.00, "category": "Grill", "description": "Grilled chicken skewers with peanut sauce"},
+      {"item_id": "F07", "name": "Curry Laksa", "price_rm": 13.90, "category": "Noodles", "description": "Spicy coconut curry noodle soup with chicken and tofu puffs"},
+      {"item_id": "F08", "name": "Teh Tarik", "price_rm": 4.50, "category": "Drinks", "description": "Malaysian pulled milk tea"},
+      {"item_id": "F09", "name": "Iced Milo", "price_rm": 5.00, "category": "Drinks", "description": "Chocolate malt drink served iced"},
+      {"item_id": "F10", "name": "Cendol", "price_rm": 7.00, "category": "Dessert", "description": "Shaved ice dessert with coconut milk, palm sugar, pandan jelly"},
+      {"item_id": "F11", "name": "Fried Wonton (8pcs)", "price_rm": 9.90, "category": "Appetizer", "description": "Crispy fried dumplings with sweet chili sauce"},
+      {"item_id": "F12", "name": "Butter Prawns", "price_rm": 22.00, "category": "Seafood", "description": "Crispy prawns tossed in creamy butter curry leaf sauce"}
     ],
+    "delivery_fee_rm": 5.00,
     "faq": [
-      {"q": "What's your delivery radius?", "a": "We deliver within an 8km radius of our Kuala Lumpur outlet. Delivery fee is RM 3-8 depending on distance."},
-      {"q": "How long does delivery take?", "a": "Typically 30-45 minutes depending on your location and order volume."},
+      {"q": "What's your delivery radius?", "a": "We deliver within an 8km radius of our Kuala Lumpur outlet, for a flat delivery fee of RM 5."},
+      {"q": "How long does delivery take?", "a": "Most orders are with you within 15 minutes of ordering: the kitchen needs a few minutes and the ride is about 10."},
       {"q": "Do you cater for large events?", "a": "Yes! For orders above RM 300, please give us at least 24 hours notice."}
     ]
   },
-  "tools": ["request_human_help"],
+  "tools": ["food_update_cart", "food_place_order", "food_order_status", "request_human_help"],
+  "sequential_tools": true,
   "quick_questions": [
     {"zh": "有什么推荐的菜？", "en": "What do you recommend?", "ms": "Apa yang anda cadangkan?"},
     {"zh": "两个人吃大概多少钱？", "en": "How much for two people?", "ms": "Berapa harganya untuk dua orang?"},
