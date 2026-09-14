@@ -1241,6 +1241,15 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **修法（用户选的方案 1）**：事件流响应头从 `Cache-Control: no-cache` 改成 `no-cache, no-transform`。`no-transform` 是告诉代理「别压缩、别改写这个响应」的标准指令，而代理要压缩一个响应就得先把它攒着。测试先红后绿；原来那条把头精确钉成 `no-cache` 的老测试改成按指令集合判断。**856 passed**
   - **没选方案 2**（每推完一批事件就补写一行注释把前面挤出去）：它不管是哪一层在憋都有效，但属于绕过而不是修原因。**如果方案 1 部署后实测没好，方案 2 就是下一步**
   - ⚠️ **方案 1 管不管用只能在线上验**：本地没有 Cloudflare 这一层，单测只能证明头发出去了，证明不了代理会照做。「是 Cloudflare」本身也仍是推断
+  - **部署后核实了 Cloudflare**：`curl -sI https://chatbot.acuventech.com/` 回 `Server: cloudflare` + `CF-RAY: …-KUL`，推断变事实
+  - **方案 1 上线后用户实测（2026-09-14）**：**实时推送修好了**（手机发消息，导演台马上出现）；**刷新回放仍要等一会儿才补齐**。为什么「逐条推」不再卡、「一口气推一批」还卡，**没弄清楚**
+  - **于是按原计划补上方案 2**：`_event_stream` 每推完一批事件，立刻补写一行 `: flush` 注释（`EventSource` 按标准忽略冒号开头的行）。不需要知道是哪一层在憋：被憋住的「最后那几个字节」现在是这行注释，不是工具调用。测试先红后绿——改之前批次推完后流就沉默，读下一帧超时。**857 passed**。**线上是否真的不用等了，还没验**
+
+**模型改成由一个配置决定，默认 Haiku（2026-09-14，用户拍板：方案 b）**。原先 6 个 bot 的 JSON 各自写死模型（retail / realestate / food 是 `claude-opus-5`，banking / hotel / saas 是 `claude-sonnet-5`），`llm.model_for` 又是「bot 自己写了就用 bot 的」——所以 `.env` 里的 `ANTHROPIC_MODEL` **从来没生效过**。现在 6 个 bot 都去掉了 `model`，由 `ANTHROPIC_MODEL` 决定，代码默认值改成 `claude-haiku-4-5`；某个 bot 真有理由不同，仍可在自己的 JSON 里单独写。
+  - **接口参数不用改**：我们没传 thinking / effort，Haiku 4.5 不接受的参数一个都没用到。价格表里本来就有 Haiku（1 / 5 美元每百万 token，已对照官方价格表）
+  - **行为会变**：Opus 5 不传 thinking 时默认会思考，Haiku 4.5 不会。本周真机验过的几条——预约被拒后改对年份重存、存成功后才建 CRM 卡、中英马混说——**都是在 Opus 5 上验的，换 Haiku 后要重验**
+  - ⚠️ **部署陷阱**：`.env.example` 原来写的是 `ANTHROPIC_MODEL=claude-sonnet-5`。线上 `backend/.env` 如果是照它抄的，**部署后所有 bot 会变成 Sonnet 而不是 Haiku**（环境变量优先于代码默认值）。已把 `.env.example` 改成 Haiku 并写明这个坑；线上那份要用户自己查
+  - 测试先红后绿（banking 写死了模型 / 默认值还是 Sonnet）。**859 passed**
 
 - [ ] **任务 25：food 后端 + 点餐流程**
   文件：`backend/app/verticals/food/`、`backend/app/tools/food.py`（新增）、`backend/app/bots/data/food.json`
@@ -1624,6 +1633,40 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   ✅ **降级设计被一次真实事故验证了**：MySQL 连不上的那整段时间里，日志是 `audit log unavailable, dropping rows`，而**对话照常跑完**——Claude 回了、WhatsApp 收了 200。丢的只有审计行。这正是「没有内存兜底、但绝不拖垮 demo」当初的设计意图。
 
   **线上实测**（重建容器后）：`/api/bots` 200、`/history` 200、`/console` 200、`/console/history` 无 token **401**（不是 503，证明 `CONSOLE_TOKEN` 在容器里）、webhook verify 403、前端是带修复的最新包。
+
+- [ ] **任务 37.6：history 和 console 合成一个页面**（2026-09-14 新增，**计划待用户确认**，确认前不动代码）
+  **用户的需求**：两个页面合成一个，点 history 里某个顾客，就看到这个顾客的 console。已拍板的四点：
+  1. 点进顾客后，**过去的记录**和**正在进行的对话实时滚动**都要
+  2. 现在的「所有人混在一起的实时流」**先保留**（作为默认视图），确认没用以后再删
+  3. 单独做，不并进任务 27（导演台 v2）
+  4. 接管 / 人工回复 / 结束演示这几个按钮，在顾客视图里**只作用于这个顾客**（我定的默认，用户未反对）
+
+  **现在做不到的原因**：导演台的事件（`ConsoleEvent`）里**没有记录属于哪个顾客、哪通对话**，前端没法按顾客筛。过去的对话倒是已有数据：`/console/history/{conversation_id}` 本来就返回每条消息 + 每次工具调用。
+
+  **拆成两个子任务**（按 CLAUDE.md「超 3 个文件先拆分」）：
+
+  - [ ] **37.6a 后端：每条事件带上 `key_id` 和 `conversation_id`**
+    文件：`backend/app/console/events.py`、`backend/app/services/handover.py`、`backend/app/services/notify.py`、`backend/app/routers/whatsapp_webhook.py`、测试
+    - `ConsoleEvent` 加两个可选字段 `key_id` / `conversation_id`
+    - **在 `events.emit` 里统一补上**：调用时没传就读 `audit.current()`（当前这一轮对话本来就知道自己属于谁）。已查过不会循环引用：`events.py` 不依赖任何 app 模块，`audit.py` 也不引用 `events`。这样对话内发出的事件（22 处里的大多数，模型的工具调用、语音/图片/文件下载、计费）**一行调用处都不用改**
+    - **对话之外发出的要在调用处显式传**：handover 的开始/结束（从导演台 POST 触发）、主动推送（后台线程晚点才发）、发送循环里的 `send_failed`（那时这一轮已经关了）。`tools_switched` 是全局开关，本来就不属于任何顾客，保持为空
+    - 验收：单测覆盖「对话内自动带上」「对话外显式传入」「全局事件为空」三种；**再加一条守卫测试**：跑一遍完整的一轮（webhook → 模型 → 工具 → 发送），断言期间发出的每条事件都带了 `key_id`——漏一个调用点，那条事件就只会出现在「全部」视图里，而这种漏法看界面是看不出来的
+    - 不改路由：前端照旧订阅同一条 `/console/stream`，所以 `nginx.conf` / `vite.config.ts` 不用动，掉不进任务 19.1 那个「部署了但打不到」的坑
+
+  - [ ] **37.6b 前端：合并成一个页面**
+    文件：`frontend/src/pages/Console.tsx`、`frontend/src/pages/History.tsx`（列表和详情组件并过去，页面本身删掉）、`frontend/src/main.tsx`、`frontend/src/api.ts`、样式
+    - **布局**：左边是现在 history 的对话列表（按电话搜，最新在上）；右边默认是「全部」实时流；点列表里一条 → 右边切成这个顾客的视图，再点「全部」切回来
+    - **顾客视图 = 过去 + 实时**：先用 `/console/history/{conversation_id}` 画出这通对话过去的消息和工具调用（console 样式），再接上实时流里 `key_id` 等于这个顾客的事件
+    - **按顾客（`key_id`）接实时，不按对话（`conversation_id`）**：顾客中途从菜单换一个 demo 会开一通新对话，按对话筛的话画面会突然安静，而他明明还在说话
+    - **在浏览器里筛，不加后端接口**：拿到 token 的人本来就能看到全部事件，服务端筛不增加任何保护，只多一条要登记路由的接口
+    - **去重**：点进一个正在进行中的顾客时，同一次工具调用可能既在数据库的过去记录里、又从实时流里来一遍——按 `tool_use_id` 合并
+    - **成本**：「全部」视图照旧显示页面收到的总和；顾客视图显示这通对话在数据库里的成本 + 之后实时进来的计费
+    - **旧链接**：`/history` 跳转到合并后的页面，已经收藏的链接不失效
+    - 验收：`tsc -b` / `vite build` / `oxlint` 过；**真浏览器实测**——打开默认是全部实时流；搜电话找到顾客点进去，先出过去记录；用手机再发一条，右边马上出现他的新调用，**别的顾客的调用不出现**；接管 / 回复只作用于他；`/history` 旧链接能跳过来
+
+  **先后顺序**：37.6a 先做先上线。它对现有页面**没有任何可见变化**（只是事件多了两个字段），可以单独部署验证，确认线上事件确实带上了顾客身份，再做 37.6b。
+
+  **待清理项（按用户说的）**：确认「全部」视图没人用之后删掉。
 
 ### 阻塞项（需要用户处理）
 
