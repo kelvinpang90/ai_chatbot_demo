@@ -175,9 +175,9 @@ export function CustomerList({
         onClick={() => onSelect({ kind: 'all' })}
       >
         <div className="history-row-top">
-          <strong>全部 · 实时流</strong>
+          <strong>跟随最新对话</strong>
         </div>
-        <div className="history-row-meta">所有顾客的工具调用混在一起，投屏用</div>
+        <div className="history-row-meta">谁最近在聊就显示谁，投屏用</div>
       </button>
 
       <form

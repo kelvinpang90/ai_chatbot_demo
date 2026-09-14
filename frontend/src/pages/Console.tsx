@@ -4,6 +4,7 @@ import {
   ApiError,
   consoleStreamUrl,
   forgetToken,
+  listConversations,
   readConversation,
   readHandovers,
   readToolSwitch,
@@ -15,10 +16,21 @@ import {
   storedToken,
   type ConsoleEvent,
   type ConversationDetail,
+  type ConversationSummary,
   type HandoverCustomer,
 } from '../api'
+import { BackOffice } from '../components/BackOffice'
 import { CustomerList, type ConsoleView } from '../components/CustomerList'
-import { Transcript } from '../components/Transcript'
+import {
+  describe,
+  klEpoch,
+  klTime,
+  seconds,
+  span,
+  written,
+  type Call,
+  type Card,
+} from '../consoleCards'
 import { toolUseIds } from '../transcript'
 
 // How many times to let a stream that has never opened fail before giving up on
@@ -42,17 +54,24 @@ const MAX_REPLY_CHARS = 4096
 
 const POLL_FAILED = '读不到人工接管的状态'
 
-// How often one customer's transcript is read again while they are selected
-// (task 37.6). The live feed shows their tool calls the moment they happen; this
-// is what brings in what was *said* -- the feed carries no messages -- and what
-// the database has priced. Same beat as the handover poll.
-const TRANSCRIPT_POLL_MS = 5000
+// How often the conversation on screen is read again. The feed carries no
+// messages, so this is what brings in what was *said*. Three seconds rather than
+// five since task 27 put the customer's phone on the left of the projector; a
+// reply that lands on the real phone should not take long to land here.
+const TRANSCRIPT_POLL_MS = 3000
 
-// How far before a customer was opened a live call may have started and still be
-// shown under their console (task 37.7). Covers a call already running at the
-// moment of the click, which the database has not got yet, and the difference
-// between this laptop's clock and the server's.
-const OPENED_SLACK_SECONDS = 5
+// After the feed says this customer's turn did something, read the transcript
+// again this soon: long enough for the reply to have been written to the log.
+const NUDGE_DELAY_MS = 1500
+
+// How often to ask which conversation is the newest -- everybody's in follow
+// mode, the chosen customer's otherwise.
+const LATEST_POLL_MS = 5000
+
+// How far before a conversation's first message a live call may be and still
+// belong to it: the clock difference between this laptop and the server, and a
+// call already running when the conversation's first row was written.
+const START_SLACK_SECONDS = 5
 
 // Carried over from the transcript page this screen absorbed (task 37.6).
 const BAD_TOKEN_NOTE =
@@ -64,6 +83,18 @@ const NOT_CONFIGURED_NOTE = '后端没有配 CONSOLE_TOKEN，这个页面打不�
 // number the owner can compare against a salary.
 const HUMAN_MINUTES = 3
 
+const TECH_STORAGE_KEY = 'console_tech_mode'
+const LIST_STORAGE_KEY = 'console_customer_list'
+
+const BOT_LABELS: Record<string, string> = {
+  retail: '零售',
+  food: '餐饮',
+  realestate: '房产',
+  hotel: '酒店',
+  saas: 'SaaS',
+  banking: '银行',
+}
+
 type Connection = 'connecting' | 'live' | 'error'
 
 // React needs a key that is unique for the life of the list. The tool_use_id is
@@ -72,26 +103,44 @@ type Connection = 'connecting' | 'live' | 'error'
 let nextRowKey = 1
 
 /** One tool call, both halves of it, as a single line on the screen. */
-interface ToolRow {
+interface ToolRow extends Call {
   key: number
   id: string
   seq: number
   at: number
-  tool: string
-  input: Record<string, unknown> | null
-  output: string | null
-  durationMs: number | null
-  // 'note' is not a call at all: it is the control switch being thrown, which
-  // earns a line because the stretch of demo where nothing is called has to be
-  // told apart from the stretch where nothing was asked.
-  status: 'ok' | 'error' | 'running' | 'note'
-  // Whose call it was (task 37.6). Blank for what belongs to nobody, which is
-  // then shown on the everybody feed only.
+  // Whose call it was (task 37.6). Blank for what belongs to nobody.
   keyId: string
 }
 
-function formatTime(at: number): string {
-  return new Date(at * 1000).toLocaleTimeString('en-GB', { hour12: false })
+/** One card on the right, from the audit log or the live feed. */
+interface Entry {
+  key: string
+  at: number
+  call: Call
+  card: Card
+}
+
+/** The conversation on screen, however it was chosen. */
+interface Target {
+  conversationId: string
+  keyId: string
+  name: string
+}
+
+function readFlag(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
+}
+
+function storeFlag(key: string, value: boolean): void {
+  try {
+    window.localStorage.setItem(key, value ? '1' : '0')
+  } catch {
+    // A browser refusing storage still works; it forgets on reload.
+  }
 }
 
 function formatRinggit(total: number): string {
@@ -100,14 +149,14 @@ function formatRinggit(total: number): string {
   return `RM ${total.toFixed(total > 0 && total < 0.01 ? 4 : 2)}`
 }
 
-function preview(text: string, limit: number, expanded: boolean): string {
-  if (expanded || text.length <= limit) return text
-  return `${text.slice(0, limit)}…`
+function tokens(n: number): string {
+  return n >= 10000 ? `${(n / 1000).toFixed(1)}k` : n.toLocaleString()
 }
 
 /**
- * The director's console: what the bot actually did, while the customer is
- * looking at a chat bubble on their phone.
+ * The director's console: on the left what the customer sees on their phone, on
+ * the right what the business is buying -- what the system did, and what it
+ * changed in the back office.
  */
 export default function Console() {
   const [token, setToken] = useState(storedToken)
@@ -117,7 +166,6 @@ export default function Console() {
   const [attempt, setAttempt] = useState(0)
   const [connection, setConnection] = useState<Connection>('connecting')
   const [rows, setRows] = useState<ToolRow[]>([])
-  const [costMyr, setCostMyr] = useState(0)
   // Whether the bots still have their tools. `null` until the backend says, so
   // the switch cannot start out claiming a position it has not been told.
   const [toolsEnabled, setToolsEnabled] = useState<boolean | null>(null)
@@ -132,24 +180,27 @@ export default function Console() {
   const [draftReply, setDraftReply] = useState('')
   const [sending, setSending] = useState(false)
   const [handoverNote, setHandoverNote] = useState('')
-  // Which of several taken-over customers the everybody view's panel is on. Named
-  // apart from `view` below: that one is which customer the whole screen is on.
-  const [heldPick, setHeldPick] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState<Set<number>>(new Set())
-  // Everybody's live feed, or one customer's console (task 37.6).
+  // Follow whoever spoke last, or one conversation the operator picked.
   const [view, setView] = useState<ConsoleView>({ kind: 'all' })
-  // That customer's past, as the audit log has it. Re-read while they are on
-  // screen; cleared the moment the view changes, so one customer's transcript is
-  // never shown under another's name while the next one loads.
+  // The newest conversation: everybody's in follow mode, the picked customer's
+  // otherwise -- which is how a picked conversation knows whether the live feed
+  // is still about it.
+  const [latest, setLatest] = useState<ConversationSummary | null>(null)
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [detailNote, setDetailNote] = useState('')
-  // When the current customer view was opened, in epoch seconds like the events.
-  const [viewOpenedAt, setViewOpenedAt] = useState(0)
-  const feedRef = useRef<HTMLDivElement>(null)
+  // Bumped when the feed shows the customer on screen doing something.
+  const [nudge, setNudge] = useState(0)
+  // Bumped when the feed shows anybody doing something: in follow mode, a new
+  // customer starting a demo is the moment to ask who is newest.
+  const [feedTick, setFeedTick] = useState(0)
+  const [techMode, setTechMode] = useState(() => readFlag(TECH_STORAGE_KEY))
+  const [showList, setShowList] = useState(() => readFlag(LIST_STORAGE_KEY))
+  const phoneRef = useRef<HTMLDivElement>(null)
+  const streamRef = useRef<HTMLDivElement>(null)
   // Replay re-sends the whole buffer every time a stream opens, so the same
   // event arrives again after a reconnect. Sequence numbers make that harmless -
   // but only if they outlive the stream that saw them first, or a redeploy
-  // mid-demo doubles every row on the screen and every sen on the total.
+  // mid-demo doubles every row on the screen.
   const seenRef = useRef<Set<number>>(new Set())
   // Which run of the backend the sequence numbers in `seenRef` came from.
   const bootRef = useRef<string | null>(null)
@@ -158,6 +209,8 @@ export default function Console() {
   // backend down for longer than one retry would look like a bad token again
   // and throw away a token we have proof is good.
   const provenTokenRef = useRef<string | null>(null)
+  // Whose conversation is on screen, for the stream handler, which outlives it.
+  const targetKeyRef = useRef('')
 
   useEffect(() => {
     if (!token) return
@@ -185,14 +238,21 @@ export default function Console() {
       if (seen.has(event.seq)) return
       seen.add(event.seq)
 
-      if (event.type === 'usage') {
-        setCostMyr((total) => total + (event.cost_myr ?? 0))
-        return
+      // The customer on screen just did something: what they said and what the
+      // bot answered are about to be in the log, so read it soon rather than on
+      // the next beat.
+      if (event.key_id && event.type !== 'tool_start') {
+        setFeedTick((n) => n + 1)
+        if (event.key_id === targetKeyRef.current) setNudge((n) => n + 1)
       }
+
+      // Cost comes from the audit log, priced per conversation; the feed's copy
+      // would be everybody's.
+      if (event.type === 'usage') return
 
       // The switch may have been thrown from another screen, or by this one;
       // either way the stream is what says where it now stands. The event also
-      // gets a line in the feed below, so read it and carry on.
+      // gets a card, so read it and carry on.
       if (event.type === 'tools_switched') {
         setToolsEnabled(event.status === 'on')
         setSwitchNote('')
@@ -269,15 +329,7 @@ export default function Console() {
     }
   }, [token])
 
-  const statusText = useMemo(
-    () =>
-      ({
-        connecting: '连接中…',
-        live: '● 实时',
-        error: '连接中断，重试中…',
-      })[connection],
-    [connection],
-  )
+  const statusText = { connecting: '连接中…', live: '实时', error: '连接中断，重试中…' }[connection]
 
   function flipTools() {
     if (toolsEnabled === null) return
@@ -301,13 +353,6 @@ export default function Console() {
         .then(({ customers }) => {
           if (stale) return
           setHeld(customers)
-          // A selection that has been handed back stops being a selection. Left
-          // set, `holding` silently falls through to whoever is next on the list
-          // -- which can happen between a keystroke and Enter, because this runs
-          // every five seconds.
-          setHeldPick((current) =>
-            current && customers.some((c) => c.key_id === current) ? current : null,
-          )
           // A poll that worked clears a note left by one that did not, or a
           // single blip pins the error string there for the rest of the session.
           setHandoverNote((note) => (note === POLL_FAILED ? '' : note))
@@ -321,38 +366,6 @@ export default function Console() {
     }
   }, [token])
 
-  // Whoever is selected, defaulting to the newest -- the backend sorts them that
-  // way now. A picker rather than `held[0]` alone because anybody past the first
-  // was silent to the bot and invisible here, which a cold review of task 20
-  // pointed out is not hypothetical: one conversation nobody handed back last
-  // week is enough to make the default wrong for every demo after it.
-  const holdingAny = held.find((c) => c.key_id === heldPick) ?? held[0] ?? null
-  // On one customer's console the panel is about that customer and nobody else
-  // (task 37.6): replying to "whoever is newest" from a screen headed with this
-  // customer's name would put words on the wrong phone.
-  const holding =
-    view.kind === 'customer' ? (held.find((c) => c.key_id === view.keyId) ?? null) : holdingAny
-
-  // That customer's past, re-read on a beat. See TRANSCRIPT_POLL_MS.
-  useEffect(() => {
-    if (!token || view.kind !== 'customer') return
-    let stale = false
-    const read = () =>
-      readConversation(token, view.conversationId)
-        .then((got) => {
-          if (stale) return
-          setDetail(got)
-          setDetailNote('')
-        })
-        .catch(() => !stale && setDetailNote('这通对话读不出来'))
-    read()
-    const timer = window.setInterval(read, TRANSCRIPT_POLL_MS)
-    return () => {
-      stale = true
-      window.clearInterval(timer)
-    }
-  }, [token, view])
-
   // Stable, because the list keys its polling on it. Only setters inside.
   const refuse = useCallback((status: number) => {
     // A token the server will not take is the one error worth forgetting, so the
@@ -362,52 +375,165 @@ export default function Console() {
     setToken('')
   }, [])
 
-  const pastIds = useMemo(() => toolUseIds(detail), [detail])
-  // What the feed area shows. On one customer's console: their calls from the
-  // live stream that the transcript above does not already have -- a call can be
-  // in both when the screen is opened mid-turn, and the transcript catches up on
-  // its next read.
-  const liveRows = useMemo(
-    () =>
-      view.kind === 'customer'
-        ? rows.filter(
-            (row) =>
-              row.keyId === view.keyId &&
-              !pastIds.has(row.id) &&
-              // Only what has happened since this conversation was opened. Found
-              // in the browser test for task 37.7: opening one of a customer's
-              // older conversations listed every call from all their others as
-              // "live", because those are in the buffer under the same key and
-              // only this transcript was deduplicated against. Anything older than
-              // the click is already in the database, in whichever conversation it
-              // belongs to; anything newer is what is happening now, including a
-              // new demo they start while this is on screen.
-              row.at >= viewOpenedAt - OPENED_SLACK_SECONDS,
-          )
-        : rows,
-    [rows, view, pastIds, viewOpenedAt],
-  )
-
-  // Newest at the bottom, like every other console; follow it down. Keyed on how
-  // much there is rather than on the objects themselves: the transcript is re-read
-  // every few seconds, and snapping to the bottom on a read that brought nothing
-  // new would yank an operator who had scrolled up to read.
-  const contentSize = liveRows.length + (detail?.messages.length ?? 0)
+  const pickedKey = view.kind === 'customer' ? view.keyId : ''
   useEffect(() => {
-    feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight })
-  }, [contentSize, view])
+    if (!token) return
+    let stale = false
+    const ask = () =>
+      listConversations(token, pickedKey, 0, 1)
+        .then((page) => !stale && setLatest(page.conversations[0] ?? null))
+        .catch((failure: unknown) => {
+          if (stale) return
+          if (failure instanceof ApiError && (failure.status === 401 || failure.status === 503)) {
+            refuse(failure.status)
+          }
+        })
+    const soon = window.setTimeout(ask, feedTick ? NUDGE_DELAY_MS : 0)
+    const timer = window.setInterval(ask, LATEST_POLL_MS)
+    return () => {
+      stale = true
+      window.clearTimeout(soon)
+      window.clearInterval(timer)
+    }
+  }, [token, pickedKey, refuse, feedTick])
+
+  // The screen shows one conversation and nothing else -- the 2026-09-14 run
+  // had an old retail chat above and live food calls below it. In follow mode
+  // that is the newest conversation anybody has had; picked, it is the pick.
+  const followed =
+    view.kind === 'all' && latest
+      ? {
+          conversationId: latest.conversation_id,
+          keyId: latest.key_id,
+          name: latest.display_name || latest.key_id,
+        }
+      : null
+  const target: Target | null =
+    view.kind === 'customer'
+      ? { conversationId: view.conversationId, keyId: view.keyId, name: view.name }
+      : followed
+  const targetId = target?.conversationId ?? ''
+  const targetKey = target?.keyId ?? ''
+  useEffect(() => {
+    targetKeyRef.current = targetKey
+  }, [targetKey])
+
+  // The latest answer is only about this conversation while the view has not
+  // changed under it; follow mode's answer is about everybody.
+  const isLatest =
+    !!latest &&
+    latest.conversation_id === targetId &&
+    (view.kind === 'all' || latest.key_id === view.keyId)
+
+  useEffect(() => {
+    if (!token || !targetId) return
+    let stale = false
+    const read = () =>
+      readConversation(token, targetId)
+        .then((got) => {
+          if (stale) return
+          setDetail(got)
+          setDetailNote('')
+        })
+        .catch(() => !stale && setDetailNote('这通对话读不出来'))
+    const soon = window.setTimeout(read, nudge ? NUDGE_DELAY_MS : 0)
+    const timer = window.setInterval(read, TRANSCRIPT_POLL_MS)
+    return () => {
+      stale = true
+      window.clearTimeout(soon)
+      window.clearInterval(timer)
+    }
+  }, [token, targetId, nudge])
+
+  // A transcript still on screen from the previous conversation is not shown
+  // under the next one's name while the next one loads.
+  const shown = detail && detail.conversation_id === targetId ? detail : null
+  const startedAt = shown?.messages[0] ? klEpoch(shown.messages[0].at) : 0
+
+  const pastIds = useMemo(() => toolUseIds(shown), [shown])
+  const entries = useMemo(() => {
+    if (!shown) return []
+    const past: Omit<Entry, 'card'>[] = shown.messages.flatMap((message) =>
+      message.tool_calls.map((call) => ({
+        key: `db:${call.tool_use_id}:${call.at}`,
+        at: klEpoch(call.at),
+        call: {
+          tool: call.tool,
+          input: call.input,
+          output: call.output,
+          status: call.status === 'error' ? ('error' as const) : ('ok' as const),
+          durationMs: call.duration_ms,
+        },
+      })),
+    )
+    // What the log does not have yet, or never will: pushes, handovers and
+    // media arrive on the feed only. Only while this is the customer's newest
+    // conversation -- the feed is keyed by customer, not by conversation, so an
+    // older one would otherwise collect calls from whatever came after it.
+    const live: Omit<Entry, 'card'>[] = isLatest
+      ? rows
+          .filter(
+            (row) =>
+              (row.keyId === shown.key_id || (row.keyId === '' && row.status === 'note')) &&
+              !pastIds.has(row.id) &&
+              row.at >= startedAt - START_SLACK_SECONDS,
+          )
+          .map((row) => ({ key: `live:${row.key}`, at: row.at, call: row }))
+      : []
+    return cards([...past, ...live].sort((a, b) => a.at - b.at))
+  }, [shown, rows, pastIds, isLatest, startedAt])
+
+  const writes = useMemo(
+    () =>
+      entries.flatMap((entry) => {
+        const write = written(entry.call)
+        return write ? [{ ...write, at: entry.at }] : []
+      }),
+    [entries],
+  )
+  const slowest = Math.max(1, ...entries.map((entry) => entry.call.durationMs ?? 0))
+
+  // Follow both columns down, keyed on how much there is: a re-read that brought
+  // nothing new must not yank an operator who scrolled up to read.
+  const messageCount = shown?.messages.length ?? 0
+  useEffect(() => {
+    phoneRef.current?.scrollTo({ top: phoneRef.current.scrollHeight })
+  }, [messageCount, targetId])
+  useEffect(() => {
+    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight })
+  }, [entries.length, targetId])
+
+  const holding = target ? (held.find((c) => c.key_id === target.keyId) ?? null) : null
+  // Anybody else still silent to the bot. A cold review of task 20 found one
+  // conversation nobody handed back is enough to leave a customer unanswered,
+  // so they stay on screen even while somebody else is being followed.
+  const heldElsewhere = held.filter((c) => c.key_id !== targetKey)
 
   function chooseView(next: ConsoleView) {
     setView(next)
-    setViewOpenedAt(Date.now() / 1000)
-    setDetail(null)
+    setLatest(null)
     setDetailNote('')
     setClosingNote('')
   }
 
+  function openHeld(customer: HandoverCustomer) {
+    listConversations(token, customer.key_id, 0, 1)
+      .then((page) => {
+        const row = page.conversations[0]
+        if (!row) return
+        chooseView({
+          kind: 'customer',
+          conversationId: row.conversation_id,
+          keyId: row.key_id,
+          name: customer.display_name || row.key_id,
+        })
+      })
+      .catch(() => setHandoverNote('打不开这位客户的对话'))
+  }
+
   function takeOver() {
-    if (view.kind !== 'customer') return
-    setHandover(token, view.keyId, true)
+    if (!target) return
+    setHandover(token, target.keyId, true)
       .then(({ customers }) => {
         setHeld(customers)
         setHandoverNote('')
@@ -427,6 +553,7 @@ export default function Console() {
         // that failed loses what they wrote.
         setDraftReply('')
         setHandoverNote('')
+        setNudge((n) => n + 1)
       })
       .catch((failure: unknown) => {
         setHandoverNote(
@@ -447,18 +574,14 @@ export default function Console() {
   }
 
   function closeDemo() {
-    if (closing) return
+    if (closing || !target) return
     setClosing(true)
     setClosingNote('')
-    // On one customer's console, to that customer. On the everybody feed the
-    // backend still picks the most recent conversation, as it always has.
-    sendDemoSummary(token, view.kind === 'customer' ? view.keyId : undefined)
+    sendDemoSummary(token, target.keyId)
       .then((sent) => {
         const who = sent.display_name ?? sent.key_id
-        // Who it went to, said out loud: on the everybody feed the screen does
-        // not choose, the backend picks the most recent conversation. In a room
-        // with three customers in it, this line is the difference between right
-        // and lucky.
+        // Who it went to, said out loud. In a room with three customers in it,
+        // this line is the difference between right and lucky.
         setClosingNote(`已发给 ${who} · ${sent.minutes} 分钟 · ${sent.tool_calls} 次真实调用`)
       })
       .catch((failure: unknown) => {
@@ -467,6 +590,20 @@ export default function Console() {
         )
       })
       .finally(() => setClosing(false))
+  }
+
+  function toggleTech() {
+    setTechMode((on) => {
+      storeFlag(TECH_STORAGE_KEY, !on)
+      return !on
+    })
+  }
+
+  function toggleList() {
+    setShowList((on) => {
+      storeFlag(LIST_STORAGE_KEY, !on)
+      return !on
+    })
   }
 
   function saveToken() {
@@ -502,43 +639,82 @@ export default function Console() {
     )
   }
 
+  const botId = shown?.bot_id ?? latest?.bot_id ?? ''
+
   return (
-    <div className="console">
-      <header className="console-header">
-        <span className="console-title">导演台 · 工具调用实时流</span>
-        <span className="console-status" data-state={connection}>
+    <div className="console" data-tech={techMode}>
+      <header className="cx-bar">
+        <button className="cx-btn" aria-pressed={showList} onClick={toggleList}>
+          客户列表
+        </button>
+        {target ? (
+          <>
+            <span className="cx-who">{target.name}</span>
+            {shown && <span className="cx-tag">{shown.channel === 'whatsapp' ? 'WhatsApp' : '网页'}</span>}
+            {botId && <span className="cx-tag">{BOT_LABELS[botId] ?? botId}</span>}
+            <span className="cx-state" data-held={!!holding}>
+              {holding ? '人工接管中 · bot 已静默' : 'bot 在回复'}
+            </span>
+          </>
+        ) : (
+          <span className="cx-who cx-dim">还没有对话</span>
+        )}
+        <span className="cx-mode">{view.kind === 'all' ? '跟随最新' : '已固定这通对话'}</span>
+        <span className="cx-live" data-state={connection}>
           {statusText}
         </span>
-        <span className="console-compare">
-          同样这通询问，人工客服约 {HUMAN_MINUTES} 分钟
-        </span>
+
+        <span className="cx-spacer" />
+
+        {shown && (
+          <span className="cx-cost" title="这通对话在 Claude 上的全部花费，每次调用当时计价">
+            本场 <b>{formatRinggit(shown.cost_myr)}</b>
+            <small>
+              {tokens(shown.input_tokens + shown.cache_read_tokens + shown.cache_write_tokens)} 入 ·{' '}
+              {tokens(shown.output_tokens)} 出 · {shown.api_turns} 次调用
+            </small>
+          </span>
+        )}
+        <span className="cx-compare">人工客服约 {HUMAN_MINUTES} 分钟</span>
+
+        <label className="cx-toggle">
+          <input type="checkbox" checked={techMode} onChange={toggleTech} />
+          技术模式
+        </label>
+        {target &&
+          (holding ? (
+            <button className="cx-btn cx-btn-hot" onClick={releaseHandover}>
+              交回 bot
+            </button>
+          ) : (
+            <button className="cx-btn" onClick={takeOver}>
+              人工接管
+            </button>
+          ))}
         <button
-          className="console-switch"
+          className="cx-btn"
           data-off={toolsEnabled === false}
           disabled={toolsEnabled === null}
           onClick={flipTools}
         >
-          {toolsEnabled === false ? '工具已关闭 · 点此接回' : '工具已接通 · 点此关掉'}
+          {toolsEnabled === false ? '工具已关闭 · 接回' : '关掉工具（对照组）'}
         </button>
-        {switchNote && <span className="console-switch-note">{switchNote}</span>}
-        <button className="console-switch" disabled={closing} onClick={closeDemo}>
-          {closing ? '正在发…' : '结束演示 · 发一份总结到他手机'}
+        <button className="cx-btn" disabled={closing || !target} onClick={closeDemo}>
+          {closing ? '正在发…' : '结束演示 · 发总结'}
         </button>
-        {closingNote && (
-          <span className="console-switch-note" data-ok={!closingNote.startsWith('没发出去')}>
-            {closingNote}
-          </span>
-        )}
-        {/* Two numbers that mean two things, so they are labelled apart. The
-            everybody feed can only add up what this page has heard since it
-            opened; one customer's figure is the audit log's, priced when each
-            call happened, and is right however long ago the page was opened. */}
-        <span className="console-cost">
-          {view.kind === 'customer'
-            ? `这通对话 ${formatRinggit(detail?.cost_myr ?? 0)}`
-            : `全部 · 本页打开以来 ${formatRinggit(costMyr)}`}
-        </span>
       </header>
+
+      {(switchNote || closingNote || handoverNote) && (
+        <div className="cx-notes">
+          {switchNote && <span className="cx-note">{switchNote}</span>}
+          {handoverNote && <span className="cx-note">{handoverNote}</span>}
+          {closingNote && (
+            <span className="cx-note" data-ok={!closingNote.startsWith('没发出去')}>
+              {closingNote}
+            </span>
+          )}
+        </div>
+      )}
 
       {toolsEnabled === false && (
         <div className="console-control-banner">
@@ -547,52 +723,53 @@ export default function Console() {
         </div>
       )}
 
+      {heldElsewhere.length > 0 && (
+        <div className="cx-held-elsewhere">
+          还有人在人工接管中，bot 不会回他们：
+          {heldElsewhere.map((customer) => (
+            <button key={customer.key_id} className="cx-btn cx-btn-hot" onClick={() => openHeld(customer)}>
+              {customer.display_name ?? customer.key_id}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="console-body">
-        <CustomerList token={token} view={view} onSelect={chooseView} onRefused={refuse} />
+        {showList && <CustomerList token={token} view={view} onSelect={chooseView} onRefused={refuse} />}
 
-        <main className="console-main">
-          {view.kind === 'customer' && !holding && (
-            <div className="console-handover-head console-customer-bar">
-              <strong>{view.name}</strong>
-              <span className="console-handover-dim">bot 正在回复这位客户</span>
-              <button className="console-switch" onClick={takeOver}>
-                人工接管
-              </button>
-              {handoverNote && <span className="console-switch-note">{handoverNote}</span>}
+        <main className="cx-main">
+          <section className="cx-phone">
+            <div className="cx-pane-label">客户手机</div>
+            <div className="cx-phone-scroll" ref={phoneRef}>
+              {!target && <p className="cx-empty">等待第一条消息…（在手机上给这个号码发点什么）</p>}
+              {target && !shown && <p className="cx-empty">{detailNote || '读取这通对话…'}</p>}
+              {shown && detailNote && <p className="cx-note">{detailNote}，下面是上一次读到的内容</p>}
+              {shown?.messages.map((message, i) => {
+                const at = klTime(klEpoch(message.at))
+                const previous = shown.messages[i - 1]
+                // A time on the first bubble of each minute, like the phone does.
+                const stamp = !previous || klTime(klEpoch(previous.at)).slice(0, 5) !== at.slice(0, 5)
+                const who =
+                  message.role === 'user' ? 'cust' : message.source === 'human' ? 'human' : 'bot'
+                return (
+                  <div key={message.id} className={`cx-msg cx-msg-${who}`}>
+                    {(stamp || who === 'human') && (
+                      <span className="cx-msg-meta">
+                        {who === 'human' && '同事 · '}
+                        {message.source === 'voice' && '语音 · '}
+                        {at.slice(0, 5)}
+                      </span>
+                    )}
+                    <div className="cx-bubble">{message.content}</div>
+                  </div>
+                )
+              })}
             </div>
-          )}
-
-          {holding && (
-            <div className="console-handover">
-              <div className="console-handover-head">
-                <strong>人工接管中</strong>
-                <span>{holding.display_name ?? holding.key_id}</span>
-                <span className="console-handover-dim">bot 已静默，客户看到的每一句都是你打的</span>
-                <button className="console-switch" onClick={releaseHandover}>
-                  交回 bot
-                </button>
-              </div>
-              {/* The picker belongs to the everybody feed. On one customer's console
-                  there is nobody else to switch to. */}
-              {view.kind === 'all' && held.length > 1 && (
-                <div className="console-handover-head">
-                  <span className="console-handover-dim">还有别人也在接管中，点一下切换：</span>
-                  {held.map((customer) => (
-                    <button
-                      key={customer.key_id}
-                      className="console-switch"
-                      data-off={customer.key_id !== holding.key_id}
-                      onClick={() => setHeldPick(customer.key_id)}
-                    >
-                      {customer.display_name ?? customer.key_id}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="console-handover-line">
+            {holding && (
+              <div className="cx-reply">
                 <input
                   value={draftReply}
-                  placeholder="打字回复这位客户，Enter 发送"
+                  placeholder="以同事身份回复，Enter 发送"
                   disabled={sending}
                   maxLength={MAX_REPLY_CHARS}
                   onChange={(e) => setDraftReply(e.target.value)}
@@ -603,53 +780,95 @@ export default function Console() {
                     if (e.key === 'Enter' && !e.nativeEvent.isComposing) sendReply()
                   }}
                 />
-                <button className="console-switch" disabled={sending} onClick={sendReply}>
+                <button className="cx-btn" disabled={sending} onClick={sendReply}>
                   {sending ? '发送中…' : '发送'}
                 </button>
               </div>
-              {handoverNote && <span className="console-switch-note">{handoverNote}</span>}
-            </div>
-          )}
-
-          <div className="console-feed" ref={feedRef}>
-            {/* Said even while an older copy is still on screen. Found in the
-                browser test: with the database down the transcript simply stopped
-                moving, and nothing said it had -- an operator reading it would take
-                a stale page for a quiet customer. The live calls below carry on. */}
-            {view.kind === 'customer' && detail && detailNote && (
-              <p className="console-switch-note">{detailNote}，下面是上一次读到的内容</p>
             )}
-            {view.kind === 'customer' &&
-              (detail ? (
-                <Transcript detail={detail} />
-              ) : (
-                <p className="console-empty">{detailNote || '读取这通对话…'}</p>
+          </section>
+
+          <section className="cx-system">
+            <div className="cx-stream" ref={streamRef}>
+              <div className="cx-pane-label">系统在做什么</div>
+              {shown && entries.length === 0 && <p className="cx-empty">这段对话还没有调用任何系统</p>}
+              {entries.map((entry) => (
+                <CardView key={entry.key} entry={entry} slowest={slowest} />
               ))}
-
-            {view.kind === 'customer' && liveRows.length > 0 && (
-              <div className="console-live-divider">实时 · 这位顾客刚发生的调用</div>
+            </div>
+            {shown && target && (
+              <BackOffice
+                token={token}
+                botId={shown.bot_id}
+                keyId={target.keyId}
+                startedAt={startedAt}
+                writes={writes}
+              />
             )}
-
-            {view.kind === 'all' && liveRows.length === 0 ? (
-              <p className="console-empty">等待第一条消息…（在手机上给这个号码发点什么）</p>
-            ) : (
-              liveRows.map((row) => (
-                <Row
-                  key={row.key}
-                  row={row}
-                  expanded={expanded.has(row.key)}
-                  onToggle={() =>
-                    setExpanded((current) => {
-                      const next = new Set(current)
-                      if (!next.delete(row.key)) next.add(row.key)
-                      return next
-                    })
-                  }
-                />
-              ))
-            )}
-          </div>
+          </section>
         </main>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Cards for a time-ordered run of calls, with a model's handover folded into
+ * one: `request_human_help` starts a `handover` span with the same reason, and
+ * two cards saying "转给同事" and "人工接管中" side by side read as two events.
+ */
+function cards(calls: Omit<Entry, 'card'>[]): Entry[] {
+  const entries: Entry[] = []
+  for (const item of calls) {
+    const card = describe(item.call)
+    if (!card) continue
+    if (item.call.tool === 'handover') {
+      const reason = String(item.call.input?.reason ?? '')
+      const asked = entries.findLast(
+        (e) => e.call.tool === 'request_human_help' && String(e.call.input?.reason ?? '') === reason,
+      )
+      if (asked && reason) {
+        asked.card = {
+          ...asked.card,
+          detail:
+            item.call.status === 'running'
+              ? `${asked.card.detail} · 人工接管中`
+              : `${asked.card.detail} · 人工处理 ${span((item.call.durationMs ?? 0) / 1000)} 后交回`,
+        }
+        continue
+      }
+    }
+    entries.push({ ...item, card })
+  }
+  return entries
+}
+
+function CardView({ entry, slowest }: { entry: Entry; slowest: number }) {
+  const { call, card } = entry
+  const ms = call.durationMs
+  return (
+    <div className="cx-card" data-kind={card.kind} data-running={call.status === 'running'}>
+      <div className="cx-card-icon">{card.icon}</div>
+      <div className="cx-card-title">
+        <strong>{card.title}</strong>
+        {card.badge && <span className="cx-badge">{card.badge}</span>}
+        <span className="cx-time">{klTime(entry.at)}</span>
+      </div>
+      {card.detail && <div className="cx-card-detail">{card.detail}</div>}
+      {/* Function name, arguments and timing -- never the output, which for a
+          refusal or a handover is text written for the model, not the room. */}
+      <div className="cx-tech">
+        <span className="cx-fn">{call.status === 'note' ? 'tools_switched' : call.tool}</span>
+        {ms != null && (
+          <>
+            <span className="cx-ms">{seconds(ms)}</span>
+            <span className="cx-bar-track">
+              <span className="cx-bar-fill" style={{ width: `${Math.max(2, (ms / slowest) * 100)}%` }} />
+            </span>
+          </>
+        )}
+        {call.input && Object.keys(call.input).length > 0 && (
+          <code>{JSON.stringify(call.input)}</code>
+        )}
       </div>
     </div>
   )
@@ -672,7 +891,7 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
         id: `failed:${event.seq}`,
         seq: event.seq,
         at: event.at,
-        tool: '回复没有送达',
+        tool: event.tool,
         input: null,
         output: event.output,
         durationMs: null,
@@ -743,45 +962,4 @@ function mergeEvent(rows: ToolRow[], event: ConsoleEvent): ToolRow[] {
   }
   if (index === -1) return [...rows, merged]
   return rows.map((row, i) => (i === index ? merged : row))
-}
-
-function Row({
-  row,
-  expanded,
-  onToggle,
-}: {
-  row: ToolRow
-  expanded: boolean
-  onToggle: () => void
-}) {
-  const badge = { running: '运行中', ok: 'ok', error: 'error', note: '开关' }[row.status]
-
-  return (
-    <div className="console-row" data-status={row.status} onClick={onToggle}>
-      <div className="console-row-head">
-        <span className="console-time">{formatTime(row.at)}</span>
-        <span className="console-tool">{row.tool}</span>
-        <span className="console-badge" data-status={row.status}>
-          {badge}
-        </span>
-        {row.durationMs !== null && (
-          <span className="console-duration">{row.durationMs} ms</span>
-        )}
-      </div>
-
-      {row.input && (
-        <div className="console-field">
-          <span className="console-field-label">入参</span>
-          {preview(JSON.stringify(row.input), 200, expanded)}
-        </div>
-      )}
-
-      {row.output && (
-        <div className="console-field console-field-out">
-          <span className="console-field-label">返回</span>
-          {preview(row.output, 300, expanded)}
-        </div>
-      )}
-    </div>
-  )
 }

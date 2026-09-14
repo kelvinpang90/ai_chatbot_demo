@@ -1,7 +1,7 @@
 import type { ConversationDetail } from './api'
 
-// Kept out of components/Transcript.tsx so that file exports only components --
-// oxlint's only-export-components, which fast refresh needs.
+// Helpers for the console's reading of the audit log, kept out of component
+// files: oxlint's only-export-components, which fast refresh needs.
 
 // Priced by the backend (app/console/cost.py) at the moment each call happened,
 // the same module the live console prices with. Two formulas for one number in
