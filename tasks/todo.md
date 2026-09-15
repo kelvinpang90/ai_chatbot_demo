@@ -1474,19 +1474,33 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 「不用于训练」有官方出处：Anthropic 商业 API 默认不训练、30 天内删除（违规最长 2 年）；OpenAI API 默认不训练、转录接口滥用监控留存为 None
 
   **盘出来、已如实写进文档「演示版限制」的事实**（不是本任务引入的，没改代码）：
-  - **网页聊天无登录，`POST /api/chat/identify`（`routers/chat.py:81-114`）输入任意手机号即返回该号最近 20 轮历史**，还能以该号继续聊、让零售 bot 查他的 ERP / CRM。09-05 按用户要求去掉访问密码后就是这样
+  - **（已补，见下面「代码修补」）网页聊天无登录，`POST /api/chat/identify`（`routers/chat.py:81-114`）输入任意手机号即返回该号最近 20 轮历史**，还能以该号继续聊、让零售 bot 查他的 ERP / CRM。09-05 按用户要求去掉访问密码后就是这样
   - MySQL 审计库 `chat_messages` / `tool_calls` / `model_usage` 全文保存、**没有任何删除代码**；`ai_chatbot_verticals` 的餐饮订单 / 看房预约同样不删
   - 日志：手机号以 INFO 打到 stdout（如 `whatsapp_webhook.py`、`handover.py:107` 连带客人原话前 200 字作转人工原因）；uvicorn 访问日志里网页聊天路径含手机号；compose 没配日志轮转
   - 没有「删除我的资料」入口（`UserStore.delete()` 存在但无人调用）；任务 34 的清理脚本是手动跑，没排定时
 
-  **待用户核对 / 拍板**：
-  1. 文档里没写服务器所在地。GeoIP 查 VPS 的 IP 是马来西亚（IP ServerOne，Subang）——要写「服务器在马来西亚」的话请确认合同上的机房
-  2. 「演示版限制」一节要不要保留在发给客户的版本里（删掉就回答不了「谁能看到」，保留则当面暴露网页聊天的口子）；或者先把网页聊天的口子补上再发
-  3. 客户要英文版还是中文版（目前中文）
-  4. 开电子发票时 erp_os 是否直连 LHDN MyInvois 不在本仓库，文档里只写「由 ERP 系统处理」，没展开
-  5. Meta App 的 User data deletion URL 仍是占位符（见 `todo-v1-mvp.md:142`），和本文「人工处理删除请求」的说法要对齐
+  **2026-09-15 用户拍板（第二轮）**：① 先补网页聊天的口子再发；② 写「服务器在马来西亚」；③ 中英文都要（`docs/data-flow-pdpa.en.md`）；④ 上 VPS 看 `.env`；⑤ 查 erp_os 的电子发票怎么走
 
-  **没验**：服务商政策是 2026-09-15 当天官方页面的说法，会变；VPS 上实际的 `.env`（MySQL 审计是否真的开着）没上去看——文档按「开着」写，线上若没配 `MYSQL_URL` 则审计那行实际不存在
+  **线上核查（只读）**：
+  - `/opt/ai_chatbot/backend/.env`：`MYSQL_URL` → `…/ai_chatbot`、`VERTICALS_MYSQL_URL` → `…/ai_chatbot_verticals` 都配了，审计确实开着；近 7 天容器日志无 audit 报错
+  - **`ANTHROPIC_MODEL=claude-haiku-4-5`（不带日期）——任务 29 挂着的「线上费用是否被放大 5 倍」的疑问解除：没有**
+  - 残留 `DEMO_ACCESS_PASSWORD`，代码 09-05 起不读了，没删
+  - 日志**有轮转**：`/etc/docker/daemon.json` 全局 json-file 10m × 3、压缩（第一版文档写「没有定期清理」是错的，已改）
+  - `/opt/erp_os/.env`：`MYINVOIS_MODE=mock`、MyInvois client id/secret 为空、`SENTRY_DSN` 为空。mock 下 UIN 是本地 `uuid4().hex[:16]`（`erp_os/backend/app/integrations/myinvois_mock.py:30-32`），**不出网**；切 sandbox/production 才会把买方名称 / TIN / 地址 / 电话 / 电邮发给 `api.myinvois.hasil.gov.my`
+
+  **代码修补：网页聊天只给操作员用**（用户在三个方案里选的；另两个是「公开 + 匿名会话」「公开 + WhatsApp 验证码」）
+  - `routers/chat.py`：identify / select / message / reset 四个路由挂 `Depends(require_console_write)`——和 `/console/*` 写接口、两个 vertical 后台同一把 `CONSOLE_TOKEN`，**只认请求头**。`/api/bots`（六个虚构行业的名称）保持公开
+  - 前端 `api.ts` 新增 `chatRequest`：四个聊天接口带 `X-Console-Token`；401 → 清 token + 刷新页面回到输入框。`App.tsx` 没 token 时先显示复用的 `TokenGate`（VerticalAdmin 那个）。`?token=` 链接照旧能一次性存进 localStorage
+  - 测试先红后绿：`test_chat_api.py` 新增「无 token 四个路由都 401」「token 放 query 不算」「未配 token → 503」「`/api/bots` 仍公开」，改代码前 **9 条红**；删掉了反向断言的 `test_the_demo_asks_for_nothing_but_the_number`。`test_audit.py` / `test_console_event_identity.py` 改为带 token；`test_refusal.py` 的线上评测多读一个 `REFUSAL_EVAL_CONSOLE_TOKEN`
+  - 全套（容器里挂整个仓库）**939 passed / 7 skipped**（7 = 线上评测）；前端 `npm run build` + oxlint 0 警告（Node 容器里 `npm ci` 后跑——主仓库的 `node_modules` 缺 rolldown 的 Windows 原生绑定，本机 vite build 起不来）
+  - **代价**：任务 28 说的「给不方便加号的客户自己用网页聊」这条线没了，网页聊天现在是演示人员的屏
+
+  **仍开着 / 待清理**：
+  - ⚠️ **WhatsApp 隐藏号码（BSUID）的客人报一个手机号，bot 按它查 ERP / CRM，号码不核验**（`llm.py:192` 的 `NO_PHONE_ON_FILE`）。同一类口子，已如实写进文档限制第 3 条，没修
+  - Meta App 的 User data deletion URL 仍是占位符（`todo-v1-mvp.md:142`），和文档「人工处理删除请求」的说法要对齐
+  - VPS `.env` 里的 `DEMO_ACCESS_PASSWORD` 是死变量
+
+  **没验**：服务商政策是 09-15 官方页面的说法，会变；「服务器在马来西亚」依据是 GeoIP（IP ServerOne，Subang）+ 用户确认，没看合同；文档的 Markdown 没渲染成 PDF 看过版式
 
 - [ ] **任务 30：banking 下架 + 全量回归 + 部署**
   文件：删除 `backend/app/bots/data/banking.json`、`.github/workflows/deploy.yml`（如需）

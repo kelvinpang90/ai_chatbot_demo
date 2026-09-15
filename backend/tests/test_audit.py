@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.main import app
 from app.routers.whatsapp_webhook import dispatch_message
 from app.services import audit, llm, transcribe, whatsapp_media
@@ -336,8 +337,16 @@ def _a_reply(text: str = "We have 47 in stock."):
         yield
 
 
+@contextmanager
+def _operator():
+    """The web chat takes the console token since task 29.1."""
+    with patch.object(settings, "console_token", "t"):
+        with TestClient(app, headers={"X-Console-Token": "t"}) as http:
+            yield http
+
+
 def test_a_web_exchange_is_recorded_from_both_sides(recording):
-    with TestClient(app) as http:
+    with _operator() as http:
         http.post("/api/chat/identify", json={"phone": "017-394 8123", "lang": "en"})
         http.post("/api/chat/60173948123/select", json={"bot_id": "retail", "lang": "en"})
         with _a_reply():
@@ -354,7 +363,7 @@ def test_a_web_exchange_is_recorded_from_both_sides(recording):
 
 
 def test_picking_a_second_demo_starts_a_second_transcript(recording):
-    with TestClient(app) as http:
+    with _operator() as http:
         http.post("/api/chat/identify", json={"phone": "60173948123", "lang": "en"})
         http.post("/api/chat/60173948123/select", json={"bot_id": "retail", "lang": "en"})
         http.post("/api/chat/60173948123/select", json={"bot_id": "hotel", "lang": "en"})

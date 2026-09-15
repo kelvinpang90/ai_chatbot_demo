@@ -43,9 +43,25 @@ export interface IdentifyResponse {
   history: ChatTurn[]
 }
 
+// The web chat is the operator's screen and carries the console token (task
+// 29.1): a phone number is not a secret, and without it anyone could type one
+// and read that customer's conversation. A token the backend no longer accepts
+// is dropped and the page reloaded, which brings the token box back.
+async function chatRequest<T>(path: string, options: RequestInit): Promise<T> {
+  try {
+    return await request<T>(path, { ...options, headers: { 'X-Console-Token': storedToken() } })
+  } catch (failure) {
+    if (failure instanceof ApiError && failure.status === 401) {
+      forgetToken()
+      window.location.reload()
+    }
+    throw failure
+  }
+}
+
 /** Open the chat as a phone number - the same record WhatsApp writes to. */
 export async function identify(phone: string, lang: string): Promise<IdentifyResponse> {
-  return request<IdentifyResponse>('/api/chat/identify', {
+  return chatRequest<IdentifyResponse>('/api/chat/identify', {
     method: 'POST',
     body: JSON.stringify({ phone, lang }),
   })
@@ -61,7 +77,7 @@ export async function selectBot(
   botId: string,
   lang: string,
 ): Promise<SelectBotResponse> {
-  return request<SelectBotResponse>(`/api/chat/${key}/select`, {
+  return chatRequest<SelectBotResponse>(`/api/chat/${key}/select`, {
     method: 'POST',
     body: JSON.stringify({ bot_id: botId, lang }),
   })
@@ -72,14 +88,14 @@ export interface SendMessageResponse {
 }
 
 export async function sendMessage(key: string, message: string): Promise<SendMessageResponse> {
-  return request<SendMessageResponse>(`/api/chat/${key}/message`, {
+  return chatRequest<SendMessageResponse>(`/api/chat/${key}/message`, {
     method: 'POST',
     body: JSON.stringify({ message }),
   })
 }
 
 export async function resetSession(key: string): Promise<{ status: string }> {
-  return request(`/api/chat/${key}/reset`, { method: 'POST' })
+  return chatRequest(`/api/chat/${key}/reset`, { method: 'POST' })
 }
 
 

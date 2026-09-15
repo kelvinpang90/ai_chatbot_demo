@@ -167,8 +167,13 @@ def test_everything_a_web_chat_message_produces_belongs_to_that_customer():
     phone = "60129996004"
     _in_conversation(phone)
 
-    with patch.object(llm, "get_reply", side_effect=_model_that_calls_a_tool):
-        response = TestClient(app).post(f"/api/chat/{phone}/message", json={"message": "hi"})
+    with (
+        patch.object(llm, "get_reply", side_effect=_model_that_calls_a_tool),
+        patch("app.routers.console.settings.console_token", "t"),
+    ):
+        response = TestClient(app).post(
+            f"/api/chat/{phone}/message", json={"message": "hi"}, headers={"X-Console-Token": "t"}
+        )
 
     assert response.status_code == 200
     _all_belong_to(phone)

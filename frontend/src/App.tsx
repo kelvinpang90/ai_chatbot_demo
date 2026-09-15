@@ -4,7 +4,15 @@ import LanguageSwitcher from './components/LanguageSwitcher'
 import PhoneEntry from './pages/PhoneEntry'
 import BotSelect from './pages/BotSelect'
 import Chat from './pages/Chat'
-import { resetSession, selectBot, type BotSummary, type ChatTurn, type IdentifyResponse } from './api'
+import { TokenGate } from './pages/VerticalAdmin'
+import {
+  resetSession,
+  selectBot,
+  storedToken,
+  type BotSummary,
+  type ChatTurn,
+  type IdentifyResponse,
+} from './api'
 import { DEFAULT_LANG, STRINGS, type Lang } from './i18n/strings'
 
 type View =
@@ -21,6 +29,8 @@ type View =
 function App() {
   const [lang, setLang] = useState<Lang>(DEFAULT_LANG)
   const [view, setView] = useState<View>({ name: 'phone' })
+  // Operator only since task 29.1 -- see `chatRequest` in api.ts.
+  const [unlocked, setUnlocked] = useState(() => storedToken() !== '')
 
   // A number already in a demo goes straight back into it, carrying whatever was
   // said on the phone. Only a number with no conversation sees the menu.
@@ -60,6 +70,17 @@ function App() {
       // Best-effort: picking a demo again starts a fresh conversation anyway.
     }
     setView({ name: 'botSelect', chatKey })
+  }
+
+  if (!unlocked) {
+    return (
+      <TokenGate
+        note=""
+        title="💬 Web chat"
+        blurb="网页聊天仅供演示人员使用。需要 console token（服务器上的 CONSOLE_TOKEN）。"
+        onUnlocked={() => setUnlocked(true)}
+      />
+    )
   }
 
   return (

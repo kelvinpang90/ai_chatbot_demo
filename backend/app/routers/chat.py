@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.bots.registry import BotConfig, LocalizedText, get_bot, list_bots
 from app.console import events
@@ -16,13 +16,18 @@ from app.models import (
     SendMessageRequest,
     SendMessageResponse,
 )
+from app.routers.console import require_console_write
 from app.services import audit, llm, phone
 from app.services.user_store import UserProfile, identity, user_store
 
-# 2026-09-05: the access password is gone at the owner's request, so these
-# routes are open. Whoever has the link can run the demo -- which is what "show
-# a customer the link" was already worth in practice.
 router = APIRouter(prefix="/api")
+
+# Task 29.1: the chat routes take the console token, header only. From 09-05 they
+# were open, and a phone number is not a secret -- typing a stranger's showed
+# their conversation and let the retail bot look them up in the ERP and CRM. The
+# web chat is the operator's screen, so it carries the operator's key. The list
+# of demos below stays open: it names made-up businesses, nobody's data.
+OPERATOR_ONLY = [Depends(require_console_write)]
 
 GREETING_SUFFIX = {
     "zh": "有什么可以帮你的吗？",
@@ -78,7 +83,7 @@ def get_bot_endpoint(bot_id: str, lang: str = "en") -> BotDetail:
     return _detail(bot, lang)
 
 
-@router.post("/chat/identify", response_model=IdentifyResponse)
+@router.post("/chat/identify", response_model=IdentifyResponse, dependencies=OPERATOR_ONLY)
 def identify(body: IdentifyRequest) -> IdentifyResponse:
     """Open the web chat as a phone number, the way WhatsApp opens as one.
 
@@ -114,7 +119,7 @@ def identify(body: IdentifyRequest) -> IdentifyResponse:
     )
 
 
-@router.post("/chat/{key}/select", response_model=SelectBotResponse)
+@router.post("/chat/{key}/select", response_model=SelectBotResponse, dependencies=OPERATOR_ONLY)
 def select_bot(key: str, body: SelectBotRequest) -> SelectBotResponse:
     bot = get_bot(body.bot_id)
     if not bot:
@@ -144,7 +149,7 @@ def select_bot(key: str, body: SelectBotRequest) -> SelectBotResponse:
     return SelectBotResponse(greeting=greeting, quick_questions=quick_questions)
 
 
-@router.post("/chat/{key}/message", response_model=SendMessageResponse)
+@router.post("/chat/{key}/message", response_model=SendMessageResponse, dependencies=OPERATOR_ONLY)
 def send_message(key: str, body: SendMessageRequest) -> SendMessageResponse:
     profile = user_store.get_or_create(_identity_or_400(key))
     if not profile.bot_id:
@@ -181,7 +186,7 @@ def send_message(key: str, body: SendMessageRequest) -> SendMessageResponse:
     return SendMessageResponse(reply=reply)
 
 
-@router.post("/chat/{key}/reset", response_model=ResetResponse)
+@router.post("/chat/{key}/reset", response_model=ResetResponse, dependencies=OPERATOR_ONLY)
 def reset_session(key: str) -> ResetResponse:
     """Back to the demo menu, without forgetting who this is -- WhatsApp "menu"."""
     profile = user_store.get(_identity_or_400(key))

@@ -17,17 +17,25 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.main import app
 from app.routers.whatsapp_webhook import dispatch_message
 from app.services import llm
 from app.services.user_store import user_store
 
+TOKEN = "s3cret-console-token"
+
+
 @pytest.fixture
 def client():
-    """A web client. The access password was dropped on 2026-09-05, so there is
-    nothing to log in to: the demo is open to whoever has the link."""
-    with TestClient(app) as http:
-        yield http
+    """The operator's web client, carrying the console token.
+
+    The chat was open to anyone with the link from 2026-09-05 until task 29.1:
+    typing a stranger's number showed their conversation. It now takes the same
+    token as the console, which is who it was for all along."""
+    with patch.object(settings, "console_token", TOKEN):
+        with TestClient(app, headers={"X-Console-Token": TOKEN}) as http:
+            yield http
 
 
 def _text_message(phone: str, text: str, seq: int = 1) -> dict:
@@ -80,13 +88,40 @@ def test_something_that_is_not_a_number_is_refused(client, junk):
     assert _identify(client, junk).status_code == 400
 
 
-def test_the_demo_asks_for_nothing_but_the_number():
-    """No password, and no leftover login route to send anyone to. A 401 here
-    would strand the page, which has no gate left to show."""
+CHAT_ROUTES = [
+    ("/api/chat/identify", {"phone": "60129990103", "lang": "en"}),
+    ("/api/chat/60129990103/select", {"bot_id": "retail", "lang": "en"}),
+    ("/api/chat/60129990103/message", {"message": "hi"}),
+    ("/api/chat/60129990103/reset", None),
+]
+
+
+@pytest.mark.parametrize("path,body", CHAT_ROUTES)
+def test_a_stranger_cannot_open_anyones_conversation(client, path, body):
+    """Task 29.1. Without the token, typing a number must not show whoever owns
+    it -- their history, or a bot that looks them up in the ERP and CRM."""
+    with TestClient(app) as stranger:
+        assert stranger.post(path, json=body).status_code == 401
+
+
+@pytest.mark.parametrize("path,body", CHAT_ROUTES)
+def test_the_token_in_the_query_string_is_not_enough(client, path, body):
+    """Header only, like every console route that is not the live stream: a
+    token in a URL sits in the proxy's access log."""
+    with TestClient(app) as stranger:
+        assert stranger.post(f"{path}?token={TOKEN}", json=body).status_code == 401
+
+
+def test_an_unconfigured_token_closes_the_chat():
+    with patch.object(settings, "console_token", ""):
+        with TestClient(app, headers={"X-Console-Token": ""}) as http:
+            assert http.post("/api/chat/identify", json={"phone": "60129990103"}).status_code == 503
+
+
+def test_the_list_of_demos_stays_public():
+    """Names and blurbs of six made-up businesses; nobody's data."""
     with TestClient(app) as anyone:
-        assert anyone.post("/api/chat/identify", json={"phone": "60129990103"}).status_code == 200
         assert anyone.get("/api/bots").status_code == 200
-        assert anyone.post("/api/auth/login", json={"password": "x"}).status_code == 404
 
 
 # -- the acceptance criterion -------------------------------------------------

@@ -189,7 +189,9 @@ def test_the_contract_is_inside_the_cached_prefix():
 
 def _ask(bot_id: str, phone: str, message: str) -> str:
     """One question in a fresh conversation on a live deployment."""
-    with httpx.Client(base_url=BASE_URL, timeout=180) as client:
+    # The web chat takes the console token since task 29.1.
+    headers = {"X-Console-Token": os.environ.get("REFUSAL_EVAL_CONSOLE_TOKEN", "")}
+    with httpx.Client(base_url=BASE_URL, timeout=180, headers=headers) as client:
         started = client.post(f"/api/chat/{phone}/select", json={"bot_id": bot_id, "lang": "en"})
         started.raise_for_status()
         answered = client.post(f"/api/chat/{phone}/message", json={"message": message})
