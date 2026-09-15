@@ -1430,6 +1430,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   文件：删除 `backend/app/bots/data/banking.json`、`.github/workflows/deploy.yml`（如需）
   目标：下架 banking；五个 bot 全部回归一遍；部署到线上
   验收：`chatbot.acuventech.com` 线上完整走通；WhatsApp 真机五个 bot 各问一句
+  **2026-09-15 用户拍板：所有还开着的真机测试押到本任务开工前一起跑**，流程就是 [tasks/real-phone-checklist.md](real-phone-checklist.md)（任务 13 / 17 / 21 旧欠账 + 26 剧本 4a + 27 导演台 + 27.1 故障演练 + 各任务零碎「没验」）。任务 26 因此继续挂 `[ ]`，28 / 29 / 29.1 照常往下做、不等测试。
+  ⚠️ 押后的代价：27.1 已改了线上行为（ERP 真挂时 retail bot 会自动转人工），真机没看过——**这期间若要给客户演，先跑清单第七段（约 6 分钟）**；任务 29 叠在剧本 1 上，而剧本 1 自 09-12 起没上过完整真机，29 出问题时要多分一次「是剧本 1 本来就坏还是 29 改坏的」
 
 ---
 
