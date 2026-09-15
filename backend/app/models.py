@@ -166,6 +166,25 @@ class FaultDrill(BaseModel):
     armed: bool
 
 
+class AutoplaySwitch(BaseModel):
+    """Start scene 1 playing from the console, or stop it (task 29)."""
+
+    playing: bool
+
+
+class AutoplayState(BaseModel):
+    """Where the scripted run has got to. `step` counts lines said or skipped."""
+
+    running: bool = False
+    step: int = 0
+    total: int = 0
+    skipped: int = 0
+    stopped: bool = False
+    error: str | None = None
+    # Whose conversation it is, so the console can follow it.
+    key_id: str = ""
+
+
 class HandoverCustomer(BaseModel):
     """One conversation a person has taken off the bot."""
 

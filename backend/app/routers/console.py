@@ -9,8 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
-from app.console import events, summary
+from app.console import autoplay, events, summary
 from app.models import (
+    AutoplayState,
+    AutoplaySwitch,
     ConversationDetail,
     ConversationSummary,
     CustomerPage,
@@ -207,6 +209,30 @@ def set_fault_drill(drill: FaultDrill) -> FaultDrill:
     if changed:
         events.emit(type=events.FAULT_DRILL, status="armed" if armed else "disarmed")
     return FaultDrill(armed=armed)
+
+
+@router.get(
+    "/autoplay", response_model=AutoplayState, dependencies=[Depends(require_console_token)]
+)
+def read_autoplay() -> AutoplayState:
+    return autoplay.state()
+
+
+@router.post(
+    "/autoplay", response_model=AutoplayState, dependencies=[Depends(require_console_write)]
+)
+def set_autoplay(switch: AutoplaySwitch) -> AutoplayState:
+    """Play scene 1 with nobody typing (task 29), or stop it before its next line.
+
+    It writes real orders to the real ERP and a card to the CRM, through the
+    same web chat path a visitor uses -- which is why it is behind the write key
+    and why a second run cannot start over the first.
+    """
+    if not switch.playing:
+        autoplay.stop()
+    elif autoplay.is_running() or not autoplay.start():
+        raise HTTPException(status_code=409, detail="Autoplay is already running")
+    return autoplay.state()
 
 
 def _at(value) -> str:

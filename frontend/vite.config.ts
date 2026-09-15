@@ -10,6 +10,7 @@ export default defineConfig({
       '/console/stream': 'http://localhost:8000',
       '/console/tools': 'http://localhost:8000',
       '/console/fault-drill': 'http://localhost:8000',
+      '/console/autoplay': 'http://localhost:8000',
       '/console/demo-summary': 'http://localhost:8000',
       '/console/handover': 'http://localhost:8000',
       '/console/reply': 'http://localhost:8000',

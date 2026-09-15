@@ -296,6 +296,29 @@ export function readFaultDrill(token: string): Promise<FaultDrill> {
   return request<FaultDrill>('/console/fault-drill', { headers: { 'X-Console-Token': token } })
 }
 
+/** Where the scripted scene 1 run has got to (task 29). Mirrors AutoplayState in app/models.py. */
+export interface AutoplayState {
+  running: boolean
+  step: number
+  total: number
+  skipped: number
+  stopped: boolean
+  error: string | null
+  key_id: string
+}
+
+export function readAutoplay(token: string): Promise<AutoplayState> {
+  return request<AutoplayState>('/console/autoplay', { headers: { 'X-Console-Token': token } })
+}
+
+export function setAutoplay(token: string, playing: boolean): Promise<AutoplayState> {
+  return request<AutoplayState>('/console/autoplay', {
+    method: 'POST',
+    headers: { 'X-Console-Token': token },
+    body: JSON.stringify({ playing }),
+  })
+}
+
 export function setFaultDrill(token: string, armed: boolean): Promise<FaultDrill> {
   return request<FaultDrill>('/console/fault-drill', {
     method: 'POST',

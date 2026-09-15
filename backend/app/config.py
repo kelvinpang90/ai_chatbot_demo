@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     # over lunch would want longer, and a rehearsal where you want to watch it
     # lapse wants about a minute.
     handover_idle_seconds: float = 2 * 60 * 60
+    # The number autoplay (task 29) talks as. Nobody's phone: it only ever goes
+    # down the web chat, which sends nothing to a handset. The first run opens an
+    # ERP account under it and every later run finds that account again, which
+    # is why it is fixed rather than fresh each time -- a new number per run
+    # would leave a new trade account behind per run.
+    autoplay_phone: str = "60100000029"
 
     # 微信客服 (WeCom customer service). All four are secrets and all four default
     # to empty for the same reason the back-office passwords do -- this repository

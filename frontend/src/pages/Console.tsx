@@ -5,6 +5,7 @@ import {
   consoleStreamUrl,
   forgetToken,
   listConversations,
+  readAutoplay,
   readConversation,
   readFaultDrill,
   readHandovers,
@@ -12,10 +13,12 @@ import {
   rememberToken,
   replyAsHuman,
   sendDemoSummary,
+  setAutoplay,
   setFaultDrill,
   setHandover,
   setToolSwitch,
   storedToken,
+  type AutoplayState,
   type ConsoleEvent,
   type ConversationDetail,
   type ConversationSummary,
@@ -49,6 +52,7 @@ const RECONNECT_DELAY_MS = 3000
 // moment it happens; this is what keeps the banner honest afterwards, including
 // across a reconnect or a redeploy that empties the event buffer.
 const HANDOVER_POLL_MS = 5000
+const AUTOPLAY_POLL_MS = 2000
 
 // What WhatsApp will carry in one message. The backend clips past it rather than
 // refusing, so without this the operator's last sentence would simply not arrive
@@ -208,6 +212,8 @@ export default function Console() {
   // Whether the next ERP call is set to fail (task 27.1). Disarms itself when it
   // fires, which this screen hears about from the feed.
   const [drillArmed, setDrillArmed] = useState<boolean | null>(null)
+  // Scene 1 playing itself (task 29). `null` until the backend says.
+  const [autoplay, setAutoplayState] = useState<AutoplayState | null>(null)
   // Closing the demo off. In flight rather than a plain boolean's worth of
   // "done", because the button sends a real message to a real phone and a
   // nervous double-click would send two.
@@ -391,6 +397,54 @@ export default function Console() {
         setSwitchNote('')
       })
       .catch(() => setSwitchNote('Switch not thrown: the backend refused'))
+  }
+
+  // Asked once, then every two seconds only while a run is going: the step count
+  // is the one thing on the button that moves, and nothing moves when idle.
+  const autoplayRunning = autoplay?.running ?? false
+  useEffect(() => {
+    if (!token) return
+    let stale = false
+    const ask = () =>
+      readAutoplay(token)
+        .then((state) => {
+          if (stale) return
+          setAutoplayState(state)
+          // A run that died says so, or the button quietly going back to "play"
+          // halfway through the scene reads as it having finished.
+          if (state.error && !state.running) {
+            setSwitchNote(`Autoplay stopped at line ${state.step}: ${state.error}`)
+          }
+        })
+        .catch(() => !stale && setSwitchNote('Could not read autoplay'))
+    ask()
+    if (!autoplayRunning) {
+      return () => {
+        stale = true
+      }
+    }
+    const timer = window.setInterval(ask, AUTOPLAY_POLL_MS)
+    return () => {
+      stale = true
+      window.clearInterval(timer)
+    }
+  }, [token, autoplayRunning])
+
+  function flipAutoplay() {
+    if (!autoplay) return
+    const playing = !autoplay.running
+    setAutoplay(token, playing)
+      .then((state) => {
+        setAutoplayState(state)
+        setSwitchNote('')
+        // Follow the newest conversation, which is about to be this one.
+        if (playing) chooseView({ kind: 'all' })
+      })
+      .catch((failure: unknown) =>
+        setSwitchNote(
+          failure instanceof ApiError ? `Autoplay: ${failure.message}` : 'Autoplay: the backend refused',
+        ),
+      )
   }
 
   function flipDrill() {
@@ -788,6 +842,17 @@ export default function Console() {
           title="Make the next ERP call fail, once, the way an unreachable ERP fails"
         >
           {drillArmed ? 'Drill armed · call off' : 'Break next ERP call (drill)'}
+        </button>
+        <button
+          className="cx-btn"
+          data-off={autoplayRunning}
+          disabled={autoplay === null}
+          onClick={flipAutoplay}
+          title="Play scene 1 by itself: scripted customer lines, real model and real tool calls, on the web chat"
+        >
+          {autoplayRunning
+            ? `Autoplay ${autoplay?.step}/${autoplay?.total} · stop`
+            : '▶ Play scene 1 (autoplay)'}
         </button>
         <button className="cx-btn" disabled={closing || !target} onClick={closeDemo}>
           {closing ? 'Sending…' : 'End demo · send summary'}
