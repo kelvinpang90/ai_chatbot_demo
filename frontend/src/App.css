@@ -1,180 +1,332 @@
+/* --- the web chat (task 28) -------------------------------------------------
+   Bright and WhatsApp-like: it is the line for a customer who would rather not
+   add the number, so it should feel like the same conversation in a browser.
+   Its own palette, scoped to the shell, and light on purpose -- index.css also
+   styles the console and the back offices, and a system dark mode must not turn
+   the customer's chat into something that no longer looks like WhatsApp. */
+
 .app-shell {
+  --wa-teal: #008069;
+  --wa-teal-dark: #006a57;
+  --wa-green-soft: #e7fce3;
+  --wa-out: #d9fdd3;
+  --wa-in: #ffffff;
+  --wa-wall: #efeae2;
+  --wa-panel: #f0f2f5;
+  --wa-line: #e2e6e9;
+  --wa-text: #111b21;
+  --wa-dim: #667781;
+  --wa-error: #d92d20;
+  --wa-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+
   flex: 1;
   display: flex;
   flex-direction: column;
-  position: relative;
+  min-height: 100svh;
+  background: var(--wa-panel);
+  color: var(--wa-text);
+  color-scheme: light;
+}
+
+/* The chat keeps the input on screen and scrolls only the messages, which on a
+   phone means the page itself must not grow past the viewport. */
+.app-shell[data-view='chat'] {
+  height: 100svh;
+  overflow: hidden;
+}
+
+.app-shell h1 {
+  color: var(--wa-text);
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid var(--wa-line);
+}
+
+.top-bar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--wa-teal);
+}
+
+.top-bar-logo {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--wa-green-soft);
+  font-size: 15px;
 }
 
 .lang-switcher {
-  position: absolute;
-  top: 16px;
-  right: 16px;
   display: flex;
-  gap: 4px;
-  z-index: 1;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--wa-panel);
 }
 
 .lang-switcher button {
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  color: var(--wa-dim);
+  border-radius: 999px;
+  padding: 5px 12px;
   font-size: 13px;
 }
 
 .lang-switcher button.active {
-  border-color: var(--accent-border);
-  background: var(--accent-bg);
-  color: var(--text-h);
+  background: #fff;
+  color: var(--wa-teal);
+  font-weight: 600;
+  box-shadow: var(--wa-shadow);
 }
+
+/* --- phone entry --- */
 
 .page-centered {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 24px 16px;
 }
+
+.entry-form {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 32px 24px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(11, 20, 26, 0.08);
+  text-align: center;
+}
+
+.entry-icon {
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--wa-green-soft);
+  font-size: 30px;
+}
+
+.entry-form h1 {
+  font-size: 22px;
+  margin: 0;
+}
+
+.entry-form p {
+  color: var(--wa-dim);
+  font-size: 14px;
+}
+
+.entry-form input {
+  border: 1px solid var(--wa-line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fff;
+  color: var(--wa-text);
+  /* 16px keeps iOS from zooming the page when the field takes focus. */
+  font-size: 16px;
+  text-align: center;
+}
+
+.entry-form input:focus {
+  outline: none;
+  border-color: var(--wa-teal);
+  box-shadow: 0 0 0 3px rgba(0, 128, 105, 0.15);
+}
+
+.entry-form button {
+  border: none;
+  border-radius: 999px;
+  padding: 12px;
+  background: var(--wa-teal);
+  color: #fff;
+  font-weight: 600;
+}
+
+.entry-form button:hover:not(:disabled) {
+  background: var(--wa-teal-dark);
+}
+
+.entry-form button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.error-text {
+  color: var(--wa-error);
+  font-size: 14px;
+}
+
+/* --- picking a demo --- */
 
 .page {
   flex: 1;
-  padding: 64px 24px 24px;
+  padding: 32px 16px;
   max-width: 960px;
   margin: 0 auto;
   width: 100%;
   text-align: center;
 }
 
-.entry-form {
-  width: 100%;
-  max-width: 340px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  text-align: center;
-}
-
-.entry-form input {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: var(--bg);
-  color: var(--text-h);
-}
-
-.entry-form button {
-  border: none;
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 600;
-}
-
-.entry-form button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.error-text {
-  color: var(--error);
-  font-size: 14px;
+.page > p {
+  color: var(--wa-dim);
 }
 
 .bot-grid {
   margin-top: 24px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
 }
 
 .bot-card {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--card-bg);
+  border: 1px solid var(--wa-line);
+  border-radius: 14px;
+  background: #fff;
+  color: inherit;
   padding: 20px 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   text-align: center;
-  transition: box-shadow 0.2s, border-color 0.2s;
+  transition: box-shadow 0.2s, border-color 0.2s, transform 0.2s;
 }
 
 .bot-card:hover {
-  border-color: var(--accent-border);
-  box-shadow: var(--shadow);
+  border-color: var(--wa-teal);
+  box-shadow: 0 6px 18px rgba(11, 20, 26, 0.1);
+  transform: translateY(-2px);
 }
 
 .bot-card-icon {
-  font-size: 32px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--wa-green-soft);
+  font-size: 28px;
+}
+
+.bot-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .bot-card-name {
   font-weight: 600;
-  color: var(--text-h);
+  color: var(--wa-text);
 }
 
 .bot-card-desc {
   font-size: 13px;
-  color: var(--text);
+  color: var(--wa-dim);
 }
 
+/* One column on a phone reads better as a list, like WhatsApp's chat list. */
 @media (max-width: 480px) {
   .bot-grid {
     grid-template-columns: 1fr;
   }
+
+  .bot-card {
+    flex-direction: row;
+    text-align: left;
+    padding: 14px;
+  }
 }
+
+/* --- the chat --- */
 
 .chat-page {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  max-width: 720px;
+  max-width: 900px;
   margin: 0 auto;
   width: 100%;
-  padding-top: 56px;
+  background-color: var(--wa-wall);
+  /* A faint dot grid, the stand-in for WhatsApp's doodle wallpaper. */
+  background-image: radial-gradient(rgba(11, 20, 26, 0.05) 1px, transparent 1px);
+  background-size: 18px 18px;
 }
 
 .chat-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 600;
-  color: var(--text-h);
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--wa-teal);
+  color: #fff;
+}
+
+.chat-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #fff;
+  font-size: 22px;
 }
 
 .chat-header-title {
   flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reset-button {
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 6px 12px;
+  flex: none;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: transparent;
+  color: #fff;
+  border-radius: 999px;
+  padding: 6px 14px;
   font-size: 13px;
-  font-weight: 400;
 }
 
-.reset-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.reset-button:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .chat-messages {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px;
+  padding: 16px 6%;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .bubble-row {
@@ -191,40 +343,81 @@
   align-items: flex-start;
 }
 
+/* A second bubble from the same side sits closer and loses its tail. */
+.bubble-row-user + .bubble-row-user,
+.bubble-row-assistant + .bubble-row-assistant {
+  margin-top: -6px;
+}
+
 .bubble {
+  position: relative;
   max-width: 78%;
-  padding: 10px 14px;
-  border-radius: 14px;
+  padding: 7px 10px 8px;
+  border-radius: 8px;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 15px;
-  line-height: 145%;
+  line-height: 1.4;
+  color: var(--wa-text);
+  box-shadow: var(--wa-shadow);
+}
+
+.bubble strong {
+  font-weight: 600;
 }
 
 .bubble-assistant {
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  color: var(--text-h);
-  border-bottom-left-radius: 4px;
+  background: var(--wa-in);
+  border-top-left-radius: 0;
 }
 
 .bubble-user {
-  background: var(--accent);
-  color: #fff;
-  border-bottom-right-radius: 4px;
+  background: var(--wa-out);
+  border-top-right-radius: 0;
+}
+
+.bubble-assistant::before,
+.bubble-user::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 8px;
+  height: 13px;
+}
+
+.bubble-assistant::before {
+  left: -8px;
+  background: var(--wa-in);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+.bubble-user::after {
+  right: -8px;
+  background: var(--wa-out);
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+.bubble-row-user + .bubble-row-user .bubble-user,
+.bubble-row-assistant + .bubble-row-assistant .bubble-assistant {
+  border-radius: 8px;
+}
+
+.bubble-row-user + .bubble-row-user .bubble-user::after,
+.bubble-row-assistant + .bubble-row-assistant .bubble-assistant::before {
+  display: none;
 }
 
 .bubble-typing {
   display: flex;
   gap: 4px;
-  padding: 14px;
+  padding: 12px 14px;
 }
 
 .bubble-typing span {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--text);
+  background: var(--wa-dim);
   opacity: 0.5;
   animation: typing-bounce 1.2s infinite ease-in-out;
 }
@@ -254,7 +447,7 @@
   border: none;
   background: none;
   padding: 0;
-  color: var(--error);
+  color: var(--wa-error);
   font-size: 12px;
   text-decoration: underline;
 }
@@ -267,12 +460,17 @@
 }
 
 .quick-question {
-  border: 1px solid var(--accent-border);
-  background: var(--accent-bg);
-  color: var(--text-h);
-  border-radius: 16px;
+  border: none;
+  background: #fff;
+  color: var(--wa-teal);
+  border-radius: 999px;
   padding: 8px 14px;
-  font-size: 13px;
+  font-size: 14px;
+  box-shadow: var(--wa-shadow);
+}
+
+.quick-question:hover:not(:disabled) {
+  background: #f5f6f6;
 }
 
 .quick-question:disabled {
@@ -282,32 +480,70 @@
 
 .chat-input-bar {
   display: flex;
+  align-items: center;
   gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  background: var(--wa-panel);
 }
 
 .chat-input-bar input {
   flex: 1;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 10px 16px;
-  background: var(--bg);
-  color: var(--text-h);
-}
-
-.chat-input-bar button {
+  min-width: 0;
   border: none;
-  border-radius: 20px;
-  padding: 10px 20px;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 600;
+  border-radius: 999px;
+  padding: 11px 16px;
+  background: #fff;
+  color: var(--wa-text);
+  font-size: 16px;
 }
 
-.chat-input-bar button:disabled {
-  opacity: 0.5;
+.chat-input-bar input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 128, 105, 0.35);
+}
+
+.send-button {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: var(--wa-teal);
+  color: #fff;
+}
+
+.send-button:hover:not(:disabled) {
+  background: var(--wa-teal-dark);
+}
+
+.send-button:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  /* The title and the switcher do not fit one row on a phone. In the chat the
+     header below already says whose conversation it is, so the title goes and
+     the messages get the row back. */
+  .app-shell[data-view='chat'] .top-bar-title {
+    display: none;
+  }
+
+  .app-shell[data-view='chat'] .top-bar {
+    justify-content: flex-end;
+    padding: 6px 12px;
+  }
+
+  .chat-messages {
+    padding: 12px;
+  }
+
+  .bubble {
+    max-width: 85%;
+  }
 }
 
 /* --- the conversation list and transcript (task 37.2, folded into the console

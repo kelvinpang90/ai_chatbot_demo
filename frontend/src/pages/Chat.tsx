@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { sendMessage, type BotSummary, type ChatTurn } from '../api'
+import { boldRuns } from '../consoleCards'
 import { STRINGS, type Lang } from '../i18n/strings'
 
 interface ChatMessage {
@@ -81,7 +82,9 @@ export default function Chat({
   return (
     <div className="chat-page">
       <div className="chat-header">
-        <span>{bot.icon}</span>
+        <span className="chat-avatar" aria-hidden="true">
+          {bot.icon}
+        </span>
         <span className="chat-header-title">{bot.name}</span>
         <button type="button" className="reset-button" onClick={handleReset}>
           {t.reset}
@@ -90,7 +93,13 @@ export default function Chat({
       <div className="chat-messages">
         {messages.map((message) => (
           <div key={message.id} className={`bubble-row bubble-row-${message.role}`}>
-            <div className={`bubble bubble-${message.role}`}>{message.content}</div>
+            {/* Bold the way the phone shows it: the WhatsApp sender turns the
+                model's **bold** into *bold*, and this line is the same reply. */}
+            <div className={`bubble bubble-${message.role}`}>
+              {boldRuns(message.content).map((run, i) =>
+                run.bold ? <strong key={i}>{run.text}</strong> : run.text,
+              )}
+            </div>
             {message.failed && (
               <button type="button" className="retry-link" onClick={() => handleRetry(message.id)}>
                 {t.sendFailed} · {t.retry}
@@ -129,9 +138,18 @@ export default function Chat({
           value={input}
           onChange={(event) => setInput(event.target.value)}
           placeholder={t.inputPlaceholder}
+          enterKeyHint="send"
         />
-        <button type="submit" disabled={sending || !input.trim()}>
-          {t.send}
+        <button
+          type="submit"
+          className="send-button"
+          disabled={sending || !input.trim()}
+          aria-label={t.send}
+          title={t.send}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="currentColor" d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" />
+          </svg>
         </button>
       </form>
     </div>

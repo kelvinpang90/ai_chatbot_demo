@@ -35,6 +35,9 @@ export default function PhoneEntry({ lang, onIdentified }: Props) {
   return (
     <div className="page-centered">
       <form className="entry-form" onSubmit={handleSubmit}>
+        <span className="entry-icon" aria-hidden="true">
+          📱
+        </span>
         <h1>{t.title}</h1>
         <p>{t.subtitle}</p>
         <input

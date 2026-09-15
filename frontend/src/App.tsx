@@ -5,7 +5,7 @@ import PhoneEntry from './pages/PhoneEntry'
 import BotSelect from './pages/BotSelect'
 import Chat from './pages/Chat'
 import { resetSession, selectBot, type BotSummary, type ChatTurn, type IdentifyResponse } from './api'
-import { DEFAULT_LANG, type Lang } from './i18n/strings'
+import { DEFAULT_LANG, STRINGS, type Lang } from './i18n/strings'
 
 type View =
   | { name: 'phone' }
@@ -63,8 +63,16 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <LanguageSwitcher lang={lang} onChange={setLang} />
+    <div className="app-shell" data-view={view.name}>
+      <header className="top-bar">
+        <span className="top-bar-title">
+          <span className="top-bar-logo" aria-hidden="true">
+            💬
+          </span>
+          {STRINGS[lang].appTitle}
+        </span>
+        <LanguageSwitcher lang={lang} onChange={setLang} />
+      </header>
 
       {view.name === 'phone' && <PhoneEntry lang={lang} onIdentified={handleIdentified} />}
 

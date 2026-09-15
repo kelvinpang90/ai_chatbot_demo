@@ -41,8 +41,10 @@ export default function BotSelect({ lang, onSelect }: Props) {
           {bots.map((bot) => (
             <button key={bot.id} type="button" className="bot-card" onClick={() => onSelect(bot)}>
               <span className="bot-card-icon">{bot.icon}</span>
-              <span className="bot-card-name">{bot.name}</span>
-              <span className="bot-card-desc">{bot.description}</span>
+              <span className="bot-card-text">
+                <span className="bot-card-name">{bot.name}</span>
+                <span className="bot-card-desc">{bot.description}</span>
+              </span>
             </button>
           ))}
         </div>
