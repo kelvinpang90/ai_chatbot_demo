@@ -132,16 +132,22 @@ def test_the_customer_never_leaks_into_the_cached_prefix():
     assert "60198704432" not in stable_first["text"]
 
 
-def test_no_bot_hard_codes_a_model_so_the_setting_decides():
+def test_only_retail_names_a_model_so_the_setting_decides_the_rest():
     """Until 2026-09-14 every bot named its own model, which left ANTHROPIC_MODEL
     in .env doing nothing at all -- the one knob that looked like it chose the
-    model chose nothing. Now it does, for all of them, and a bot names a model of
-    its own only when there is a reason it has to differ."""
+    model chose nothing. Now it does, and a bot names a model of its own only
+    when there is a reason it has to differ.
+
+    Retail has one (2026-09-15, the owner's call): on Haiku scene 1 broke three
+    ways in one run -- an empty turn, no CRM card after the order, and a guessed
+    customer_id on the invoice -- and on Sonnet 5 it played through. A list here
+    rather than a blanket rule, so the next bot to opt out has to say so."""
     from app.bots.registry import list_bots
 
+    own_models = {"retail": "claude-sonnet-5"}
     for bot in list_bots():
-        assert bot.model is None, f"{bot.id} hard-codes {bot.model}"
-        assert llm.model_for(bot) == llm.settings.anthropic_model
+        assert bot.model == own_models.get(bot.id), f"{bot.id} names {bot.model}"
+        assert llm.model_for(bot) == (own_models.get(bot.id) or llm.settings.anthropic_model)
 
 
 def test_the_model_a_fresh_deployment_gets_is_haiku():
