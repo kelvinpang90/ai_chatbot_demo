@@ -1496,13 +1496,32 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **代价**：任务 28 说的「给不方便加号的客户自己用网页聊」这条线没了，网页聊天现在是演示人员的屏
 
   **仍开着 / 待清理**：
-  - ⚠️ **WhatsApp 隐藏号码（BSUID）的客人报一个手机号，bot 按它查 ERP / CRM，号码不核验**（`llm.py:192` 的 `NO_PHONE_ON_FILE`）。同一类口子，已如实写进文档限制第 3 条，没修
-  - Meta App 的 User data deletion URL 仍是占位符（`todo-v1-mvp.md:142`），和文档「人工处理删除请求」的说法要对齐
+  - ⚠️ ~~WhatsApp 隐藏号码（BSUID）的客人报一个手机号，bot 按它查 ERP / CRM，号码不核验~~ → **09-16 盘点后范围更大：任何 WhatsApp 用户报别人号码 / 名字都能查**（工具参数不绑定发件人）。文档限制第 3 条已改成准确范围（中英文），修复拆成**任务 29.2**
+  - Meta 数据删除链接 → 拆成**任务 29.3**（公开隐私页）。注：上面「占位符」那条记录是**旧 App `Acuven Messaging`** 的，现用 App 填了什么没记录
   - VPS `.env` 里的 `DEMO_ACCESS_PASSWORD` 是死变量
 
   **部署后线上验收**：不带 token 的 `identify` / `message` 均 401、`/api/bots` 200；线上 JS 包与本地构建同 hash（`index-CbLo7ABO.js`）。**全新 Chrome 配置目录（无 localStorage）无头打开首页 → 显示 token 输入框**，截图看过。用户在自己浏览器里「直接输手机号就进去了」——该浏览器开过导演台，localStorage 里已有 `console_token`，`chatRequest` 自动带上，这是预期行为，也顺带证明了带 token 的正常路径能用
 
   **没验**：服务商政策是 09-15 官方页面的说法，会变；「服务器在马来西亚」依据是 GeoIP（IP ServerOne，Subang）+ 用户确认，没看合同；文档的 Markdown 没渲染成 PDF 看过版式
+
+- [ ] **任务 29.2：ERP / CRM 查询绑定到发件人**（2026-09-16 新增，方向用户已拍板「代码里绑定」；**计划细节待确认**）
+  文件：`backend/app/tools/erp.py`、`backend/app/tools/crm.py`、`backend/app/services/llm.py`（`PHONE_ON_FILE` / `NO_PHONE_ON_FILE`）、`backend/app/bots/data/retail.json`（提示词里「按公司名找客户」那句）、对应测试；收尾改 `docs/data-flow-pdpa*.md` 限制第 3 条
+  问题（29.1 盘点时发现，已抽查属实）：查询工具的 `name_or_phone` / `customer_id` 全由模型填，代码不核对归属，唯一约束是提示词「别猜」。任何 WhatsApp 用户说「查 012… 的订单」或报名字，零售 bot 就可能读出别人的 CRM 姓名 / 公司 / 电邮 / 成交额和 ERP 订单，并能对那个账户下单、开票（PDF 发给提问人）、开退款单。**不会**发消息给被查号码（出站一律发 `sender.key`）
+  方案：
+  1. **按号码查只用渠道确认的号码**：`erp_find_customer` / `crm_lookup_customer` 忽略模型传的参数，改用当前客户记录的 `phone`（WhatsApp 发件号；网页聊天是操作员输入的号码，29.1 起只有持 token 的人能用）。没有 phone（隐藏号码 / BSUID）→ 返回「无法确认身份」，不查
+  2. **带 `customer_id` 的工具先核对归属**：`erp_list_orders` / `erp_find_order_by_sku` / `erp_create_sales_order` / `erp_generate_einvoice` / `erp_create_credit_note` 先取该客户，电话与发件号用 `phone.is_the_same_number` 不匹配就拒绝
+  3. **写入不合并到别人的账户**：`erp_create_customer` / `crm_create_lead` 的 phone 以发件号为准；隐藏号码的客人只能开新户，不能「already_had_an_account」认领已有户
+  4. 提示词：删掉「as if the channel had supplied it」，改成「号码只能来自渠道；客人报的号码不能用来查」
+  **代价（请确认）**：公司采购用未登记的新手机报「我是 Sunrise Hypermart」→ 查不到公司账户，只能转人工；隐藏号码的客人不能查历史订单
+  验收：新增「报别人号码 / 名字 / 猜 customer_id 都查不到、下不了单」的红→绿测试；全套过；本地真模型跑一次剧本 1（自动演示）确认仍然一轮下单 + 开票 + CRM 卡；文档限制第 3 条改为已修
+
+- [ ] **任务 29.3：隐私与数据删除公开页**（2026-09-16 新增，用户已拍板：只做公开页面、申请渠道走 WhatsApp；**计划细节待确认**）
+  文件：`frontend/src/pages/Privacy.tsx`（新）、`frontend/src/main.tsx`（加 `/privacy` 路由，**不要 token**）、可能 `frontend/nginx.conf` / `vite.config.ts`（确认 SPA 路径能直达）
+  目标：Meta App（`Acuven Connect Chatbot Demo`，App ID `3493174670851073`，未发布）的 Privacy Policy URL 和 **Data deletion instructions URL** 要填一个真实页面。数据删除「回调 URL」是给 Facebook 登录用户（app-scoped ID）的，WhatsApp 客人触发不了，所以填说明页
+  内容：中英文，来自 `docs/data-flow-pdpa*.md` 的对外部分 + 「如何申请查阅 / 更正 / 删除」：给 demo 号 **+60 17-394 8123** 发消息说明要删除，由我们人工处理。**不写处理时限**（没有流程保证）；不做删除脚本（用户拍板），真有申请时人工上服务器删 Redis / MySQL，CRM / ERP 走各自删除
+  ⚠️ 不能保证「发消息」一定触发转人工（是否调 `request_human_help` 由模型判断）——验收要真机或本地真模型发一次「删除我的资料」看是否转人工；不稳就在页面上写「请直接说要删除资料，我们会有人工跟进」并在提示词里补一句
+  用户侧：部署后在 Meta 后台 App Settings → Basic 填两个 URL（Claude 做不了，也没记录这个 App 现在填了什么）
+  验收：无痕窗口直接打开 `chatbot.acuventech.com/privacy` 能看到页面（不弹 token 框）；中英文切换正常；手机宽度正常
 
 - [ ] **任务 30：banking 下架 + 全量回归 + 部署**
   文件：删除 `backend/app/bots/data/banking.json`、`.github/workflows/deploy.yml`（如需）

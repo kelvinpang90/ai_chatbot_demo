@@ -54,7 +54,7 @@ This system is currently a **demo environment**. The points below fall short of 
 
 1. **The full conversation log is not deleted automatically**; it can only be deleted by us manually
 2. **Customers cannot delete their data themselves.** Requests to access, correct or delete personal data are handled manually by us
-3. **For WhatsApp customers who hide their phone number,** the AI asks for a phone number and uses it to look them up in the ERP/CRM; the number they give is **not verified**
+3. **Lookups do not check that the person asking is the account holder.** Someone who gives another person's phone number or name on WhatsApp may get the retail demo's AI to reveal that person's ERP/CRM details (name, company, email, orders), or to place an order or issue an invoice on that account. Replies only go back to the person asking; nothing is sent to the number that was looked up
 4. The ERP and CRM in the demo environment are shared demo systems whose data is cleared from time to time. **Please do not enter real customer data**
 
 ## Sources for provider policies
