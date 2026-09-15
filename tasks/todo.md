@@ -1461,7 +1461,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - **Sonnet 5 ✅**：第 3 句一轮里查到老户 53 → `SO-2026-00002` → `INV-2026-00001`（LHDN VALIDATED）→ **CRM `[DEMO] Sony WF-C710N ×3` 卡**；第 4、5 句被**自动跳过**，60 秒放完。本次 RM 0.29（Haiku 那次显示 RM 0.81 是按 Opus 误计价，见上面更正）——各只一次，不作结论
   - 这两次在真 ERP 留下：客户 53（`WA-60100000029-…`）、`SO-2026-00001`（无发票）、`SO-2026-00002` + `INV-2026-00001`；CRM 一张 `[DEMO]` 卡；本地 Haiku 那次还给 60100000029 开了一个**本地** Redis 里的人工接管（本地容器，线上不受影响）
 
-- [x] **任务 29.1：PDPA 与数据流向说明（一页纸）**——**2026-09-15 初稿完成，待用户核对定稿**
+- [x] **任务 29.1：PDPA 与数据流向说明（一页纸）**——**2026-09-15 完成：中英文两版用户已看完定稿；网页聊天已加 token 并上线**
   文件：`docs/data-flow-pdpa.md`（新增，Claude 写初稿，用户核对后定稿）
   目标：**这一条不写代码，但缺了它有些客户签不了字。** 马来西亚 PDPA，老板会问「我客人的资料存在哪、谁能看得到」。一页说明讲清楚：数据留在你们自己的 VPS、对话内容只在调用时经过 Anthropic、不用于训练、留存策略是什么
   验收：一页纸能直接发给客户，且里面每一句都和实际架构对得上——**不要写做不到的承诺**
@@ -1499,6 +1499,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - ⚠️ **WhatsApp 隐藏号码（BSUID）的客人报一个手机号，bot 按它查 ERP / CRM，号码不核验**（`llm.py:192` 的 `NO_PHONE_ON_FILE`）。同一类口子，已如实写进文档限制第 3 条，没修
   - Meta App 的 User data deletion URL 仍是占位符（`todo-v1-mvp.md:142`），和文档「人工处理删除请求」的说法要对齐
   - VPS `.env` 里的 `DEMO_ACCESS_PASSWORD` 是死变量
+
+  **部署后线上验收**：不带 token 的 `identify` / `message` 均 401、`/api/bots` 200；线上 JS 包与本地构建同 hash（`index-CbLo7ABO.js`）。**全新 Chrome 配置目录（无 localStorage）无头打开首页 → 显示 token 输入框**，截图看过。用户在自己浏览器里「直接输手机号就进去了」——该浏览器开过导演台，localStorage 里已有 `console_token`，`chatRequest` 自动带上，这是预期行为，也顺带证明了带 token 的正常路径能用
 
   **没验**：服务商政策是 09-15 官方页面的说法，会变；「服务器在马来西亚」依据是 GeoIP（IP ServerOne，Subang）+ 用户确认，没看合同；文档的 Markdown 没渲染成 PDF 看过版式
 
