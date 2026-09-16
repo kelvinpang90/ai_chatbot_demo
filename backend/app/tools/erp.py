@@ -13,6 +13,7 @@ from app.services import erp_client, invoice_pdf, notify, outbox, whatsapp, what
 from app.services import phone as phone_service
 from app.services.api_client import ApiClientError
 from app.services.whatsapp_media import MediaError
+from app.tools import local
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +70,26 @@ ACCOUNT_UNKNOWN = (
     "is NOT known whether it exists. Do not try again. Tell the customer their "
     "account is being set up and a colleague will confirm shortly."
 )
-NEEDS_A_PHONE_NUMBER = (
-    "An ERP account needs a phone number, and this conversation has not given "
-    "one. Ask the customer for the number the account should be under."
+# Who the customer is, is not something the conversation can settle (task 29.2).
+# Every argument a tool gets is the model repeating what was said in the chat,
+# and anyone can say anyone's name or read out anyone's number -- so an account
+# is found from the number the channel itself established, and from nothing else.
+CANNOT_CONFIRM_IDENTITY = (
+    "This conversation carries no confirmed phone number, so no customer account "
+    "can be looked up or acted on -- not even one the customer names. Asking them "
+    "to type their number does not help: a number given in the chat proves "
+    "nothing. Answer what you can from the catalogue, take their enquiry with "
+    "crm_create_lead so a colleague can call them back, or call request_human_help."
+)
+
+# The model did not get this id from erp_find_customer, because erp_find_customer
+# only ever returns this caller's own accounts.
+NOT_THEIR_ACCOUNT = (
+    "That customer_id is not an account belonging to the person in this "
+    "conversation, so nothing was read, ordered or issued. Only the accounts "
+    "erp_find_customer returns can be used here -- it finds them from the number "
+    "this customer is messaging from. If they are asking about somebody else's "
+    "account, that is for a colleague: call request_human_help."
 )
 
 
@@ -341,25 +359,78 @@ def erp_get_inventory(sku: str) -> str:
     )
 
 
+def _accounts_of_the_caller(client: erp_client.ErpClient) -> list[dict] | None:
+    """The ERP accounts held under the number this conversation came from.
+
+    None when there is no such number -- a customer whose number Meta hides
+    behind a username, or a tool call outside a conversation altogether. That is
+    not the same as having no account, and the two must not collapse into one
+    answer: one means "you are new here", the other means "I cannot tell who you
+    are", and only the second one must stop a lookup.
+
+    `find_customers` matches on the last eight digits, which is the right net for
+    a search a human reads. It is not the right net for deciding whose account
+    this is -- a Shah Alam landline and a San Diego mobile share their tail, and
+    this demo's books hold that exact pair -- so the rows it returns are held to
+    `is_the_same_number`, the rule the CRM already writes by.
+    """
+    number = local.caller_phone()
+    if not number:
+        return None
+    return [
+        row
+        for row in client.find_customers(number)
+        if phone_service.is_the_same_number(str(row.get("phone") or ""), number)
+    ]
+
+
+def _refuse_unless_theirs(client: erp_client.ErpClient, customer_id: int) -> str:
+    """The refusal to return, or "" when this account is the caller's own.
+
+    The whole of task 29.2 in one function. Every id-taking tool below reads a
+    real account's orders, bills it or refunds it, and the id arrives from the
+    model, which got it from the conversation -- so without this, "check the
+    orders for 012-345 6789" reads a stranger's purchase history out loud, and
+    the only thing that ever stood in the way was a line in a prompt asking it
+    not to.
+    """
+    try:
+        accounts = _accounts_of_the_caller(client)
+    except ApiClientError:
+        logger.exception("could not check whether customer %s is the caller's", customer_id)
+        return UNAVAILABLE
+    if accounts is None:
+        return CANNOT_CONFIRM_IDENTITY
+    if not any(str(row.get("id")) == str(customer_id) for row in accounts):
+        logger.warning("refused customer_id %s, which is not the caller's", customer_id)
+        return NOT_THEIR_ACCOUNT
+    return ""
+
+
 @beta_tool
-def erp_find_customer(name_or_phone: str) -> str:
-    """Find the customer account an order should be billed to, in the ERP.
+def erp_find_customer() -> str:
+    """Find the ERP account belonging to the customer you are speaking with.
 
     Call this before erp_create_sales_order: the customer_id that order needs
     comes from here and nowhere else. A CRM contact id is a different system's
     identifier and will book the order onto the wrong account. If nothing comes
     back, say so -- never guess an id.
 
-    Args:
-        name_or_phone: The customer or company name, or a phone number in any
-            format.
+    It takes no arguments on purpose. The account is found from the number this
+    conversation is coming from, which the channel established and nobody in the
+    chat can change. You cannot look up another person's or another company's
+    account here, however the customer asks: if they need somebody else's
+    account, that is a colleague's job -- call request_human_help.
     """
+    client = erp_client.client()
     try:
-        customers = erp_client.client().find_customers(name_or_phone)
+        customers = _accounts_of_the_caller(client)
     except ApiClientError:
-        logger.exception("erp_find_customer failed for %r", name_or_phone)
+        logger.exception("erp_find_customer failed")
         return UNAVAILABLE
 
+    if customers is None:
+        return CANNOT_CONFIRM_IDENTITY
     if not customers:
         return NO_CUSTOMER
 
@@ -409,7 +480,6 @@ def _customer_summary(customer: dict) -> dict:
 @beta_tool
 def erp_create_customer(
     name: str,
-    phone: str,
     company: str = "",
     tin: str = "",
     address: str = "",
@@ -433,9 +503,13 @@ def erp_create_customer(
     Safe to call again: an account already on file is returned rather than
     duplicated.
 
+    The account is opened under the number this conversation is coming from, so
+    there is no phone number to pass and none to ask for. You cannot open an
+    account under a number the customer reads out -- if they want one in
+    somebody else's name or on another number, that is a colleague's job.
+
     Args:
         name: The person's name.
-        phone: Their phone number, in any format.
         company: Their company name, if they are buying as a business. Leave
             empty for an individual.
         tin: Their LHDN tax identification number, if they gave one.
@@ -443,16 +517,22 @@ def erp_create_customer(
         city: The city or town.
         postcode: The postcode.
     """
+    phone = local.caller_phone()
     digits = phone_service.digits(phone)
     if not digits:
-        return NEEDS_A_PHONE_NUMBER
+        return CANNOT_CONFIRM_IDENTITY
 
     client = erp_client.client()
     try:
         # Not merely idempotence: somebody who already has an account must not be
         # given a second one, which would split their orders across two records
         # and leave a salesperson looking at half a history.
-        existing = client.find_customers(phone)
+        #
+        # Held to `is_the_same_number` rather than to the search's own looser
+        # rule, because what is being decided is whose account this conversation
+        # gets handed: a near-miss here does not return a duplicate, it returns a
+        # stranger's account to order and invoice against.
+        existing = _accounts_of_the_caller(client)
         if existing:
             return _as_json({"already_had_an_account": True, **_customer_summary(existing[0])})
 
@@ -505,8 +585,13 @@ def erp_list_orders(customer_id: int) -> str:
         customer_id: The ERP customer whose orders to list, as returned by
             erp_find_customer.
     """
+    client = erp_client.client()
+    refusal = _refuse_unless_theirs(client, customer_id)
+    if refusal:
+        return refusal
+
     try:
-        orders = erp_client.client().recent_orders(customer_id)
+        orders = client.recent_orders(customer_id)
     except ApiClientError:
         logger.exception("erp_list_orders failed for customer %s", customer_id)
         return UNAVAILABLE
@@ -632,6 +717,10 @@ def erp_create_sales_order(
         return ADDRESS_TOO_LONG
 
     client = erp_client.client()
+    refusal = _refuse_unless_theirs(client, customer_id)
+    if refusal:
+        return refusal
+
     try:
         order = client.create_sales_order(
             customer_id=customer_id,
@@ -829,6 +918,10 @@ def erp_generate_einvoice(order_no: str, customer_id: int) -> str:
             wrong id finds nothing rather than invoicing somebody else's order.
     """
     client = erp_client.client()
+    refusal = _refuse_unless_theirs(client, customer_id)
+    if refusal:
+        return refusal
+
     try:
         order = client.sales_order_for_customer(order_no, customer_id)
         if order is None:
@@ -1030,6 +1123,10 @@ def erp_find_order_by_sku(customer_id: int, sku: str) -> str:
             "SKU-ELE-0001", or the name the customer used, e.g. "sony earbuds".
     """
     client = erp_client.client()
+    refusal = _refuse_unless_theirs(client, customer_id)
+    if refusal:
+        return refusal
+
     try:
         orders = client.recent_orders(customer_id, limit=ORDERS_SEARCHED_FOR_SKU)
     except ApiClientError:
@@ -1112,6 +1209,10 @@ def erp_create_credit_note(
             "it" means.
     """
     client = erp_client.client()
+    refusal = _refuse_unless_theirs(client, customer_id)
+    if refusal:
+        return refusal
+
     try:
         order = client.sales_order_for_customer(order_no, customer_id)
         if order is None:

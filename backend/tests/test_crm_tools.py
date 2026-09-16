@@ -5,10 +5,12 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from app.bots.registry import get_bot
 from app.config import settings
 from app.services import api_client, crm_client
 from app.services.api_client import ApiClientError
-from app.tools import crm
+from app.services.user_store import UserProfile, identity
+from app.tools import crm, local
 
 TAN = {
     "id": "c-1",
@@ -51,6 +53,35 @@ TAN_DEALS = [
 ]
 
 
+# Whose conversation these tools are answering in. Since task 29.2 that is not
+# a detail of the test setup: it is the only thing either tool will look anybody
+# up by, so a test that does not say who is messaging is testing nothing.
+RETAIL = get_bot("retail")
+# Tan's number as WhatsApp hands it over -- the CRM holds the same number the way
+# a salesperson typed it, which is the pair these tools have to reconcile.
+TAN_NUMBER = "60173948123"
+# The walk-in of the lead tests, who is nobody in this CRM yet.
+AHMAD_NUMBER = "60123334444"
+# Meta's business-scoped id: a real customer with no number anywhere in the turn.
+A_HIDDEN_NUMBER = "US.13491208655302741918"
+
+
+@contextmanager
+def messaging_from(number: str | None):
+    """A conversation whose number the channel established -- or has not.
+
+    `None` is the customer who has hidden their number behind a username. There
+    is a record and a conversation; there is simply no number in it, which is a
+    different thing from a customer we have never seen.
+    """
+    if number is None:
+        profile = UserProfile(key_id=A_HIDDEN_NUMBER, user_id=A_HIDDEN_NUMBER)
+    else:
+        profile = UserProfile(key_id=identity(number), phone=identity(number))
+    with local.serving(RETAIL, profile):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _fresh_client():
     crm_client.reset()
@@ -58,14 +89,31 @@ def _fresh_client():
     crm_client.reset()
 
 
-def test_a_name_is_handed_to_the_servers_own_search():
+@pytest.fixture(autouse=True)
+def _a_conversation():
+    """Tan is messaging, unless a test says otherwise."""
+    with messaging_from(TAN_NUMBER):
+        yield
+
+
+def test_the_caller_is_looked_up_on_the_number_the_channel_gave_us():
+    """Task 29.2: nothing said in the chat reaches this lookup.
+
+    It used to take whatever the model typed -- a name, a company, a number read
+    out by whoever was asking -- and answer with that contact's name, company,
+    email and what they have spent. The tool now takes no arguments at all, so
+    the only person it can open is the one on the other end of the conversation.
+    """
+    assert crm.crm_lookup_customer.input_schema.get("properties", {}) == {}
+
     with patch.object(
         crm_client.CrmClient, "get", side_effect=[{"data": [TAN]}, TAN_DEALS]
     ) as get:
-        payload = json.loads(crm.crm_lookup_customer("Tan Wei Ming"))
+        payload = json.loads(crm.crm_lookup_customer())
 
     assert get.call_args_list[0].args[0] == "/api/contacts"
-    assert get.call_args_list[0].kwargs["params"]["search"] == "Tan Wei Ming"
+    # Paging the book on the caller's number, not searching on anything said.
+    assert get.call_args_list[0].kwargs["params"]["search"] is None
     assert get.call_args_list[1].args[0] == "/api/deals"
     assert get.call_args_list[1].kwargs["params"] == {"contact_id": "c-1"}
     assert payload == [
@@ -96,8 +144,9 @@ def test_a_name_is_handed_to_the_servers_own_search():
 
 
 def test_a_first_time_contact_has_no_history_to_report():
-    with patch.object(crm_client.CrmClient, "get", side_effect=[{"data": [SITI]}, []]):
-        payload = json.loads(crm.crm_lookup_customer("Siti Aminah"))
+    with messaging_from(SITI["phone"]):
+        with patch.object(crm_client.CrmClient, "get", side_effect=[{"data": [SITI]}, []]):
+            payload = json.loads(crm.crm_lookup_customer())
 
     assert payload[0]["recent_enquiries"] == []
 
@@ -111,7 +160,7 @@ def test_the_contact_is_still_reported_when_fetching_their_history_fails():
     with patch.object(
         crm_client.CrmClient, "get", side_effect=[{"data": [TAN]}, ApiClientError("boom")]
     ):
-        payload = json.loads(crm.crm_lookup_customer("Tan Wei Ming"))
+        payload = json.loads(crm.crm_lookup_customer())
 
     assert payload[0]["contact_id"] == "c-1"
     assert payload[0]["recent_enquiries"] == []
@@ -122,7 +171,7 @@ def test_a_phone_number_is_matched_here_because_the_server_cannot():
     with patch.object(
         crm_client.CrmClient, "get", side_effect=[{"data": [SITI, TAN]}, TAN_DEALS]
     ) as get:
-        payload = json.loads(crm.crm_lookup_customer("60173948123"))
+        payload = json.loads(crm.crm_lookup_customer())
 
     # No `search` term went to the server; the filtering happened on our side.
     assert get.call_args_list[0].kwargs["params"]["search"] is None
@@ -132,28 +181,50 @@ def test_a_phone_number_is_matched_here_because_the_server_cannot():
 
 
 @pytest.mark.parametrize(
-    "typed",
+    "stored",
     ["60173948123", "+60 17-394 8123", "017-3948123", "0173948123", "(017) 394 8123"],
 )
-def test_the_same_person_is_found_however_the_number_is_written(typed):
-    """WhatsApp hands us 60173948123; the CRM holds whatever a salesperson typed."""
-    with patch.object(crm_client.CrmClient, "get", side_effect=[{"data": [TAN]}, TAN_DEALS]):
-        payload = json.loads(crm.crm_lookup_customer(typed))
+def test_the_same_person_is_found_however_the_number_is_written(stored):
+    """WhatsApp hands us 60173948123; the CRM holds whatever a salesperson typed.
+
+    Which is why binding the lookup to the channel's number could not simply be
+    a string comparison: the two spellings have to meet somewhere.
+    """
+    contact = {**TAN, "phone": stored}
+    with patch.object(
+        crm_client.CrmClient, "get", side_effect=[{"data": [contact]}, TAN_DEALS]
+    ):
+        payload = json.loads(crm.crm_lookup_customer())
 
     assert payload[0]["contact_id"] == "c-1"
 
 
-def test_a_short_number_is_treated_as_a_name_not_a_phone():
-    with patch.object(crm_client.CrmClient, "get", return_value={"data": []}) as get:
-        crm.crm_lookup_customer("2024")
+def test_a_contact_who_only_shares_the_last_eight_digits_is_not_the_caller():
+    """The collision is a real row in this CRM: David Park is "+1-858-555-1515",
+    and a Shah Alam landline ends in the same eight digits. The page scan finds
+    both; only one of them is the person in this chat, and reading the other one
+    out would be exactly the leak task 29.2 exists to close."""
+    david = {"id": "c-7", "name": "David Park", "phone": "+1-858-555-1515"}
 
-    assert get.call_args.kwargs["params"]["search"] == "2024"
+    with messaging_from("03-8555 1515"):
+        with patch.object(crm_client.CrmClient, "get", return_value={"data": [david]}):
+            assert crm.crm_lookup_customer() == crm.NOT_FOUND
+
+
+def test_a_hidden_number_looks_nobody_up_rather_than_guessing():
+    """No confirmed number in the turn means no way to tell who is asking, and a
+    contact record is a name, a company, an email and what they have spent."""
+    with messaging_from(None):
+        with patch.object(crm_client.CrmClient, "get") as get:
+            assert crm.crm_lookup_customer() == crm.CANNOT_CONFIRM_IDENTITY
+
+    get.assert_not_called()
 
 
 def test_the_phone_scan_stops_at_the_end_of_the_book():
     """A short page means there is no next one -- do not keep paging into nothing."""
     with patch.object(crm_client.CrmClient, "get", return_value={"data": [SITI]}) as get:
-        assert crm.crm_lookup_customer("60173948123") == crm.NOT_FOUND
+        assert crm.crm_lookup_customer() == crm.NOT_FOUND
 
     assert get.call_count == 1
 
@@ -162,19 +233,19 @@ def test_the_phone_scan_is_bounded_even_when_every_page_is_full():
     full_page = {"data": [SITI] * crm_client.PAGE_SIZE}
 
     with patch.object(crm_client.CrmClient, "get", return_value=full_page) as get:
-        assert crm.crm_lookup_customer("60173948123") == crm.NOT_FOUND
+        assert crm.crm_lookup_customer() == crm.NOT_FOUND
 
     assert get.call_count == crm_client.MAX_SCAN_PAGES
 
 
 def test_an_unknown_customer_says_so_rather_than_returning_nothing():
     with patch.object(crm_client.CrmClient, "get", return_value={"data": []}):
-        assert crm.crm_lookup_customer("Nobody At All") == crm.NOT_FOUND
+        assert crm.crm_lookup_customer() == crm.NOT_FOUND
 
 
 def test_an_unreachable_crm_becomes_an_answer_the_bot_can_relay():
     with patch.object(crm_client.CrmClient, "get", side_effect=ApiClientError("boom")):
-        assert crm.crm_lookup_customer("Tan Wei Ming") == crm.UNAVAILABLE
+        assert crm.crm_lookup_customer() == crm.UNAVAILABLE
 
 
 @pytest.mark.parametrize(
@@ -191,7 +262,7 @@ def test_an_unreachable_crm_becomes_an_answer_the_bot_can_relay():
 def test_a_real_transport_failure_degrades_instead_of_escaping(failure, crm_credentials):
     """Regression: see the twin in test_erp_tools."""
     with patch.object(api_client.httpx, "post", side_effect=failure) as post:
-        assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+        assert crm.crm_lookup_customer() == crm.UNAVAILABLE
 
     # Without this the test passes whether or not the failure was ever raised.
     assert post.called
@@ -208,7 +279,7 @@ def test_missing_credentials_degrade_like_any_other_outage():
     with patch.object(settings, "crm_email", ""):
         with patch.object(settings, "crm_password", ""):
             with patch.object(api_client.httpx, "post") as post:
-                assert crm.crm_lookup_customer("David Park") == crm.UNAVAILABLE
+                assert crm.crm_lookup_customer() == crm.UNAVAILABLE
 
     # The point of the answer: it was refused here, without a doomed round trip.
     assert post.call_args_list == []
@@ -217,8 +288,11 @@ def test_missing_credentials_degrade_like_any_other_outage():
 def test_both_tools_are_declared_with_a_schema_the_model_can_read():
     assert [tool.name for tool in crm.TOOLS] == ["crm_lookup_customer", "crm_create_lead"]
     for tool in crm.TOOLS:
-        assert tool.input_schema["properties"]
         assert tool.description
+    # The lookup deliberately has nothing for the model to fill in; the lead has
+    # to have, because what the customer wants is only ever said in words.
+    assert crm.crm_lookup_customer.input_schema.get("properties", {}) == {}
+    assert crm.crm_create_lead.input_schema["properties"]
 
 
 # -- crm_create_lead ---------------------------------------------------------
@@ -299,13 +373,14 @@ def test_a_new_customer_leaves_one_card_on_the_board_not_two():
     The pipeline is the screen the demo points at. An extra RM 0 card next to the
     real one is not a cosmetic problem there, it is the demo contradicting itself.
     """
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         payload = json.loads(crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE))
 
     assert fake.post_paths == ["/api/contacts", "/api/deals/d-9/activities"]
     assert fake.body("/api/contacts") == {
         "name": "Ahmad Faizal",
-        "phone": "+60 12-333 4444",
+        # The number the channel established, not the one passed in below.
+        "phone": AHMAD_NUMBER,
         "notes": crm.NEW_CONTACT_NOTES,
         "initial_status": "lead",
         "initial_title": MARKED_ENQUIRY,
@@ -319,7 +394,7 @@ def test_a_new_customer_leaves_one_card_on_the_board_not_two():
 
 def test_the_lead_is_never_flagged_as_gateway_traffic():
     """`demo_scope` hides flagged contacts from the pipeline -- the one place it must show."""
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
 
     assert "is_gateway" not in fake.body("/api/contacts")
@@ -327,7 +402,7 @@ def test_the_lead_is_never_flagged_as_gateway_traffic():
 
 def test_a_returning_customer_gets_another_card_not_another_copy_of_themselves():
     """The same phone number runs through this demo again and again."""
-    with fake_crm(existing=[TAN]) as fake:
+    with messaging_from(TAN_NUMBER), fake_crm(existing=[TAN]) as fake:
         payload = json.loads(crm.crm_create_lead("Tan Wei Ming", "60173948123", ENQUIRY, VALUE))
 
     assert "/api/contacts" not in fake.post_paths
@@ -341,13 +416,14 @@ def test_a_returning_customer_gets_another_card_not_another_copy_of_themselves()
 
 
 @pytest.mark.parametrize(
-    "typed",
+    "stored",
     ["60173948123", "+60 17-394 8123", "017-3948123", "(017) 394 8123"],
 )
-def test_a_returning_customer_is_recognised_however_the_number_is_written(typed):
+def test_a_returning_customer_is_recognised_however_the_number_is_written(stored):
     """What the tightening below must not cost: one person, four notations."""
-    with fake_crm(existing=[TAN]) as fake:
-        crm.crm_create_lead("Tan Wei Ming", typed, ENQUIRY, VALUE)
+    contact = {**TAN, "phone": stored}
+    with messaging_from(TAN_NUMBER), fake_crm(existing=[contact]) as fake:
+        crm.crm_create_lead("Tan Wei Ming", "", ENQUIRY, VALUE)
 
     assert "/api/contacts" not in fake.post_paths
     assert fake.body("/api/deals")["contact_id"] == "c-1"
@@ -363,7 +439,7 @@ def test_a_lead_is_not_filed_against_a_stranger_who_shares_eight_digits():
     """
     david = {"id": "c-7", "name": "David Park", "phone": "+1-858-555-1515"}
 
-    with fake_crm(existing=[david]) as fake:
+    with messaging_from("03-8555 1515"), fake_crm(existing=[david]) as fake:
         payload = json.loads(
             crm.crm_create_lead("Ahmad Faizal", "03-8555 1515", ENQUIRY, VALUE)
         )
@@ -374,7 +450,7 @@ def test_a_lead_is_not_filed_against_a_stranger_who_shares_eight_digits():
 
 
 def test_the_note_is_filed_against_the_card_and_marked_whatsapp():
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
 
     body = fake.body("/api/deals/d-9/activities")
@@ -389,7 +465,7 @@ def test_the_note_is_filed_against_the_card_and_marked_whatsapp():
 def test_the_note_keeps_the_whole_enquiry_the_card_title_had_to_cut():
     long_enquiry = "I want " + "very " * 100 + "many earbuds"
 
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", long_enquiry, VALUE)
 
     title = fake.body("/api/contacts")["initial_title"]
@@ -406,7 +482,7 @@ def test_an_address_a_walk_in_gave_survives_on_the_note():
     just the vanished-address bug wearing the other system's clothes."""
     address = "6 Jalan Tasik Selatan 30e, Desa Tasik, Kuala Lumpur 57000"
 
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         crm.crm_create_lead(
             "Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE, delivery_address=address
         )
@@ -418,14 +494,14 @@ def test_an_address_a_walk_in_gave_survives_on_the_note():
 
 
 def test_a_lead_with_no_address_says_nothing_about_one():
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE)
 
     assert "Delivery address" not in fake.body("/api/deals/d-9/activities")["content"]
 
 
 def test_a_name_too_long_for_the_column_is_trimmed_rather_than_dropped():
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         crm.crm_create_lead("Ahmad " * 40, "+60 12-333 4444", ENQUIRY, VALUE)
 
     assert len(fake.body("/api/contacts")["name"]) == 100
@@ -437,8 +513,13 @@ def test_a_name_too_long_for_the_column_is_trimmed_rather_than_dropped():
     ids=["longer-than-the-column", "too-few-digits", "not-a-number", "empty"],
 )
 def test_a_phone_nobody_could_ring_back_is_refused_rather_than_trimmed(phone):
-    """A trimmed phone number is a different, wrong number in the field a rep dials."""
-    with fake_crm(existing=[]) as fake:
+    """A trimmed phone number is a different, wrong number in the field a rep dials.
+
+    Only reachable from a conversation with no number of its own now: where the
+    channel gave us one, that is the one the lead carries whatever the model was
+    told in the chat.
+    """
+    with messaging_from(None), fake_crm(existing=[]) as fake:
         assert crm.crm_create_lead("Ahmad Faizal", phone, ENQUIRY, VALUE) == crm.BAD_LEAD
 
     assert fake.posts == []
@@ -470,7 +551,7 @@ def test_a_phone_nobody_could_ring_back_is_refused_rather_than_trimmed(phone):
 def test_details_that_are_not_a_lead_are_refused_before_anything_is_written(
     name, requirement, amount
 ):
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         assert crm.crm_create_lead(name, "+60 12-333 4444", requirement, amount) == crm.BAD_LEAD
 
     assert fake.posts == []
@@ -479,7 +560,7 @@ def test_details_that_are_not_a_lead_are_refused_before_anything_is_written(
 def test_a_write_that_was_refused_says_nothing_was_recorded():
     failed = ApiClientError("422", may_have_landed=False)
 
-    with fake_crm(existing=[], post_fails={"/api/contacts": failed}):
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[], post_fails={"/api/contacts": failed}):
         assert crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE) == crm.LEAD_FAILED
 
 
@@ -487,19 +568,19 @@ def test_a_write_that_may_have_landed_is_not_reported_as_a_failure():
     """Telling the model it failed is what produces two cards for one customer."""
     unknown = ApiClientError("gateway timeout", may_have_landed=True)
 
-    with fake_crm(existing=[], post_fails={"/api/contacts": unknown}):
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[], post_fails={"/api/contacts": unknown}):
         assert crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE) == crm.LEAD_UNKNOWN
 
 
 def test_a_lookup_that_dies_before_any_write_is_a_clean_failure():
-    with fake_crm(get_fails={"/api/contacts": ApiClientError("boom")}) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(get_fails={"/api/contacts": ApiClientError("boom")}) as fake:
         assert crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE) == crm.LEAD_FAILED
 
     assert fake.posts == []
 
 
 def test_a_card_already_on_the_board_is_not_called_a_failure_because_the_note_missed():
-    with fake_crm(existing=[], post_fails={"/activities": ApiClientError("boom")}):
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[], post_fails={"/activities": ApiClientError("boom")}):
         payload = json.loads(crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE))
 
     assert payload["deal_id"] == "d-9"
@@ -508,7 +589,7 @@ def test_a_card_already_on_the_board_is_not_called_a_failure_because_the_note_mi
 
 def test_losing_the_new_cards_id_still_reports_the_lead_that_exists():
     """The contact and its card are written by then -- LEAD_FAILED would be a lie."""
-    with fake_crm(existing=[], get_fails={"/api/deals": ApiClientError("boom")}) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[], get_fails={"/api/deals": ApiClientError("boom")}) as fake:
         payload = json.loads(crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, VALUE))
 
     assert fake.post_paths == ["/api/contacts"]
@@ -638,7 +719,7 @@ def test_an_amount_that_rounds_past_the_column_never_reaches_the_crm():
     rounds_over = 9999999999999.998
     assert rounds_over < crm_client.MAX_AMOUNT
 
-    with fake_crm(existing=[]) as fake:
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[]) as fake:
         answer = crm.crm_create_lead("Ahmad Faizal", "+60 12-333 4444", ENQUIRY, rounds_over)
 
     assert answer == crm.BAD_LEAD
@@ -666,7 +747,9 @@ CARD_FOR_THE_ORDER = {
 
 def test_the_same_order_mentioned_twice_leaves_one_card():
     """The acceptance, in the shape the screenshot had."""
-    with fake_crm(existing=[TAN], deals=[CARD_FOR_THE_ORDER]) as fake:
+    with messaging_from(TAN_NUMBER), fake_crm(
+        existing=[TAN], deals=[CARD_FOR_THE_ORDER]
+    ) as fake:
         payload = json.loads(
             crm.crm_create_lead("Tan Wei Ming", "60173948123", INVOICED, VALUE)
         )
@@ -678,7 +761,9 @@ def test_the_same_order_mentioned_twice_leaves_one_card():
 def test_the_new_detail_still_lands_on_the_card_that_exists():
     """Reusing the card must not lose what the second call was for -- the invoice
     number is the whole of what it added."""
-    with fake_crm(existing=[TAN], deals=[CARD_FOR_THE_ORDER]) as fake:
+    with messaging_from(TAN_NUMBER), fake_crm(
+        existing=[TAN], deals=[CARD_FOR_THE_ORDER]
+    ) as fake:
         crm.crm_create_lead("Tan Wei Ming", "60173948123", INVOICED, VALUE)
 
     content = fake.body("/api/deals/d-77/activities")["content"]
@@ -688,7 +773,9 @@ def test_the_new_detail_still_lands_on_the_card_that_exists():
 def test_a_different_order_is_a_different_card():
     """Two sales to one customer are two opportunities, and the pipeline should
     say so."""
-    with fake_crm(existing=[TAN], deals=[CARD_FOR_THE_ORDER]) as fake:
+    with messaging_from(TAN_NUMBER), fake_crm(
+        existing=[TAN], deals=[CARD_FOR_THE_ORDER]
+    ) as fake:
         crm.crm_create_lead(
             "Tan Wei Ming", "60173948123", "另一单 Sony 耳机 × 1（订单 SO-2026-00099）", VALUE
         )
@@ -699,7 +786,9 @@ def test_a_different_order_is_a_different_card():
 def test_an_enquiry_with_no_order_behind_it_always_gets_its_own_card():
     """Somebody who asks twice without buying has asked twice. There is nothing
     to match on and nothing that should be matched."""
-    with fake_crm(existing=[TAN], deals=[CARD_FOR_THE_ORDER]) as fake:
+    with messaging_from(TAN_NUMBER), fake_crm(
+        existing=[TAN], deals=[CARD_FOR_THE_ORDER]
+    ) as fake:
         crm.crm_create_lead("Tan Wei Ming", "60173948123", ENQUIRY, VALUE)
 
     assert "/api/deals" in fake.post_paths
@@ -708,7 +797,7 @@ def test_an_enquiry_with_no_order_behind_it_always_gets_its_own_card():
 def test_a_crm_that_will_not_say_what_cards_exist_still_records_the_lead():
     """The duplicate check guards the write; it must not replace it. A card too
     many is a mess somebody can merge, a lost lead is a customer nobody rings."""
-    with fake_crm(
+    with messaging_from(TAN_NUMBER), fake_crm(
         existing=[TAN], get_fails={"/api/deals": ApiClientError("crm api: deals unavailable")}
     ) as fake:
         payload = json.loads(
@@ -726,3 +815,35 @@ def test_the_order_number_is_read_the_way_this_project_writes_them():
     # An invoice number is not an order number: they travel together and only one
     # of them identifies the sale on the board.
     assert crm._order_number("INV-2026-00002") == ""
+
+
+# -- whose number the lead is filed under (task 29.2) --------------------------
+
+
+def test_a_lead_is_filed_under_the_channels_number_not_the_one_in_the_chat():
+    """The model can only repeat what was said, and what was said can be anyone's.
+
+    Filed under the number given in the chat, a lead for "Tan Wei Ming, 017-394
+    8123" lands on Tan's existing record -- and the answer names him back to
+    whoever asked.
+    """
+    with messaging_from(AHMAD_NUMBER), fake_crm(existing=[TAN]) as fake:
+        payload = json.loads(crm.crm_create_lead("Tan Wei Ming", TAN_NUMBER, ENQUIRY, VALUE))
+
+    # Tan's record was never touched: a new contact, under the caller's number.
+    assert fake.body("/api/contacts")["phone"] == AHMAD_NUMBER
+    assert "/api/deals" not in fake.post_paths
+    assert payload["contact_id"] == "c-9"
+
+
+def test_a_hidden_number_opens_a_new_contact_rather_than_claiming_one():
+    """A number typed into the chat is still worth taking -- a colleague has to
+    ring somebody back -- but it is not evidence of who is typing, so it cannot
+    be used to open a record that is already on the board."""
+    with messaging_from(None), fake_crm(existing=[TAN]) as fake:
+        payload = json.loads(crm.crm_create_lead("Tan Wei Ming", TAN_NUMBER, ENQUIRY, VALUE))
+
+    assert fake.body("/api/contacts")["phone"] == TAN_NUMBER
+    assert payload["contact_id"] == "c-9"
+    # The board was not even asked who is on it: nothing here could answer it.
+    assert [path for path, _ in fake.gets if path == "/api/contacts"] == []

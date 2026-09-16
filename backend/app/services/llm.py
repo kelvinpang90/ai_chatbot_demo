@@ -183,13 +183,13 @@ CUSTOMER_SYSTEM_TEMPLATE = """The person you are speaking with, as we have them 
 
 # The ordinary case: WhatsApp told us who wrote in, and the back offices can be
 # searched on it.
-PHONE_ON_FILE = "`phone` is the number this message really came from - the channel has already established it, so use it with the lookup tools instead of asking them to type it out."
+PHONE_ON_FILE = "`phone` is the number this message really came from - the channel has already established it, and the lookup tools read it themselves. That is why none of them asks you for a number: they find this customer's own account, orders and history, and nobody else's. Never ask this customer to type their number out, and never try to look up an account under a different one."
 
 # Since 2026 a customer can hide their number behind a username. Saying nothing
 # here would leave the model to reach for the one identifier it can see and pass
 # a handle to a phone lookup, which finds nothing and reads as "you are not a
 # customer" to someone who is.
-NO_PHONE_ON_FILE = "This customer has not given us a phone number - WhatsApp does not pass one on for them, and `username` is a handle they can change at any time, so it is something to greet them by and nothing to search on. Ask them for their phone number early, in your first reply once they raise anything real: every account, order and invoice in the back offices is found by phone, so until you have one you cannot see what they have bought, open an account for them, or hand the enquiry to a colleague. Ask for it plainly, say it is so you can look their account up and reach them about the order, and carry on helping while you wait - do not refuse to answer questions until they give it. Once they do, use it with the lookup tools exactly as if the channel had supplied it."
+NO_PHONE_ON_FILE = "This customer has not given us a phone number - WhatsApp does not pass one on for them, and `username` is a handle they can change at any time, so it is something to greet them by and nothing to search on. Nothing in the back offices can be looked up for them either: an account, an order or an invoice is found by the number the channel confirms, and a number typed into a chat is not that - it is a claim, and anyone can type anyone's. The account tools will say so if you try, and that is them working correctly, not a fault. So help with everything that needs no account - products, prices, stock, how things work - and when they want something that does, ask for a number a colleague can call them back on, record what they want with crm_create_lead, and tell them plainly that a colleague will pick it up from there."
 
 # The web chat has no phone number to key a record on until task 33 gives it one.
 # Saying so plainly beats an empty record, which reads as "a customer about whom

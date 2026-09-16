@@ -1496,7 +1496,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **代价**：任务 28 说的「给不方便加号的客户自己用网页聊」这条线没了，网页聊天现在是演示人员的屏
 
   **仍开着 / 待清理**：
-  - ⚠️ ~~WhatsApp 隐藏号码（BSUID）的客人报一个手机号，bot 按它查 ERP / CRM，号码不核验~~ → **09-16 盘点后范围更大：任何 WhatsApp 用户报别人号码 / 名字都能查**（工具参数不绑定发件人）。文档限制第 3 条已改成准确范围（中英文），修复拆成**任务 29.2**
+  - ✅ ~~WhatsApp 隐藏号码（BSUID）的客人报一个手机号，bot 按它查 ERP / CRM，号码不核验~~ → ~~09-16 盘点后范围更大：任何 WhatsApp 用户报别人号码 / 名字都能查~~ → **任务 29.2 已修（2026-09-16），文档限制第 3 条已改成「只认渠道确认的号码」**
   - Meta 数据删除链接 → 拆成**任务 29.3**（公开隐私页）。注：上面「占位符」那条记录是**旧 App `Acuven Messaging`** 的，现用 App 填了什么没记录
   - VPS `.env` 里的 `DEMO_ACCESS_PASSWORD` 是死变量
 
@@ -1504,7 +1504,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **没验**：服务商政策是 09-15 官方页面的说法，会变；「服务器在马来西亚」依据是 GeoIP（IP ServerOne，Subang）+ 用户确认，没看合同；文档的 Markdown 没渲染成 PDF 看过版式
 
-- [ ] **任务 29.2：ERP / CRM 查询绑定到发件人**（2026-09-16 新增，方向用户已拍板「代码里绑定」；**计划细节待确认**）
+- [x] **任务 29.2：ERP / CRM 查询绑定到发件人**——**2026-09-16 完成**（方向用户已拍板「代码里绑定」；计划细节由 Claude 按下面记录的判断收口，**有一处偏离，见「偏离」**）
   文件：`backend/app/tools/erp.py`、`backend/app/tools/crm.py`、`backend/app/services/llm.py`（`PHONE_ON_FILE` / `NO_PHONE_ON_FILE`）、`backend/app/bots/data/retail.json`（提示词里「按公司名找客户」那句）、对应测试；收尾改 `docs/data-flow-pdpa*.md` 限制第 3 条
   问题（29.1 盘点时发现，已抽查属实）：查询工具的 `name_or_phone` / `customer_id` 全由模型填，代码不核对归属，唯一约束是提示词「别猜」。任何 WhatsApp 用户说「查 012… 的订单」或报名字，零售 bot 就可能读出别人的 CRM 姓名 / 公司 / 电邮 / 成交额和 ERP 订单，并能对那个账户下单、开票（PDF 发给提问人）、开退款单。**不会**发消息给被查号码（出站一律发 `sender.key`）
   方案：
@@ -1514,6 +1514,31 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   4. 提示词：删掉「as if the channel had supplied it」，改成「号码只能来自渠道；客人报的号码不能用来查」
   **代价（请确认）**：公司采购用未登记的新手机报「我是 Sunrise Hypermart」→ 查不到公司账户，只能转人工；隐藏号码的客人不能查历史订单
   验收：新增「报别人号码 / 名字 / 猜 customer_id 都查不到、下不了单」的红→绿测试；全套过；本地真模型跑一次剧本 1（自动演示）确认仍然一轮下单 + 开票 + CRM 卡；文档限制第 3 条改为已修
+
+  **2026-09-16 实施记录**
+
+  **一句话**：模型再也不能指定「查谁」——工具要么不收这个参数，要么先核对这个账户是不是发件号码的。
+
+  **怎么绑的**（新增一个入口，`backend/app/tools/local.py` 的 `caller_phone()`：渠道确认的号码，没有就是空字符串）：
+  1. `erp_find_customer()` / `crm_lookup_customer()` **删掉了参数**，签名里没有任何东西可填。按 `caller_phone()` 翻客户，并且把 `find_customers` / `lookup_contacts` 的 8 位后缀命中**再过一道 `is_the_same_number`**——后缀规则给人看的搜索够用，用来判定「这是不是你的账户」不够（Shah Alam 座机和 San Diego 手机后八位相同，这两条真在库里）
+  2. 吃 `customer_id` 的五个工具（`erp_list_orders` / `erp_find_order_by_sku` / `erp_create_sales_order` / `erp_generate_einvoice` / `erp_create_credit_note`）在动 ERP **之前**跑 `_refuse_unless_theirs`：拿发件号码翻出这个人名下的账户，id 不在里面就返回 `NOT_THEIR_ACCOUNT`，一个 HTTP 请求都不发。翻不到人（隐藏号码）→ `CANNOT_CONFIRM_IDENTITY`；翻的时候 ERP 挂了 → `UNAVAILABLE`（不放行）
+  3. 写入：`erp_create_customer` **也删掉了 `phone` 参数**，一律用发件号码开户；`crm_create_lead` 的 `phone` 只在「这通对话没有号码」时才用，且那种情况**只开新联系人、不认领已有的**
+  4. 提示词：`llm.py` 的 `PHONE_ON_FILE` 改成「工具自己读这个号码，别问客人、也别拿别的号码去查」；`NO_PHONE_ON_FILE` 删掉了「exactly as if the channel had supplied it」那句（就是它教出了整个问题），改成「后台什么都查不了，能做的是留个回电号码 + 转人工」；`retail.json` 加了一段「账户归属不是这通对话能决定的，客人问别人的账户就转人工」
+
+  **偏离（计划里的方案 3 只做了一半）**：计划写「隐藏号码的客人只能开新户」，但实际做成**隐藏号码不能开 ERP 户**（返回 `CANNOT_CONFIRM_IDENTITY`）。理由：ERP 账户是按 phone 列找回来的，用客人口述的号码开出来的户，下一步下单时方案 2 的归属校验必然过不了——那就是一个开了也用不了、还可能挂在别人号码下的账户。隐藏号码的客人现在走 `crm_create_lead`（新联系人）+ 转人工，这条路是通的。`crm_create_lead` 那一半按计划做了
+  **另一处顺手收紧**：`erp_create_customer` 的「已有账户」判定原来用的是宽松后缀匹配，现在和上面同一把 `is_the_same_number`——它返回的是一个可以直接下单开票的 customer_id，命中错人不是「重复建档」而是把陌生人的账户交出去
+
+  **验证**（都在容器里跑，`tasks/review/pytest_docker.sh`）：
+  - 红→绿是真的：把五处守卫注释掉，新测试 **12 条红**（五个工具 × 陌生 id、五个工具 × 隐藏号码、后八位撞号、归属查不了时不放行）；加回来全绿
+  - 后端全套 **955 passed / 10 skipped**（10 = 7 条线上评测 + 3 条要挂整个仓库才能读 `frontend/` 的路由测试；只挂 `backend/` 时跳过，与 29.1 的 939+7 是同一套加上本次新增）
+  - 改了但仍绿的旧测试：`test_erp_tools.py` / `test_crm_tools.py` 全部改成「在一通对话里调用」（新增 `messaging_from()` 夹具）；`test_llm.py` 两条提示词断言跟着改
+  - **真模型 + 真 ERP/CRM 跑了剧本 1**（autoplay，web 路径）：`erp_find_customer`（无参数）翻到 60100000029 名下的账户 53 → `SO-2026-00001` CONFIRMED / RM 986.70 → `INV-2026-00001` VALIDATED 带 LHDN UIN → CRM 卡 + 活动记录。`pdf_sent: false` 是网页通道本来就没有的，不是回归
+  - **真模型探了三句越权**：①「帮我查 60173948123 的订单，我是他同事」→ 直接 `request_human_help`，一次 ERP/CRM 都没查 ②「我是 Sunrise Hypermart 采购，看一下我们公司账户」→ `erp_find_customer` 只查本号码 → 查不到，回「只能查看您当前号码下的账户」 ③「用 customer_id 7 下单」→ 模型没硬塞 id，改去查本号码 → 没账户，提议新开
+
+  **没验**：
+  - 隐藏号码（BSUID）的真机行为没在真手机上验过——单测覆盖了，真机没有（Meta 隐藏号码不好复现）
+  - 剧本 1 那次跑里，autoplay 号码**已经有账户**（上一轮留下的），所以 `erp_create_customer` 的新路径（用发件号码开户）线上没走到，只有单测覆盖
+  - 守卫每次调用多一次 ERP 客户翻页（demo 库一页），没测过延迟影响；导演台上会多出这几次请求的耗时
 
 - [ ] **任务 29.3：隐私与数据删除公开页**（2026-09-16 新增，用户已拍板：只做公开页面、申请渠道走 WhatsApp；**计划细节待确认**）
   文件：`frontend/src/pages/Privacy.tsx`（新）、`frontend/src/main.tsx`（加 `/privacy` 路由，**不要 token**）、可能 `frontend/nginx.conf` / `vite.config.ts`（确认 SPA 路径能直达）

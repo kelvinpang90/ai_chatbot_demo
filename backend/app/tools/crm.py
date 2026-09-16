@@ -11,11 +11,24 @@ from anthropic import beta_tool
 from app.services import crm_client
 from app.services.api_client import ApiClientError
 from app.services.phone import is_the_same_number, looks_like_a_phone
+from app.tools import local
 
 logger = logging.getLogger(__name__)
 
 UNAVAILABLE = "The CRM system could not be reached, so this could not be checked."
 NOT_FOUND = "No matching customer found in the CRM."
+
+# The CRM's half of task 29.2. A contact record is a name, a company, an email
+# address and what they have spent -- read out on the strength of a number the
+# customer typed, that is somebody else's file being opened in front of a
+# stranger. So the lookup is bound to the number the channel established, and a
+# conversation without one does not get to look anybody up.
+CANNOT_CONFIRM_IDENTITY = (
+    "This conversation carries no confirmed phone number, so nobody can be looked "
+    "up in the CRM -- not even somebody the customer names. Treat them as a "
+    "first-time enquiry and ask for what you need; crm_create_lead can still "
+    "record what they want so a colleague calls them back."
+)
 
 # Enough for the model to say "last time you asked about X" without the console
 # screen filling up with someone's whole enquiry history.
@@ -51,26 +64,47 @@ def _recent_enquiries(client: crm_client.CrmClient, contact_id: str | None) -> l
     ]
 
 
-@beta_tool
-def crm_lookup_customer(name_or_phone: str) -> str:
-    """Look up an existing customer in the CRM by name, company, or phone number.
+def _contacts_on(client: crm_client.CrmClient, number: str) -> list[dict]:
+    """The contacts that really are this number, not merely near it.
 
-    Use this to find out whether the person you are talking to is already a
-    customer and what business they have done before -- including, if they have
-    been in touch before, what they asked about. Call it for anyone
-    erp_find_customer does not recognise, before treating them as a stranger: a
-    returning enquiry is worth greeting by name and referencing, not restarting
-    from nothing. A phone number may be written in any format. If nothing comes
-    back, they really are new -- do not guess a history for them.
-
-    Args:
-        name_or_phone: A customer or company name, or a phone number in any format.
+    `lookup_contacts` matches on the last eight digits, which is the right net
+    for a search whose answer a human reads. Here the answer is read out to
+    whoever is in the chat, so it is held to `is_the_same_number` -- the rule
+    `_card` already writes by, and for the same reason: this CRM's demo book
+    holds a Shah Alam landline and a San Diego mobile that share their tail.
     """
+    return [
+        row
+        for row in client.lookup_contacts(number, limit=crm_client.DEFAULT_RESULT_LIMIT)
+        if is_the_same_number(str(row.get("phone") or ""), number)
+    ]
+
+
+@beta_tool
+def crm_lookup_customer() -> str:
+    """Look up the customer you are speaking with in the CRM.
+
+    Use this to find out whether they are already a customer and what business
+    they have done before -- including, if they have been in touch before, what
+    they asked about. Call it for anyone erp_find_customer does not recognise,
+    before treating them as a stranger: a returning enquiry is worth greeting by
+    name and referencing, not restarting from nothing. If nothing comes back,
+    they really are new -- do not guess a history for them.
+
+    It takes no arguments on purpose. The contact is found from the number this
+    conversation is coming from, which the channel established. You cannot look
+    anybody else up here, by name, by company or by a number given in the chat,
+    however it is asked for -- that is a colleague's job.
+    """
+    number = local.caller_phone()
+    if not number:
+        return CANNOT_CONFIRM_IDENTITY
+
     client = crm_client.client()
     try:
-        contacts = client.lookup_contacts(name_or_phone)
+        contacts = _contacts_on(client, number)
     except ApiClientError:
-        logger.exception("crm_lookup_customer failed for %r", name_or_phone)
+        logger.exception("crm_lookup_customer failed")
         return UNAVAILABLE
 
     if not contacts:
@@ -237,7 +271,9 @@ def _deal_for_order(client: crm_client.CrmClient, contact_id, order_no: str) -> 
     )
 
 
-def _card(client: crm_client.CrmClient, lead: _Lead) -> tuple[dict, dict | None]:
+def _card(
+    client: crm_client.CrmClient, lead: _Lead, confirmed: bool
+) -> tuple[dict, dict | None]:
     """The contact this lead belongs to, and the card that now represents it.
 
     Somebody already on the books gets a new opportunity rather than a second copy
@@ -250,8 +286,18 @@ def _card(client: crm_client.CrmClient, lead: _Lead) -> tuple[dict, dict | None]
     write goes, and the two ways of being wrong do not cost the same: a
     duplicate contact is a visible mess somebody can merge, while a card filed
     onto a stranger who happens to share eight digits is a silent one.
+
+    `confirmed` says whether the number came from the channel or out of the
+    customer's own mouth (task 29.2). A number read out in the chat is enough to
+    take an enquiry on -- a colleague needs something to ring back -- but not
+    enough to open somebody's existing record and add to it, which is why an
+    unconfirmed one always gets a contact of its own.
     """
-    existing = client.lookup_contacts(lead.phone, limit=crm_client.DEFAULT_RESULT_LIMIT)
+    existing = (
+        client.lookup_contacts(lead.phone, limit=crm_client.DEFAULT_RESULT_LIMIT)
+        if confirmed
+        else []
+    )
     contact = next(
         (row for row in existing if is_the_same_number(row.get("phone", ""), lead.phone)),
         None,
@@ -312,8 +358,10 @@ def crm_create_lead(
 
     Args:
         name: The customer name, as they gave it.
-        phone: Their phone number -- normally the WhatsApp number they are
-            writing from -- in any format.
+        phone: A number to call them back on, in any format. It is used only
+            when this conversation carries no number of its own -- normally the
+            channel has already told us which number they are writing from, and
+            that is the one the lead is filed under whatever is passed here.
         requirement: What they are asking for, in their own words. This becomes
             the title on the pipeline card.
         amount: The estimated value in MYR. Use the quoted total when there is
@@ -322,14 +370,18 @@ def crm_create_lead(
             words, if they gave an address. It goes in the note the salesperson
             reads. Leave it empty if they did not say -- never invent one.
     """
-    lead = _usable(name, phone, requirement, amount, delivery_address)
+    # The channel's number beats the model's, always: the one the customer read
+    # out may be theirs, may be a typo, and may be somebody else's record they
+    # would rather like to see.
+    confirmed = local.caller_phone()
+    lead = _usable(name, confirmed or phone, requirement, amount, delivery_address)
     if lead is None:
         logger.warning("crm_create_lead got unusable details for %r", name)
         return BAD_LEAD
 
     client = crm_client.client()
     try:
-        contact, deal = _card(client, lead)
+        contact, deal = _card(client, lead, confirmed=bool(confirmed))
     except ApiClientError as exc:
         logger.exception("crm_create_lead failed for %r", lead.name)
         # "It failed" and "I do not know" send the model to two different places,

@@ -1,6 +1,7 @@
 import io
 import json
 import re
+from contextlib import contextmanager
 from datetime import datetime
 from unittest.mock import Mock, patch
 
@@ -8,10 +9,51 @@ import httpx
 import pytest
 from pypdf import PdfReader
 
+from app.bots.registry import get_bot
 from app.services import api_client, erp_client, notify, outbox, whatsapp, whatsapp_media
 from app.services.api_client import ApiClientError
+from app.services.user_store import UserProfile, identity
 from app.services.whatsapp_media import MediaError
-from app.tools import erp
+from app.tools import erp, local
+
+# Whose conversation these tools are answering in. Since task 29.2 that is not a
+# detail of the setup: the account tools read it and refuse without it, because
+# an argument the model filled in is only ever the chat repeating what it was
+# told, and anyone can say anyone's number.
+RETAIL = get_bot("retail")
+CALLER = "60173948123"
+# Meta's business-scoped id: a real customer with no number anywhere in the turn.
+A_HIDDEN_NUMBER = "US.13491208655302741918"
+
+# The accounts that number holds in the ERP. Two, because the order tests were
+# written against customer 3 and the order-history tests against customer 1 --
+# and one number really can hold a personal account and a company one.
+THEIR_ACCOUNTS = [
+    {"id": 1, "code": "CUST-0001", "name": "Kelvin Pang", "phone": CALLER, "currency": "MYR"},
+    {"id": 3, "code": "CUST-0003", "name": "KP Trading", "phone": CALLER, "currency": "MYR"},
+]
+# An id the caller does not hold. Every integer is somebody's real account, which
+# is the whole reason the guard exists.
+A_STRANGERS_ACCOUNT = 8
+
+# Captured before the fixture below replaces it, for the few tests that are about
+# the lookup itself rather than about a tool that depends on one.
+_REAL_FIND_CUSTOMERS = erp_client.ErpClient.find_customers
+
+
+@contextmanager
+def messaging_from(number: str | None):
+    """A conversation whose number the channel established -- or has not.
+
+    `None` is the customer who has hidden their number behind a username: there
+    is a conversation and a record, and no confirmed number in either.
+    """
+    if number is None:
+        profile = UserProfile(key_id=A_HIDDEN_NUMBER, user_id=A_HIDDEN_NUMBER)
+    else:
+        profile = UserProfile(key_id=identity(number), phone=identity(number))
+    with local.serving(RETAIL, profile):
+        yield
 
 SKU_ROW = {
     "id": 12,
@@ -43,6 +85,30 @@ def _fresh_client():
     erp_client.reset()
     yield
     erp_client.reset()
+
+
+@pytest.fixture(autouse=True)
+def _a_conversation():
+    """The demo number is messaging, and the ERP holds the two accounts above.
+
+    The lookup is stubbed at erp_client, the same boundary the HTTP mocks in
+    these tests stand at -- what it saves is a second set of customer pages in
+    every order, invoice and refund test. The rule it feeds is not stubbed: the
+    guard still decides for itself whether the id it was handed is one of these,
+    and the tests that own that decision are further down.
+    """
+    with messaging_from(CALLER):
+        with patch.object(
+            erp_client.ErpClient, "find_customers", return_value=list(THEIR_ACCOUNTS)
+        ):
+            yield
+
+
+@pytest.fixture
+def _their_own_account(_a_conversation):
+    """Undo the stub above, for the tests that are about the lookup itself."""
+    with patch.object(erp_client.ErpClient, "find_customers", _REAL_FIND_CUSTOMERS):
+        yield
 
 
 def test_search_hits_the_sku_route_and_returns_only_what_a_customer_would_ask():
@@ -360,8 +426,13 @@ def test_every_tool_is_declared_with_a_schema_the_model_can_read():
         "erp_create_credit_note",
     }
     for tool in erp.TOOLS:
-        assert tool.input_schema["properties"]  # arguments made it into the schema
         assert tool.description
+    for tool in erp.TOOLS:
+        if tool.name != "erp_find_customer":
+            assert tool.input_schema["properties"]  # arguments made it into the schema
+    # The exception, and the point of task 29.2: the one tool that decides whose
+    # account this conversation may touch takes nothing the conversation said.
+    assert erp.erp_find_customer.input_schema.get("properties", {}) == {}
 
 
 def test_the_order_tool_describes_its_line_items_field_by_field():
@@ -581,12 +652,12 @@ def test_an_unusable_order_is_refused_before_anything_is_written(_credentials, i
 
 
 def test_a_rejected_order_says_nothing_was_booked(_credentials):
-    """erp_os refusing the write -- an unknown customer, a closed period."""
-    rejected = _response({}, 400, text='{"detail":"Customer 999 not found."}')
+    """erp_os refusing the write -- a deleted customer, a closed period."""
+    rejected = _response({}, 400, text='{"detail":"Customer 3 not found."}')
 
     with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), rejected]):
         with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
-            assert erp.erp_create_sales_order(999, [{"sku_id": 12, "quantity": 1}]) == (
+            assert erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}]) == (
                 erp.ORDER_FAILED
             )
 
@@ -688,7 +759,7 @@ def test_an_error_erp_os_handled_itself_says_the_order_was_not_placed(_credentia
 
     with patch.object(api_client.httpx, "post", side_effect=[_response(_LOGIN), handled]):
         with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
-            answer = erp.erp_create_sales_order(9999, [{"sku_id": 12, "quantity": 1}])
+            answer = erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}])
 
     assert answer == erp.ORDER_FAILED
     assert answer != erp.ORDER_UNKNOWN
@@ -776,61 +847,104 @@ def test_the_tool_set_can_produce_an_erp_customer_id_for_the_order(_credentials)
         with patch.object(
             api_client.httpx, "get", return_value=_response({"items": [CUSTOMER_ROW]})
         ):
-            found = json.loads(erp.erp_find_customer("Sunrise"))
+            found = json.loads(erp.erp_find_customer())
 
     # The key the model reads has to be the one the order tool asks for.
     assert order.input_schema["required"] == ["customer_id", "items"]
     assert isinstance(found[0]["customer_id"], int)
 
 
-def test_a_customer_is_searched_by_name_in_one_call(_credentials):
-    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
-        with patch.object(
-            api_client.httpx, "get", return_value=_response({"items": [CUSTOMER_ROW]})
-        ) as get:
-            payload = json.loads(erp.erp_find_customer("Sunrise"))
-
-    assert get.call_count == 1
-    assert get.call_args.args[0].endswith("/api/customers")
-    assert get.call_args.kwargs["params"]["search"] == "Sunrise"
-    assert payload[0]["name"] == "Sunrise Hypermart Sdn Bhd"
-
-
-@pytest.mark.parametrize(
-    "typed", ["+60 17-394 8123", "017-3948123", "60173948123", "0173948123"]
-)
-def test_a_phone_number_is_matched_locally_because_the_erp_cannot_search_on_it(
-    _credentials, typed
+def test_the_account_looked_up_is_the_one_behind_the_number_messaging_us(
+    _credentials, _their_own_account
 ):
-    """erp_os's ?search= covers code, name, contact_person and email only. The
-    phone number is the one identifier a WhatsApp conversation always has, so a
-    lookup that could not use it would be no lookup at all."""
+    """Task 29.2. The tool used to take a name or a number the model had read off
+    the conversation, and answer with that account's id -- which is to say that
+    "check Sunrise Hypermart's orders" worked for whoever asked.
+
+    It takes nothing now. The account comes from the number the channel
+    established, and the ERP is paged for it because ?search= cannot see the
+    phone column.
+    """
+    assert erp.erp_find_customer.input_schema.get("properties", {}) == {}
+
     others = [{**CUSTOMER_ROW, "id": 8, "phone": "03-2181 0000"}]
     page = {"items": others + [CUSTOMER_ROW]}
 
     with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
         with patch.object(api_client.httpx, "get", return_value=_response(page)) as get:
-            payload = json.loads(erp.erp_find_customer(typed))
+            payload = json.loads(erp.erp_find_customer())
 
-    # Paging, not searching: a phone number in ?search= would return nothing.
+    assert get.call_count == 1
+    assert get.call_args.args[0].endswith("/api/customers")
+    # Paging, not searching: a phone number in ?search= would return nothing,
+    # and nothing the customer said is searched on at all.
     assert get.call_args.kwargs["params"]["search"] is None
+    assert [row["customer_id"] for row in payload] == [7]
+    assert payload[0]["name"] == "Sunrise Hypermart Sdn Bhd"
+
+
+@pytest.mark.parametrize(
+    "stored", ["+60 17-394 8123", "017-3948123", "60173948123", "0173948123"]
+)
+def test_the_account_is_found_however_the_number_was_typed_into_the_erp(
+    _credentials, _their_own_account, stored
+):
+    """WhatsApp hands us 60173948123; the ERP holds whatever a salesperson typed.
+
+    Binding the lookup to the channel's number could not be a string comparison
+    for exactly this reason -- the two spellings have to meet somewhere.
+    """
+    page = {"items": [{**CUSTOMER_ROW, "phone": stored}]}
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", return_value=_response(page)):
+            payload = json.loads(erp.erp_find_customer())
+
     assert [row["customer_id"] for row in payload] == [7]
 
 
-def test_an_unknown_customer_tells_the_model_not_to_invent_one(_credentials):
+def test_an_account_sharing_only_the_last_eight_digits_is_not_the_callers(
+    _credentials, _their_own_account
+):
+    """The page scan matches on the last eight digits, which is the right net for
+    a search a human reads and the wrong one for deciding whose account this is.
+    A Shah Alam landline ends in the same eight digits as the demo mobile, and
+    the CRM's own books hold a pair exactly like it."""
+    page = {"items": [{**CUSTOMER_ROW, "id": 8, "phone": "03-7394 8123"}]}
+
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(api_client.httpx, "get", return_value=_response(page)):
+            assert erp.erp_find_customer() == erp.NO_CUSTOMER
+
+
+def test_an_unknown_customer_tells_the_model_not_to_invent_one(
+    _credentials, _their_own_account
+):
     with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
         with patch.object(api_client.httpx, "get", return_value=_response({"items": []})):
-            answer = erp.erp_find_customer("Nobody At All")
+            answer = erp.erp_find_customer()
 
     assert answer == erp.NO_CUSTOMER
     assert "do not invent" in answer.lower()
 
 
-def test_an_unreachable_erp_does_not_look_like_an_unknown_customer(_credentials):
+def test_an_unreachable_erp_does_not_look_like_an_unknown_customer(
+    _credentials, _their_own_account
+):
     """"Not a customer" and "I could not check" must not collapse into one
     answer: the first one invites creating a duplicate account."""
     with patch.object(api_client.httpx, "post", side_effect=httpx.ConnectError("refused")):
-        assert erp.erp_find_customer("Sunrise") == erp.UNAVAILABLE
+        assert erp.erp_find_customer() == erp.UNAVAILABLE
+
+
+def test_a_hidden_number_is_told_apart_from_a_customer_we_have_never_seen():
+    """"I cannot tell who you are" and "you are new here" are different answers,
+    and only one of them must stop the conversation reaching an account."""
+    with messaging_from(None):
+        with patch.object(erp_client.ErpClient, "get") as get:
+            assert erp.erp_find_customer() == erp.CANNOT_CONFIRM_IDENTITY
+
+    get.assert_not_called()
 
 
 # -- "where is my order" ------------------------------------------------------
@@ -1379,7 +1493,7 @@ WALK_IN_ROW = {
 def test_opening_an_account_returns_an_id_the_order_tool_can_use():
     with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
         with patch.object(erp_client.ErpClient, "post", return_value=WALK_IN_ROW) as post:
-            payload = json.loads(erp.erp_create_customer("Kelvin Pang", "+60 17-394 8123"))
+            payload = json.loads(erp.erp_create_customer("Kelvin Pang"))
 
     assert post.call_args.args[0] == "/api/customers"
     assert payload["created"] is True
@@ -1391,10 +1505,12 @@ def test_the_account_carries_the_number_that_will_have_to_find_it_again():
     invisible to the next conversation from that number."""
     with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
         with patch.object(erp_client.ErpClient, "post", return_value=WALK_IN_ROW) as post:
-            erp.erp_create_customer("Kelvin Pang", "+60 17-394 8123", address="Unit 140, Reed")
+            erp.erp_create_customer("Kelvin Pang", address="Unit 140, Reed")
 
     body = post.call_args.kwargs["json"]
-    assert body["phone"] == "+60 17-394 8123"
+    # The number the channel gave us, which is the only one an account can be
+    # opened under: one read out in the chat may be anybody's.
+    assert body["phone"] == CALLER
     assert body["code"].startswith("WA-60173948123-")
     assert body["address_line1"] == "Unit 140, Reed"
 
@@ -1405,7 +1521,7 @@ def test_an_individual_is_opened_as_b2c_so_their_invoice_passes_lhdn():
     individual, and saying so keeps their e-Invoice clean."""
     with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
         with patch.object(erp_client.ErpClient, "post", return_value=WALK_IN_ROW) as post:
-            erp.erp_create_customer("Kelvin Pang", "60173948123")
+            erp.erp_create_customer("Kelvin Pang")
 
     body = post.call_args.kwargs["json"]
     assert body["customer_type"] == "B2C"
@@ -1417,7 +1533,7 @@ def test_a_company_is_opened_as_b2b_with_the_person_as_the_contact():
     with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
         with patch.object(erp_client.ErpClient, "post", return_value=WALK_IN_ROW) as post:
             erp.erp_create_customer(
-                "Kelvin Pang", "60173948123", company="Acuven Technology", tin="C1234567890"
+                "Kelvin Pang", company="Acuven Technology", tin="C1234567890"
             )
 
     body = post.call_args.kwargs["json"]
@@ -1432,16 +1548,21 @@ def test_somebody_who_already_has_an_account_is_not_given_a_second_one():
     leaves a salesperson looking at half a history."""
     with patch.object(erp_client.ErpClient, "find_customers", return_value=[WALK_IN_ROW]):
         with patch.object(erp_client.ErpClient, "post") as post:
-            payload = json.loads(erp.erp_create_customer("Kelvin Pang", "017-3948123"))
+            payload = json.loads(erp.erp_create_customer("Kelvin Pang"))
 
     post.assert_not_called()
     assert payload["already_had_an_account"] is True
     assert payload["customer_id"] == 77
 
 
-def test_no_phone_number_means_asking_rather_than_opening_a_findable_nothing():
-    with patch.object(erp_client.ErpClient, "post") as post:
-        assert erp.erp_create_customer("Kelvin Pang", "") == erp.NEEDS_A_PHONE_NUMBER
+def test_no_confirmed_number_means_no_account_rather_than_one_nobody_can_find():
+    """An account is found again by its phone column, so one opened under a
+    number the customer merely said would either be unreachable or somebody
+    else's -- and either way the order that follows could not be confirmed as
+    theirs. There is nothing to ask for here: a typed number proves nothing."""
+    with messaging_from(None):
+        with patch.object(erp_client.ErpClient, "post") as post:
+            assert erp.erp_create_customer("Kelvin Pang") == erp.CANNOT_CONFIRM_IDENTITY
 
     post.assert_not_called()
 
@@ -1451,11 +1572,11 @@ def test_a_refused_write_and_an_unanswered_one_are_told_apart():
     tries again, and a second attempt opens a duplicate account."""
     with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
         with patch.object(erp_client.ErpClient, "post", side_effect=ApiClientError("refused")):
-            assert erp.erp_create_customer("K", "60173948123") == erp.ACCOUNT_FAILED
+            assert erp.erp_create_customer("K") == erp.ACCOUNT_FAILED
 
         unanswered = ApiClientError("timed out", may_have_landed=True)
         with patch.object(erp_client.ErpClient, "post", side_effect=unanswered):
-            assert erp.erp_create_customer("K", "60173948123") == erp.ACCOUNT_UNKNOWN
+            assert erp.erp_create_customer("K") == erp.ACCOUNT_UNKNOWN
 
 
 def test_a_cleaned_up_number_can_open_an_account_again():
@@ -1478,7 +1599,7 @@ def test_one_customer_still_cannot_hold_two_accounts():
     string was ever issued."""
     with patch.object(erp_client.ErpClient, "find_customers", return_value=[WALK_IN_ROW]):
         with patch.object(erp_client.ErpClient, "post") as post:
-            erp.erp_create_customer("Kelvin Pang", "60173948123")
+            erp.erp_create_customer("Kelvin Pang")
 
     post.assert_not_called()
 
@@ -1954,3 +2075,131 @@ def test_a_total_that_is_not_a_number_does_not_take_the_push_down():
     thread half a minute after the order is not."""
     assert erp._money("MYR", None) == ""
     assert erp._money("MYR", "not money") == ""
+
+
+# -- whose account this conversation may touch (task 29.2) ---------------------
+#
+# Before this, every one of these tools took an account id the model had filled
+# in, and the only thing between "check 012-345 6789's orders" and a stranger's
+# purchase history being read out in the chat was a line in the prompt asking the
+# model not to. The id still travels -- the model needs one to chain the tools --
+# but it is now checked against the number the channel established, which is the
+# one thing in a turn that nobody in the chat can choose.
+
+# Each tool with the arguments it would be called with, and what it must not have
+# done by the time it refuses.
+STRANGERS_CALLS = [
+    ("erp_list_orders", lambda: erp.erp_list_orders(A_STRANGERS_ACCOUNT)),
+    (
+        "erp_find_order_by_sku",
+        lambda: erp.erp_find_order_by_sku(A_STRANGERS_ACCOUNT, "SKU-00012"),
+    ),
+    (
+        "erp_create_sales_order",
+        lambda: erp.erp_create_sales_order(A_STRANGERS_ACCOUNT, [{"sku_id": 12, "quantity": 1}]),
+    ),
+    (
+        "erp_generate_einvoice",
+        lambda: erp.erp_generate_einvoice("SO-2026-0042", A_STRANGERS_ACCOUNT),
+    ),
+    (
+        "erp_create_credit_note",
+        lambda: erp.erp_create_credit_note("SO-2026-0042", A_STRANGERS_ACCOUNT, "SKU-00012"),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "call"), STRANGERS_CALLS, ids=[name for name, _ in STRANGERS_CALLS]
+)
+def test_an_account_that_is_not_the_callers_is_read_and_written_by_nothing(
+    _credentials, name, call
+):
+    """Somebody else's customer_id reaches the ERP for nothing at all.
+
+    The repro this was written from: a customer says "check the orders for
+    012-345 6789", the model looks the number up, gets an id, and every tool
+    below then works on that account -- reading its order history out loud,
+    billing it, refunding it. Nothing in the code disagreed.
+    """
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)) as post:
+        with patch.object(api_client.httpx, "get", return_value=_response({"items": []})) as get:
+            assert call() == erp.NOT_THEIR_ACCOUNT
+
+    # Not one call about that account, in either direction -- not even a read.
+    assert get.call_args_list == []
+    assert post.call_args_list == []
+
+
+@pytest.mark.parametrize(
+    ("name", "call"), STRANGERS_CALLS, ids=[name for name, _ in STRANGERS_CALLS]
+)
+def test_a_hidden_number_cannot_act_on_an_account_it_names(_credentials, name, call):
+    """The customer whose number Meta hides can name an id as easily as anyone.
+
+    Their conversation carries nothing to check it against, so the honest answer
+    is that we cannot tell who they are -- not a lookup on trust.
+    """
+    with messaging_from(None):
+        with patch.object(api_client.httpx, "post") as post:
+            with patch.object(api_client.httpx, "get") as get:
+                assert call() == erp.CANNOT_CONFIRM_IDENTITY
+
+    assert get.call_args_list == []
+    assert post.call_args_list == []
+
+
+def test_an_account_the_caller_does_hold_is_worked_on_as_before(_credentials):
+    """The guard has to be invisible to the customer it is protecting."""
+    with patch.object(api_client.httpx, "post", return_value=_response(_LOGIN)):
+        with patch.object(
+            api_client.httpx, "get", return_value=_response({"items": [ORDER_LIST_ROW]})
+        ):
+            payload = json.loads(erp.erp_list_orders(THEIR_ACCOUNTS[0]["id"]))
+
+    assert payload[0]["order_no"] == "SO-2026-00001"
+
+
+def test_an_account_sharing_eight_digits_with_the_caller_is_still_a_strangers(_credentials):
+    """The guard resolves the caller's accounts through the same page scan the
+    lookup uses, and that scan matches on the last eight digits. Held to nothing
+    tighter, an account belonging to a Shah Alam landline would pass it."""
+    collision = {**CUSTOMER_ROW, "id": A_STRANGERS_ACCOUNT, "phone": "03-7394 8123"}
+
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[collision]):
+        with patch.object(erp_client.ErpClient, "get") as get:
+            assert erp.erp_list_orders(A_STRANGERS_ACCOUNT) == erp.NOT_THEIR_ACCOUNT
+
+    get.assert_not_called()
+
+
+def test_an_erp_that_cannot_say_whose_account_it_is_refuses_rather_than_assumes(
+    _credentials,
+):
+    """The lookup the guard depends on can fail like anything else. "I could not
+    check" is the only honest answer -- carrying on would be the guard quietly
+    not running."""
+    with patch.object(
+        erp_client.ErpClient, "find_customers", side_effect=ApiClientError("boom")
+    ):
+        with patch.object(erp_client.ErpClient, "post") as post:
+            assert erp.erp_list_orders(3) == erp.UNAVAILABLE
+            assert erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 1}]) == (
+                erp.UNAVAILABLE
+            )
+
+    post.assert_not_called()
+
+
+def test_the_account_opened_for_a_walk_in_is_theirs_to_order_from(_credentials):
+    """The two halves have to agree: an account opened under the channel's number
+    is one the guard then recognises as the caller's. If they disagreed, a
+    walk-in could open an account and not be allowed to buy through it."""
+    walk_in = {**WALK_IN_ROW, "phone": "+60 17-394 8123"}
+
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[]):
+        with patch.object(erp_client.ErpClient, "post", return_value=walk_in):
+            opened = json.loads(erp.erp_create_customer("Kelvin Pang"))
+
+    with patch.object(erp_client.ErpClient, "find_customers", return_value=[walk_in]):
+        assert erp._refuse_unless_theirs(erp_client.client(), opened["customer_id"]) == ""

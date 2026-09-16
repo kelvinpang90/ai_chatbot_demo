@@ -65,14 +65,15 @@ def test_chinese_means_the_simplified_kind():
 def test_the_real_number_is_handed_over_rather_than_asked_for():
     """Task 32's point: WhatsApp already told us the number.
 
-    The model has phone-keyed lookups in `crm_lookup_customer` and
-    `erp_find_customer`; a prompt that does not say the number is verified leaves
-    it asking a customer to type out the number it is reading them from.
+    Since task 29.2 the lookups read it themselves rather than being handed it,
+    so what the prompt has to prevent is no longer only the pointless question --
+    it is the model trying to look an account up under some other number.
     """
     volatile = llm.build_system_blocks(get_bot("retail"), _customer())[1]
 
     assert PHONE in volatile["text"]
-    assert "asking them to type it out" in volatile["text"]
+    assert "Never ask this customer to type their number out" in volatile["text"]
+    assert "never try to look up an account under a different one" in volatile["text"]
 
 
 def test_a_field_we_have_never_asked_about_is_left_out_rather_than_sent_as_null():
@@ -535,24 +536,30 @@ def test_a_username_travels_with_the_record():
     assert "kelvin.p" in volatile["text"]
 
 
-def test_a_customer_with_no_number_is_asked_for_one_rather_than_stalled():
-    """Everything the back offices can do is keyed on a phone number, so a
-    customer who has hidden theirs has to be asked -- early, and without the bot
-    holding the conversation hostage until they answer."""
+def test_a_customer_with_no_number_is_helped_rather_than_stalled_or_believed():
+    """What a hidden number costs, and what it must not cost (task 29.2).
+
+    The old prompt told the model to ask for a number and then use it "exactly as
+    if the channel had supplied it", which is precisely the move that let anyone
+    read out anyone's number. The tools refuse that now, so the prompt has to
+    stop asking for something it cannot use -- without turning into a bot that
+    helps nobody it cannot identify.
+    """
     hidden = UserProfile(key_id="US.1349120865", user_id="US.1349120865", username="kelvin.p")
 
     text = llm.build_system_blocks(get_bot("retail"), hidden)[1]["text"]
 
-    assert "Ask them for their phone number early" in text
-    # Asking is not the same as refusing to help until they answer.
-    assert "carry on helping while you wait" in text
-    assert "do not refuse to answer questions until they give it" in text
+    assert "as if the channel had supplied it" not in text
+    # Still their customer: everything that needs no account still works.
+    assert "help with everything that needs no account" in text
+    # And the way out for what does: a number to call back on, and a colleague.
+    assert "a colleague can call them back" in text
 
 
 def test_a_customer_who_gave_a_number_is_not_asked_for_it_again():
     text = llm.build_system_blocks(get_bot("retail"), _customer())[1]["text"]
 
-    assert "Ask them for their phone number early" not in text
+    assert "ask for a number a colleague can call them back on" not in text
     assert llm.PHONE_ON_FILE in text
 
 

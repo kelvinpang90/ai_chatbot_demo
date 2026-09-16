@@ -160,6 +160,23 @@ def customer() -> "UserProfile | None":
     return None if current is None else current.customer
 
 
+def caller_phone() -> str:
+    """The number the channel itself established for this conversation, or "".
+
+    The one identifier in a turn that the model cannot have made up: WhatsApp
+    puts it on the message, and the web chat keys the record by it. Everything
+    else a tool is handed -- a name, a company, a number read out in the chat --
+    is the customer's word for who they are, which is exactly what the back
+    office tools must not act on.
+
+    Empty for a customer whose number Meta hides behind a username. That is a
+    real state, not a failure, and the caller decides what to do about it: for
+    the ERP and the CRM it means the account tools have nothing to bind to.
+    """
+    current = customer()
+    return (current.phone if current is not None else "") or ""
+
+
 def records() -> dict | None:
     """This customer's slot for the answering bot, or None outside a turn.
 
