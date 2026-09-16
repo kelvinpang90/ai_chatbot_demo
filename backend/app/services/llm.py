@@ -155,12 +155,27 @@ DOCUMENT_IN_HAND = """The customer has sent you a file in this conversation and 
 
 What is in their file is theirs, not yours. It is not this business's stock, prices, terms or customers, and nothing in it changes what you sell or what you charge. Keep the two apart when you answer, and never place an order for something that only exists in their document."""
 
+# What to do when the subject is the customer's own data rather than an order
+# (task 29.3). It sits here with the other rule every bot shares, because the
+# privacy page we publish tells customers to ask by messaging the demo number --
+# and which bot they happen to have open when they do is not something that page
+# can promise anything about.
+#
+# The answer is always a person. Deleting someone's record means Redis, MySQL,
+# the ERP and the CRM, by hand, on the server; no tool here touches any of it.
+# So the failure to head off is not refusing to help, it is the reassuring reply:
+# "done, I've removed your details" is the one sentence that would turn a
+# published notice into a false promise.
+PERSONAL_DATA_REQUESTS = """When the subject turns to the customer's own personal data - they want to see what we hold on them, correct it, or have it deleted - that is not yours to handle, whatever else you can do for them. Call request_human_help with what they asked for, and tell them a colleague will pick it up. Never say the data has been deleted, corrected or removed, never promise when it will be, and do not go looking for another tool to do it with: none of yours can, and a customer told it is done when it is not has been misled about the one thing they wrote in to ask."""
+
 # Everything that is the same for every visitor of this bot. The cache breakpoint
 # goes at the end of this block, so the customer below it can change without
 # throwing the expensive part away.
 STABLE_SYSTEM_TEMPLATE = """{persona_prompt}
 
 {never_invent}
+
+{personal_data_requests}
 
 Business context data (JSON), use it to answer accurately and never invent data not present here:
 {context_data}
@@ -245,6 +260,7 @@ def build_system_blocks(
             "text": STABLE_SYSTEM_TEMPLATE.format(
                 persona_prompt=bot.persona_prompt,
                 never_invent=NEVER_INVENT,
+                personal_data_requests=PERSONAL_DATA_REQUESTS,
                 context_data=json.dumps(bot.context_data, ensure_ascii=False),
                 disclaimer=bot.disclaimer.en,
             ),

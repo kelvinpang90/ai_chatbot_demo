@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import anthropic
 import httpx
+import pytest
 from anthropic import beta_tool
 from anthropic.types.beta import (
     BetaCitationPageLocation,
@@ -13,7 +14,7 @@ from anthropic.types.beta import (
     BetaUsage,
 )
 
-from app.bots.registry import get_bot
+from app.bots.registry import get_bot, list_bots
 from app.console import events
 from app.services import llm, whatsapp
 from app.tools import registry as tool_registry
@@ -1051,3 +1052,31 @@ def test_a_document_turn_carries_the_note_as_well_as_the_file():
 
     system = mock_create.call_args.kwargs["system"]
     assert llm.DOCUMENT_IN_HAND in system[1]["text"]
+
+
+@pytest.mark.parametrize("bot_id", [bot.id for bot in list_bots()])
+def test_a_request_to_see_or_delete_their_data_goes_to_a_person(bot_id):
+    """Task 29.3: the public privacy page tells customers to ask here.
+
+    The page at /privacy has no self-serve button behind it - it says to message
+    the demo number and that a colleague will follow it up - so the instruction
+    has to hold whichever bot the customer happens to be talking to, and it lives
+    in the cached prefix every bot shares for exactly that reason. Nothing these
+    bots can call deletes anything, which makes "done, I've removed it" the one
+    answer that would turn the published page into a false promise.
+    """
+    bot = get_bot(bot_id)
+
+    stable = llm.build_system_blocks(bot, _customer())[0]
+
+    assert llm.PERSONAL_DATA_REQUESTS in stable["text"]
+    # The way out it names has to be a tool this bot actually has.
+    assert "request_human_help" in bot.tools
+
+
+def test_the_bot_is_not_left_room_to_say_the_data_is_gone():
+    """The failure mode worth naming: a reassuring bot is a lying bot here."""
+    text = llm.PERSONAL_DATA_REQUESTS
+
+    assert "Never say the data has been deleted" in text
+    assert "never promise when" in text

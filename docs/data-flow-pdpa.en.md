@@ -53,7 +53,7 @@ None of these providers' servers are part of our system, and they may be located
 This system is currently a **demo environment**. The points below fall short of production standards and would need to be addressed before a live deployment:
 
 1. **The full conversation log is not deleted automatically**; it can only be deleted by us manually
-2. **Customers cannot delete their data themselves.** Requests to access, correct or delete personal data are handled manually by us
+2. **Customers cannot delete their data themselves.** Requests to access, correct or delete personal data are handled manually by us. The public notice is at [chatbot.acuventech.com/privacy](https://chatbot.acuventech.com/privacy) - the page the Meta app's Privacy Policy and Data deletion URLs point at - and it tells customers to ask over WhatsApp; the bot hands every such request to a person rather than claiming to have deleted anything (since 2026-09-16)
 3. **Lookups and orders are bound to the number the channel confirms.** The AI reads the ERP/CRM, places orders and issues invoices only for the WhatsApp number the message came from; another person's number, company name or customer id given in the chat finds nothing and orders nothing, and the AI hands the conversation to a colleague instead (since 2026-09-16). What this still assumes: **whoever is using that WhatsApp number is treated as that customer**, with no second check; and a customer who hides their number in WhatsApp cannot be identified at all, so we can only take their details and pass them to a colleague
 4. The ERP and CRM in the demo environment are shared demo systems whose data is cleared from time to time. **Please do not enter real customer data**
 

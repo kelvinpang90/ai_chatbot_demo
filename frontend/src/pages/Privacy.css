@@ -1,0 +1,162 @@
+/* The public privacy notice (task 29.3).
+ *
+ * A document, not a screen: one column, generous line height, nothing to click
+ * except the WhatsApp link and the language toggle. It is the only page here a
+ * stranger opens cold - from the Meta app settings, or from a link we send - so
+ * it inherits index.css's tokens and follows the system's light or dark theme
+ * rather than carrying a palette of its own.
+ */
+
+.privacy {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 16px 56px;
+  line-height: 165%;
+}
+
+.privacy-head {
+  margin-bottom: 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.privacy-langs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 16px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  width: fit-content;
+}
+
+.privacy-langs button {
+  border: none;
+  border-radius: 999px;
+  padding: 4px 14px;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.privacy-langs button.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.privacy-sub {
+  color: var(--text-h);
+  margin-bottom: 4px;
+}
+
+.privacy-dim {
+  font-size: 14px;
+}
+
+/* The one thing most people open this page to find. Above the notice on
+   purpose: a deletion request should not depend on reading to the bottom. */
+.privacy-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 28px;
+  padding: 16px;
+  border: 1px solid var(--accent-border);
+  border-radius: 10px;
+  background: var(--accent-bg);
+}
+
+.privacy-ask p {
+  flex: 1 1 260px;
+  color: var(--text-h);
+}
+
+.privacy-wa {
+  flex: 0 0 auto;
+  padding: 9px 18px;
+  border-radius: 8px;
+  background: #008069;
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.privacy-section {
+  margin-bottom: 28px;
+}
+
+.privacy-section h2 {
+  margin-bottom: 10px;
+}
+
+.privacy-section p + p {
+  margin-top: 10px;
+}
+
+.privacy-section dl {
+  margin: 14px 0 0;
+  padding: 0;
+}
+
+.privacy-section dl > div + div {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.privacy-section dt {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.privacy-section dd {
+  margin: 2px 0 0;
+}
+
+.privacy-note {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--border);
+  background: var(--card-bg);
+  font-size: 15px;
+}
+
+.privacy-sources {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.privacy-sources li {
+  /* URLs in this list are long and unbreakable; wrapping beats a page that
+     scrolls sideways on a phone. */
+  overflow-wrap: anywhere;
+}
+
+.privacy a {
+  color: var(--accent);
+}
+
+.privacy-foot {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+
+@media (max-width: 480px) {
+  .privacy {
+    padding-top: 24px;
+  }
+
+  .privacy-wa {
+    /* Nothing else on the row at this width, so it may as well be a target the
+       thumb cannot miss. */
+    flex: 1 1 100%;
+    text-align: center;
+  }
+}

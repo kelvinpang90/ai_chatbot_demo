@@ -5,11 +5,12 @@ import App from './App.tsx'
 import Console from './pages/Console.tsx'
 import FoodAdmin from './pages/FoodAdmin.tsx'
 import VerticalAdmin from './pages/VerticalAdmin.tsx'
+import Privacy from './pages/Privacy.tsx'
 
-// Three screens, one bundle, and still no router: two of them are screens in the
-// room rather than the customer's flow -- the console, and the property agency's
-// own back office. One path check remains cheaper than a dependency that would
-// exist to express exactly this.
+// Four screens, one bundle, and still no router: three of them are screens in
+// the room rather than the customer's flow -- the console, the property agency's
+// own back office, and the notice we publish. One path check remains cheaper
+// than a dependency that would exist to express exactly this.
 const path = window.location.pathname.replace(/\/$/, '')
 
 const SCREENS: Record<string, React.ReactElement> = {
@@ -19,6 +20,10 @@ const SCREENS: Record<string, React.ReactElement> = {
   '/history': <Console />,
   '/vertical-admin': <VerticalAdmin />,
   '/food-admin': <FoodAdmin />,
+  // The public one (task 29.3). It is in this table rather than inside `App`
+  // precisely because `App` asks for the console token first, and the Meta
+  // reviewer who follows the app's privacy link has no token to type.
+  '/privacy': <Privacy />,
 }
 
 createRoot(document.getElementById('root')!).render(
