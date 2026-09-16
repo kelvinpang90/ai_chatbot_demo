@@ -1544,7 +1544,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   文件：`frontend/src/pages/Privacy.tsx`（新）、`frontend/src/main.tsx`（加 `/privacy` 路由，**不要 token**）、可能 `frontend/nginx.conf` / `vite.config.ts`（确认 SPA 路径能直达）
   目标：Meta App（`Acuven Connect Chatbot Demo`，App ID `3493174670851073`，未发布）的 Privacy Policy URL 和 **Data deletion instructions URL** 要填一个真实页面。数据删除「回调 URL」是给 Facebook 登录用户（app-scoped ID）的，WhatsApp 客人触发不了，所以填说明页
   内容：中英文，来自 `docs/data-flow-pdpa*.md` 的对外部分 + 「如何申请查阅 / 更正 / 删除」：给 demo 号 **+60 17-394 8123** 发消息说明要删除，由我们人工处理。**不写处理时限**（没有流程保证）；不做删除脚本（用户拍板），真有申请时人工上服务器删 Redis / MySQL，CRM / ERP 走各自删除
-  ⚠️ 不能保证「发消息」一定触发转人工（是否调 `request_human_help` 由模型判断）——验收要真机或本地真模型发一次「删除我的资料」看是否转人工；不稳就在页面上写「请直接说要删除资料，我们会有人工跟进」并在提示词里补一句
+  ⚠️ 不能保证「发消息」一定触发转人工（是否调 `request_human_help` 由模型判断）——验收要真机或本地真模型发一次「删除我的资料」看是否转人工。
+  **2026-09-16 用户拍板：不等测试结果，直接补提示词**（「客人要求查阅 / 更正 / 删除自己的资料时，一律 `request_human_help`，不要自己答应删」），页面上也写「请直接说要删除资料，我们会有人工跟进」。补完仍要用真模型跑一次确认真的转了人工
+  **2026-09-16 用户拍板：限制第 3 条在公开页上写成正面表述**（「我们只按您发消息的号码查资料」），不要照抄内部文档那份「演示版限制」清单的措辞；①②（完整记录不自动删、没有自助删除入口）仍要如实写
   用户侧：部署后在 Meta 后台 App Settings → Basic 填两个 URL（Claude 做不了，也没记录这个 App 现在填了什么）
   验收：无痕窗口直接打开 `chatbot.acuventech.com/privacy` 能看到页面（不弹 token 框）；中英文切换正常；手机宽度正常
 
