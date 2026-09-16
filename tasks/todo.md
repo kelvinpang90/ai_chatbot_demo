@@ -1497,7 +1497,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **仍开着 / 待清理**：
   - ✅ ~~WhatsApp 隐藏号码（BSUID）的客人报一个手机号，bot 按它查 ERP / CRM，号码不核验~~ → ~~09-16 盘点后范围更大：任何 WhatsApp 用户报别人号码 / 名字都能查~~ → **任务 29.2 已修（2026-09-16），文档限制第 3 条已改成「只认渠道确认的号码」**
-  - Meta 数据删除链接 → 拆成**任务 29.3**（公开隐私页）。注：上面「占位符」那条记录是**旧 App `Acuven Messaging`** 的，现用 App 填了什么没记录
+  - ✅ ~~Meta 数据删除链接 → 拆成**任务 29.3**（公开隐私页）~~ → **页面已上线（2026-09-16）**：`https://chatbot.acuventech.com/privacy`，删除说明锚点 `…/privacy#data-deletion`。**仍等用户去 Meta 后台 App Settings → Basic 填这两个 URL**（Claude 做不了，也没记录现用 App 现在填的是什么）。注：上面「占位符」那条记录是**旧 App `Acuven Messaging`** 的
   - VPS `.env` 里的 `DEMO_ACCESS_PASSWORD` 是死变量
 
   **部署后线上验收**：不带 token 的 `identify` / `message` 均 401、`/api/bots` 200；线上 JS 包与本地构建同 hash（`index-CbLo7ABO.js`）。**全新 Chrome 配置目录（无 localStorage）无头打开首页 → 显示 token 输入框**，截图看过。用户在自己浏览器里「直接输手机号就进去了」——该浏览器开过导演台，localStorage 里已有 `console_token`，`chatRequest` 自动带上，这是预期行为，也顺带证明了带 token 的正常路径能用
@@ -1540,7 +1540,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 剧本 1 那次跑里，autoplay 号码**已经有账户**（上一轮留下的），所以 `erp_create_customer` 的新路径（用发件号码开户）线上没走到，只有单测覆盖
   - 守卫每次调用多一次 ERP 客户翻页（demo 库一页），没测过延迟影响；导演台上会多出这几次请求的耗时
 
-- [ ] **任务 29.3：隐私与数据删除公开页**（2026-09-16 新增，用户已拍板：只做公开页面、申请渠道走 WhatsApp；**计划细节待确认**）
+- [x] **任务 29.3：隐私与数据删除公开页**——**2026-09-16 完成**（2026-09-16 新增，用户已拍板：只做公开页面、申请渠道走 WhatsApp）
   文件：`frontend/src/pages/Privacy.tsx`（新）、`frontend/src/main.tsx`（加 `/privacy` 路由，**不要 token**）、可能 `frontend/nginx.conf` / `vite.config.ts`（确认 SPA 路径能直达）
   目标：Meta App（`Acuven Connect Chatbot Demo`，App ID `3493174670851073`，未发布）的 Privacy Policy URL 和 **Data deletion instructions URL** 要填一个真实页面。数据删除「回调 URL」是给 Facebook 登录用户（app-scoped ID）的，WhatsApp 客人触发不了，所以填说明页
   内容：中英文，来自 `docs/data-flow-pdpa*.md` 的对外部分 + 「如何申请查阅 / 更正 / 删除」：给 demo 号 **+60 17-394 8123** 发消息说明要删除，由我们人工处理。**不写处理时限**（没有流程保证）；不做删除脚本（用户拍板），真有申请时人工上服务器删 Redis / MySQL，CRM / ERP 走各自删除
@@ -1549,6 +1549,33 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   **2026-09-16 用户拍板：限制第 3 条在公开页上写成正面表述**（「我们只按您发消息的号码查资料」），不要照抄内部文档那份「演示版限制」清单的措辞；①②（完整记录不自动删、没有自助删除入口）仍要如实写
   用户侧：部署后在 Meta 后台 App Settings → Basic 填两个 URL（Claude 做不了，也没记录这个 App 现在填了什么）
   验收：无痕窗口直接打开 `chatbot.acuventech.com/privacy` 能看到页面（不弹 token 框）；中英文切换正常；手机宽度正常
+
+  **2026-09-16 实施记录**
+
+  **一句话**：`/privacy` 是这个前端里唯一不要 token 的页面，页面把「删资料」这件事交给人，提示词保证 bot 不会自己答应删。
+
+  **怎么绕开 token 门的**：页面挂在 `main.tsx` 的路径表里（和 `/console`、两个后台同一张表），不是 `App` 里的一个视图——`App` 从 29.1 起先问 token，Meta 的审核员没有 token 可输。所以新增 `frontend/src/pages/Privacy.tsx` + `Privacy.css`，`main.tsx` 加一行 `'/privacy': <Privacy />`。nginx / vite 都不用改：`/privacy` 走 `try_files … /index.html` 的兜底，本来就直达 SPA（已在容器里实测 200，不是推断）
+
+  **页面内容**（来自 `docs/data-flow-pdpa*.md` 的对外部分，改成对客人说话）：一句话 → 我们收到什么 → 资料去了哪里（含三家服务商各自的政策）→ 存多久 → 我们怎么确认是您 → 谁能看到 → **查阅/更正/删除**（`id="data-deletion"`，Meta 的 Data deletion URL 可以直接指到 `…/privacy#data-deletion`）→ 目前的限制 → 服务商政策出处
+  - **中英文两种，不做马来文**：源文档只有中英两份，一份没人校过的马来文放在公开页上比没有更糟
+  - 限制第 3 条按用户拍板写成正面表述（「我们只按您发消息的号码查资料」），①②（完整记录不自动删、没有自助删除入口）如实写，另加一条「演示环境勿输入真实客户资料」
+  - **不写处理时限**，页面明说「没有自助删除按钮，也不承诺时限」；写清楚删除覆盖什么（我们服务器 + 演示 ERP/CRM）、不覆盖什么（Meta / Anthropic / OpenAI 各自的副本，按各家政策自行过期）
+  - 顺手设了 `document.title`（原来整个站的 title 是脚手架留下的 `frontend`，这条链接是要发给 Meta 和客人的）
+
+  **提示词那一半**（`backend/app/services/llm.py`）：新增 `PERSONAL_DATA_REQUESTS`，和 `NEVER_INVENT` 一起放在每个 bot 共享的缓存前缀里——公开页让客人「发消息就行」，但客人开的是哪个 bot 那页管不着。内容：客人要查阅/更正/删除自己的资料 → 一律 `request_human_help`，**不许说已经删了/改了，不许承诺时间，也不许去找别的工具代劳**（没有工具能删：删一个人要动 Redis、MySQL、ERP、CRM，是人上服务器干的活）
+
+  **验证**：
+  - 红→绿：新测试先红 7 条（6 个 bot 各一条 + 措辞断言），实现后绿。测试还顺带断言每个 bot 的 `tools` 里真的有 `request_human_help`，否则这条指令是空头支票
+  - 后端全套（整个仓库挂进容器，所以路由测试也跑）**965 passed / 7 skipped**（7 = 线上评测）；前端 `npm run build`（tsc + vite，在 `frontend/Dockerfile` 的 node:22 里）通过，oxlint 0 警告
+  - **真模型跑了 4 句**（真 dispatch 路径、真工具）：retail「我要删除我的资料」、retail「What personal data do you hold about me?」、food「Please delete everything you have about me.」、realestate「请把我之前留的电话和资料更正一下，或者直接删掉」——**4/4 都转了人工**（`profile.handover_since` 被置上），没有一句声称已经删了
+  - **线上验收（部署后）**：线上 JS 包 hash 与本地构建一致（`index-zuJTAlXe.js`）；**用全新 Chrome 配置目录（等同无痕）无头打开 `https://chatbot.acuventech.com/privacy`**，DOM 里有完整页面、`id="data-deletion"` 在、`password` 出现 0 次、没有「console token」字样；同一手法打首页 `/` 仍然是 token 门（`type="password"` + 「网页聊天仅供演示人员使用」）——两件事同时成立才算对
+  - 本地按 390px 宽渲染：无横向滚动，WhatsApp 按钮整行；中英文切换实测正常（标题、`document.title` 都跟着变）
+
+  **没验**：
+  - **真机没发过**「删除我的资料」——上面 4 句走的是本地真模型 + 真 dispatch，不是 WhatsApp 真机。真机欠账照常押到任务 30 前的清单
+  - 页面文案里「服务器在马来西亚」「各服务商政策」沿用 29.1 的依据（GeoIP + 09-15 的官方页面），本次没有重新核
+  - 深色模式只在本机浅色系统下看过浅色一版；页面用的是 `index.css` 的 token，深色应该跟着走，但没实际切到深色看过
+  - 页面没有任何地方链到它（首页、聊天里都没有入口），只能靠直接 URL 或 Meta 后台的链接进——这是本任务的范围，没扩
 
 - [ ] **任务 30：banking 下架 + 全量回归 + 部署**
   文件：删除 `backend/app/bots/data/banking.json`、`.github/workflows/deploy.yml`（如需）
