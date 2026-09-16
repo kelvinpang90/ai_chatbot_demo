@@ -214,7 +214,12 @@ def test_bot_without_tools_takes_the_plain_single_turn_path():
     kwargs = mock_create.call_args.kwargs
     assert kwargs["model"] == llm.model_for(bot)
     assert kwargs["max_tokens"] == llm.MAX_REPLY_TOKENS
-    assert kwargs["system"] == llm.build_system_blocks(bot, customer)
+    # Not equal any more, and correctly so: taking retail's tools away is the
+    # control arm, which appends TOOLS_WITHHELD to the volatile block. The
+    # cached prefix is still untouched, which is what this test is about.
+    expected = llm.build_system_blocks(bot, customer)
+    assert kwargs["system"][0] == expected[0]
+    assert kwargs["system"][-1]["text"].startswith(expected[-1]["text"])
     assert "tools" not in kwargs
 
 
@@ -1080,3 +1085,58 @@ def test_the_bot_is_not_left_room_to_say_the_data_is_gone():
 
     assert "Never say the data has been deleted" in text
     assert "never promise when" in text
+
+
+# -- the control arm's prompt (task 12.2, fixed 2026-09-16) --------------------
+#
+# Found on a real phone, 2026-09-16, running section six of the checklist: with
+# the switch thrown, retail answered "Sony 那个 earbuds 多少钱" with the literal
+# text `[Tool: erp_find_customer]`. Nothing in this repository writes that
+# string -- the model wrote it, because the switch takes the tools away and
+# leaves the prompt that orders it to call them. It was told every fact must
+# come from a tool, given no tools, and did the only thing left: it acted the
+# call out in words, and the customer saw an internal tool name.
+#
+# The control arm is meant to show a bot that answers confidently off the top of
+# its head. A leaked tool name is not that; it is the demo showing its wiring.
+
+
+def test_the_switched_off_bot_is_told_it_has_no_tools():
+    """The repro, at the layer where it is decided: with the switch thrown, the
+    prompt has to say so, or the persona's tool instructions are the only thing
+    the model has left to follow."""
+    bot = get_bot("retail")
+    assert bot.tools  # the switch has something to take away
+    response = _assistant_message([BetaTextBlock(type="text", text="RM 320 左右。")], "end_turn")
+
+    tool_registry.set_tools_enabled(False)
+    try:
+        with patch.object(llm._client.messages, "create", return_value=response) as mock_create:
+            llm.get_reply(bot, _customer(), history=[])
+    finally:
+        tool_registry.set_tools_enabled(True)
+
+    system = mock_create.call_args.kwargs["system"]
+    assert llm.TOOLS_WITHHELD in system[-1]["text"]
+
+
+def test_the_switched_off_prompt_forbids_acting_a_call_out_in_words():
+    """The specific shape that reached a customer's phone."""
+    assert "[Tool:" in llm.TOOLS_WITHHELD
+    assert "never" in llm.TOOLS_WITHHELD.lower()
+
+
+def test_a_bot_with_its_tools_is_not_told_it_has_none():
+    """The other half: this paragraph must not ride along on an ordinary turn,
+    where it would talk the model out of the tools it does have."""
+    bot = get_bot("retail")
+    captured = {}
+
+    def _capture(bot_, model, system, messages, tools):
+        captured["system"] = system
+        return _assistant_message([BetaTextBlock(type="text", text="ok")], "end_turn")
+
+    with patch.object(llm, "_reply_with_tools", side_effect=_capture):
+        llm.get_reply(bot, _customer(), history=[])
+
+    assert llm.TOOLS_WITHHELD not in captured["system"][-1]["text"]

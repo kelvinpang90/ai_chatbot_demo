@@ -168,6 +168,24 @@ What is in their file is theirs, not yours. It is not this business's stock, pri
 # published notice into a false promise.
 PERSONAL_DATA_REQUESTS = """When the subject turns to the customer's own personal data - they want to see what we hold on them, correct it, or have it deleted - that is not yours to handle, whatever else you can do for them. Call request_human_help with what they asked for, and tell them a colleague will pick it up. Never say the data has been deleted, corrected or removed, never promise when it will be, and do not go looking for another tool to do it with: none of yours can, and a customer told it is done when it is not has been misled about the one thing they wrote in to ask."""
 
+# What the control arm forgot to say (task 12.2's switch, fixed 2026-09-16).
+#
+# Throwing the switch empties `get_tools` and leaves the persona untouched -- and
+# retail's persona is largely a set of orders about which tool to call when. A
+# model told that every price comes from a tool, and handed no tools, acted the
+# call out in words instead: a customer on a real phone got the literal text
+# `[Tool: erp_find_customer]` back.
+#
+# So this says the one thing the switch changes, and no more. It deliberately
+# does NOT tell the model to make an answer up: the control arm is convincing
+# precisely because nobody instructed it to invent, and an instruction to do so
+# would also be a line we would have to be sure never reached a real turn.
+# Answering out of its own head is what a model with no tools does anyway --
+# what it must not do is show the customer the wiring.
+TOOLS_WITHHELD = """For this turn you have no tools at all. The instructions above describe tools you cannot call right now, so follow them only as background about this business, not as steps to carry out.
+
+Never write a tool call out as text. Do not print "[Tool: name]" or any other rendering of a call, do not narrate looking something up, and do not tell the customer you are checking a system. Answer them directly, in your own words, as the assistant they are talking to."""
+
 # Everything that is the same for every visitor of this bot. The cache breakpoint
 # goes at the end of this block, so the customer below it can change without
 # throwing the expensive part away.
@@ -532,6 +550,12 @@ def get_reply(
     system = build_system_blocks(bot, customer, has_document=document is not None)
     messages = _as_messages(history, image, document)
     tools = get_tools(bot.id)
+    # The switch is thrown: this bot has a tool belt in its config and none of it
+    # on this turn. Said in the volatile block, never the cached one -- it is
+    # true of this turn only, and caching it would carry "you have no tools" into
+    # the turn after the switch goes back on.
+    if bot.tools and not tools:
+        system[-1]["text"] += f"\n\n{TOOLS_WITHHELD}"
 
     try:
         if tools:
