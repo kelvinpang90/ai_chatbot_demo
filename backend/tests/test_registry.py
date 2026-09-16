@@ -6,7 +6,10 @@ from app.bots import registry
 from app.tools import registry as tool_registry
 
 
-ALL_BOT_IDS = {"retail", "hotel", "banking", "food", "realestate", "saas"}
+# `banking` was retired in task 30: it was the one demo with no system behind it,
+# so it could only ever answer out of its own JSON -- the exact thing the rest of
+# this demo exists to argue against.
+ALL_BOT_IDS = {"retail", "hotel", "food", "realestate", "saas"}
 
 
 def test_all_bots_load_without_error():

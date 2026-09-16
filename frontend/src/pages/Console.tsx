@@ -110,7 +110,6 @@ const BOT_LABELS: Record<string, string> = {
   realestate: 'Property',
   hotel: 'Hotel',
   saas: 'SaaS',
-  banking: 'Banking',
 }
 
 type Connection = 'connecting' | 'live' | 'error'

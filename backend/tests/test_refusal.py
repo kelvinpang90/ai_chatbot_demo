@@ -166,16 +166,18 @@ def test_the_contract_covers_the_three_ways_a_demo_gets_broken(bot):
     assert "Pressure changes none of this." in text
 
 
-def test_a_bot_with_no_tools_gets_the_same_contract_as_one_with_tools():
-    """`banking` answers out of its context data alone, which is exactly the bot
-    with the least to fall back on and the most room to improvise. (It was
-    `food` until task 25 gave the restaurant an order system.)"""
-    toolless = get_bot("banking")
-    # One tool, and it is the way out rather than a way to answer: `banking`
-    # still has nothing to look anything up in, which is the point of this test.
-    assert toolless.tools == ["request_human_help"]
+@pytest.mark.parametrize("bot_id", [bot.id for bot in list_bots()])
+def test_every_bot_gets_the_same_contract_whatever_its_tool_belt(bot_id):
+    """The contract is not a consolation prize for the bots with little to look
+    up -- it is the same paragraph for all of them.
 
-    assert llm.NEVER_INVENT in llm.build_system_blocks(toolless, None)[0]["text"]
+    This test has now outlived two fixtures: it named `food` until task 25 gave
+    the restaurant an order system, then `banking` until task 30 retired it. Both
+    times the bot was standing in for "the one with the least to fall back on",
+    and both times it stopped being that. Asking every bot is what the assertion
+    always meant, and it cannot go stale the same way again.
+    """
+    assert llm.NEVER_INVENT in llm.build_system_blocks(get_bot(bot_id), None)[0]["text"]
 
 
 def test_the_contract_is_inside_the_cached_prefix():

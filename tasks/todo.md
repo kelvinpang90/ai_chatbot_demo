@@ -1589,11 +1589,32 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 深色模式只在本机浅色系统下看过浅色一版；页面用的是 `index.css` 的 token，深色应该跟着走，但没实际切到深色看过
   - 页面没有任何地方链到它（首页、聊天里都没有入口），只能靠直接 URL 或 Meta 后台的链接进——这是本任务的范围，没扩
 
-- [ ] **任务 30：banking 下架 + 全量回归 + 部署**
+- [x] **任务 30：banking 下架 + 全量回归 + 部署**——**2026-09-16 完成**（真机那半由用户当天跑完，见下）
   文件：删除 `backend/app/bots/data/banking.json`、`.github/workflows/deploy.yml`（如需）
   目标：下架 banking；五个 bot 全部回归一遍；部署到线上
   验收：`chatbot.acuventech.com` 线上完整走通；WhatsApp 真机五个 bot 各问一句
   **2026-09-15 用户拍板：所有还开着的真机测试押到本任务开工前一起跑**，流程就是 [tasks/real-phone-checklist.md](real-phone-checklist.md)（任务 13 / 17 / 21 旧欠账 + 26 剧本 4a + 27 导演台 + 27.1 故障演练 + 各任务零碎「没验」）。任务 26 因此继续挂 `[ ]`，28 / 29 / 29.1 照常往下做、不等测试。
+
+  **2026-09-16 实施记录**
+
+  **一句话**：六个 bot 变五个，`banking` 整个删掉——它是唯一一个背后没有系统的 demo，只能拿自己的 JSON 当事实来源，而这恰恰是这套演示要反驳的东西。
+
+  **删了什么**：`backend/app/bots/data/banking.json`（注册表是 glob 目录，删文件就下架，没有别的开关要拨）、`frontend/src/pages/Console.tsx` 里导演台的那行显示名映射。`.github/workflows/deploy.yml` **不用改**（任务描述里写「如需」，实际它不认识 bot）。
+
+  **顺手根治了一处测试漂移**（这是删 banking 的真实成本，不是顺手优化）：两条测试拿 banking 当「没有查询工具的 bot」夹具，而删掉之后**没有任何 bot 只剩 `request_human_help`**。
+  - `test_refusal.py` 那条改成**按 `list_bots()` 参数化**：`NEVER_INVENT` 在每个 bot 的缓存前缀里。这个替身已经换过一轮（`food` → 任务 25 给了餐厅点单系统 → `banking` → 现在又没了），断言真正想说的本来就是「对所有 bot 一视同仁」，参数化之后不会再以同样方式过期
+  - `test_llm.py` 那条只是要一个走 plain 路径的载体（它自己 patch 了 `get_tools` 返回空），换成 `hotel` 并写明为什么随便哪个都行
+  - `test_registry.py` 的 `ALL_BOT_IDS` 去掉 banking
+
+  **验证**：
+  - 后端全套（整仓挂载）**969 passed / 7 skipped**；前端 `tsc -b` + `vite build` 通过、oxlint **0 warnings 0 errors**
+  - **五个 bot 各跑一句真模型 + 真工具**（真 dispatch 路径，全是查询类问题，**不留脏数据**）：registry 里确实只剩五个；retail 查到 `Sony WF-C710N` RM 328.90 / 334 件（调了 `erp_search_sku` ×2 + `erp_get_inventory`）、hotel 调 `hotel_search_rooms` 列出兰卡威和槟城房型、saas 调 `saas_search_known_issues` 命中已知登录问题、food 和 realestate 从 context data 答（本来就不该为这两句调工具）。**五个都没有 fallback、没有 `[Tool:` 泄漏**
+  - 真机那半（清单全九段）**由用户在 2026-09-16 当天跑完**，其中第六段跑出了一个真 bug，已单独修掉并改写了那段的定位——见上面任务 12.2 的 2026-09-16 记录
+
+  **没验 / 要知道的**：
+  - 真机五个 bot 各问一句这条**是按用户口头「手工验收已完成」记的**，我没有逐段的结果明细，也没看到截图
+  - banking 的 JSON 只是从 master 删掉，git 历史里还在，要恢复 `git show <commit>^:backend/app/bots/data/banking.json` 就有
+  - 任务 13 / 17 / 21 / 26 四个「用户任务」的勾选和逐段结果还没落到本文件里，等用户给明细
   ⚠️ 押后的代价：27.1 已改了线上行为（ERP 真挂时 retail bot 会自动转人工），真机没看过——**这期间若要给客户演，先跑清单第七段（约 6 分钟）**；任务 29 叠在剧本 1 上，而剧本 1 自 09-12 起没上过完整真机，29 出问题时要多分一次「是剧本 1 本来就坏还是 29 改坏的」
 
 ---

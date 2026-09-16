@@ -187,7 +187,10 @@ def test_get_reply_returns_fallback_on_api_error():
     """
     error = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
 
-    plain = get_bot("banking")
+    # Any bot will do: `get_tools` is patched empty, which is what puts this
+    # call on the plain path. It used to name `banking`, the one bot that really
+    # had nothing to look anything up in, until task 30 retired it.
+    plain = get_bot("hotel")
     with patch.object(llm, "get_tools", return_value=[]):
         with patch.object(llm._client.messages, "create", side_effect=error):
             assert llm.get_reply(plain, _customer(), history=[]) == llm.FALLBACK_REPLY
