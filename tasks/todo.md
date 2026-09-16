@@ -1497,7 +1497,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **仍开着 / 待清理**：
   - ✅ ~~WhatsApp 隐藏号码（BSUID）的客人报一个手机号，bot 按它查 ERP / CRM，号码不核验~~ → ~~09-16 盘点后范围更大：任何 WhatsApp 用户报别人号码 / 名字都能查~~ → **任务 29.2 已修（2026-09-16），文档限制第 3 条已改成「只认渠道确认的号码」**
-  - ✅ ~~Meta 数据删除链接 → 拆成**任务 29.3**（公开隐私页）~~ → **页面已上线（2026-09-16）**：`https://chatbot.acuventech.com/privacy`，删除说明锚点 `…/privacy#data-deletion`。**仍等用户去 Meta 后台 App Settings → Basic 填这两个 URL**（Claude 做不了，也没记录现用 App 现在填的是什么）。注：上面「占位符」那条记录是**旧 App `Acuven Messaging`** 的
+  - ✅ ~~Meta 数据删除链接 → 拆成**任务 29.3**（公开隐私页）~~ → **页面已上线（2026-09-16）**：`https://chatbot.acuventech.com/privacy`，删除说明锚点 `…/privacy#data-deletion`。**用户已于 2026-09-16 在 Meta 后台 App Settings → Basic 填好这两个 URL**（App `Acuven Connect Chatbot Demo`，ID `3493174670851073`，后台页 `https://developers.facebook.com/apps/3493174670851073/settings/basic/`）。后台要登录，Claude 进不去，这条是用户口头确认的，没有截图或后台读数佐证。注：上面「占位符」那条记录是**旧 App `Acuven Messaging`** 的
   - VPS `.env` 里的 `DEMO_ACCESS_PASSWORD` 是死变量
 
   **部署后线上验收**：不带 token 的 `identify` / `message` 均 401、`/api/bots` 200；线上 JS 包与本地构建同 hash（`index-CbLo7ABO.js`）。**全新 Chrome 配置目录（无 localStorage）无头打开首页 → 显示 token 输入框**，截图看过。用户在自己浏览器里「直接输手机号就进去了」——该浏览器开过导演台，localStorage 里已有 `console_token`，`chatRequest` 自动带上，这是预期行为，也顺带证明了带 token 的正常路径能用
