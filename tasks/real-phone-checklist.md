@@ -15,8 +15,8 @@
 
 1. 笔记本开四个标签：
    - **导演台** `https://chatbot.acuventech.com/console?token=<CONSOLE_TOKEN>`（**投到大屏**）
-   - **ERP 订单** `https://erp.kelvinpeng.com` → Sales Orders
-   - **CRM 看板** `https://crm.kelvinpeng.com` → Pipeline
+   - **ERP 订单** `https://erp.acuventech.com` → Sales Orders
+   - **CRM 看板** `https://crm.acuventech.com/dashboard` → Pipeline
    - **房产后台** `https://chatbot.acuventech.com/vertical-admin`
 2. 导演台顶栏是 `Live`；**确认两个开关都是常态**：「Turn tools off (control)」（没变红）、「Break next ERP call (drill)」（没变红）
 3. 手机给 **+60 17-394 8123** 发 `menu`，选**零售**
