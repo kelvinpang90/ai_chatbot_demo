@@ -32,7 +32,7 @@ git log --oneline {{BASE}}..{{SHA}}
 bash tasks/review/pytest_docker.sh {{WT}}/backend
 ```
 
-`erp.kelvinpeng.com` / `crm.kelvinpeng.com` 是活的，可以直接调，验证真实行为和代码宣称的是否一致。
+`erp.acuventech.com` / `crm.acuventech.com` 是活的，可以直接调，验证真实行为和代码宣称的是否一致。（旧域名 `*.kelvinpeng.com` 指向同一套容器，也还活着。）
 
 ### 已决事项，不要重开辩论
 

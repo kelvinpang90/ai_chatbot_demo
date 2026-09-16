@@ -29,7 +29,7 @@ docker run --rm -v "E:\projects\ai_chatbot_demo\backend:/app" -w /app python:3.1
 
 必须是 `python -m pytest`,裸 `pytest` 不会把 cwd 加进 `sys.path`,所有测试模块会 `ModuleNotFoundError: No module named 'app'`。
 
-`erp.kelvinpeng.com` / `crm.kelvinpeng.com` 是活的,凭据是 `backend/app/config.py` 里的默认值,可以直接调工具验证真实行为是否和代码宣称的一致。容器里加 `-e PYTHONPATH=/app -e PYTHONIOENCODING=utf-8`。
+`erp.acuventech.com` / `crm.acuventech.com` 是活的,凭据是 `backend/app/config.py` 里的默认值,可以直接调工具验证真实行为是否和代码宣称的一致。（`*.kelvinpeng.com` 那两个旧域名同样活着、指向同一套容器,老记录里出现的是它们,不是另一套系统。）容器里加 `-e PYTHONPATH=/app -e PYTHONIOENCODING=utf-8`。
 
 ### 每条 finding 的格式
 

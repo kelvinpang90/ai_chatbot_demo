@@ -132,7 +132,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ## 批次 01：旗舰戏 —— 零售 × 真 ERP
 
-> 给 B 类客户的主菜。演的时候左边浏览器开着**两块后台**：`erp.kelvinpeng.com` 的订单列表 + `crm.kelvinpeng.com` 的管道看板。
+> 给 B 类客户的主菜。演的时候左边浏览器开着**两块后台**：`erp.acuventech.com` 的订单列表 + `crm.acuventech.com/dashboard` 的管道看板。
 >
 > **剧本 1 —— 旗舰戏（8 步）**：客户用 rojak 话开场——**"Boss 这个 earbuds 还有 stock 吗? 我要 2 个, 可以 COD 吗?"**（一句话里混英文、中文、马来式语法，这才是马来西亚客人真实的说话方式）→ bot 查真实 SKU 和库存 → 回按钮 → **客户中途改主意：「算了，改成 3 个」→ bot 重查库存、重算价钱** → 客户点确认 → bot 真的建单 → **刷新 ERP 后台那张单在那里，同时 CRM 看板上长出一张线索卡** → bot 把 PDF 发票发进 WhatsApp。全程大屏滚着工具调用。
 >

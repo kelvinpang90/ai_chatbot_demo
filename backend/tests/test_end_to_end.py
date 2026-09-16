@@ -24,6 +24,7 @@ import hmac
 import itertools
 import json
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -96,7 +97,11 @@ class FakeCrmOs:
         raise AssertionError(f"unexpected POST {url}")
 
     def paths(self) -> list[str]:
-        return [url.split("kelvinpeng.com")[-1].split(".test")[-1] for url, _ in self.posted]
+        # Split on the URL's own structure rather than on a hostname: this used
+        # to cut at "kelvinpeng.com", which made the assertions below depend on
+        # what `crm_base_url` happens to default to (2026-09-16, when it became
+        # crm.acuventech.com and the paths came back with the host still on).
+        return [urlsplit(url).path for url, _ in self.posted]
 
     def body_for(self, suffix: str) -> dict:
         (body,) = [sent for url, sent in self.posted if url.endswith(suffix)]

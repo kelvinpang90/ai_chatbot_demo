@@ -91,11 +91,11 @@ class Settings(BaseSettings):
     # key, only an email and a password, so those come from the environment and have
     # no default: this repository is public, and a default here is a published
     # password. The base URLs are not secrets and stay.
-    erp_base_url: str = "https://erp.kelvinpeng.com"
+    erp_base_url: str = "https://erp.acuventech.com"
     erp_email: str = ""
     erp_password: str = ""
 
-    crm_base_url: str = "https://crm.kelvinpeng.com"
+    crm_base_url: str = "https://crm.acuventech.com"
     crm_email: str = ""
     crm_password: str = ""
 
