@@ -1678,6 +1678,40 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **没验**：真机；房产看房（「下周六下午3点」）没用真模型单独跑——它走同一块提示词，而且工具本来就会拒收过去的日期
 
+### 酒店和 SaaS 客服各补一个后台（2026-09-17 用户提出，**计划待用户确认**）
+
+**为什么**：用户问「酒店有后台下单记录吗」——没有。酒店和 SaaS 是当初的「轻量档」（本文件开头「行业三档」、任务 11.2）：工具能订房、开工单，但记录只存在**这位客人自己的 Redis 档案**里（`tools/local.py` 的 `_stored` / `_store`），7 天过期，最多 20 条，**没有任何页面能列出所有客人的记录**。演示时这两个行业缺了「刷新后台，单子就在那里」这一步，而零售（真 ERP）、点餐（`/food-admin`）、房产（`/vertical-admin`）都有。
+
+**照抄的现成做法**（任务 25 点餐后台，已在线上跑着）：共享 `infra_mysql` 里的一张表（`verticals/db.py` 的 `store`，`CREATE TABLE IF NOT EXISTS` 首次使用时自动建）→ 工具直接写库 → `GET /api/verticals/<行业>/...` 挂导演台 token → 一个只读、每几秒自动刷新、新行高亮的页面。**`/api/` 已按前缀代理，nginx 和 vite 都不用改**；数据库连不上时工具回「现在办不了」、接口回 503，绝不假装成功。
+
+- [ ] **任务 38.3：酒店预订写进后台 + `/hotel-admin` 页面**
+  1. `backend/app/verticals/hotel/`（新）：`__init__.py`、`models.py`（`hotel_bookings` 表：客户键、姓名、电话、分店、房型、入住 / 退房、晚数、人数、每晚价、总价、状态、下单时间、修改时间；读写函数）、`routes.py`（`GET /api/verticals/hotel/bookings`，挂 token，库挂了回 503）
+  2. `backend/app/main.py`：挂上路由（一行）
+  3. `backend/app/tools/local.py`：`hotel_create_booking` / `hotel_get_booking` / `hotel_modify_booking` 从「存客人档案」改为读写这张表；**只能查、改这个客户自己名下的**（按客户键，和点餐查单同一规则）。算价逻辑 `_stay` 不动，搜房 `hotel_search_rooms` 不动（房型仍来自 `hotel.json`）
+  4. `frontend/src/pages/HotelAdmin.tsx`（新）+ `frontend/src/main.tsx`（加 `/hotel-admin`）+ `frontend/src/api.ts`（一个读接口）：照 `FoodAdmin.tsx`——token 门、自动刷新、新预订高亮。列：预订号、客人（姓名 / 电话）、分店、房型、入住 → 退房（几晚）、人数、总价、状态、时间；改过期的标一下
+  5. 测试：表读写、只能碰自己的预订、库挂了不假装订上、接口鉴权和 503（照 `test_food_ordering.py` / `test_verticals_realestate.py` 的 `FakeStore`）
+  验收：全套过；前端 build + oxlint 0；本地真模型订一间房 → 行出现在后台；**部署后用户手机订一间、`/hotel-admin` 刷出来**
+
+- [ ] **任务 38.4：SaaS 工单写进后台 + `/saas-admin` 页面**
+  1. `backend/app/verticals/saas/`（新）：`models.py`（`saas_tickets` 表：客户键、姓名、电话、主题、描述、优先级、状态、开单时间）、`routes.py`（`GET /api/verticals/saas/tickets`）
+  2. `backend/app/main.py`：挂路由
+  3. `backend/app/tools/local.py`：`saas_create_ticket` / `saas_get_tickets` 改为读写这张表，同样只碰自己的；`saas_search_known_issues` 不动
+  4. `frontend/src/pages/SaasAdmin.tsx`（新）+ `main.tsx` + `api.ts`：列：工单号、客户、优先级（urgent 标红）、主题、描述、状态、时间
+  5. 测试同上
+  验收：同上，换成开一张工单、`/saas-admin` 刷出来
+
+- [ ] **任务 38.5：文档跟上**（两个后台都做完后，小改）
+  - `docs/data-flow-pdpa.md` / `.en.md`「存了什么」表：「餐饮订单、看房预约」那行加上**酒店预订、支持工单**（同样存本系统 MySQL、目前不自动删除）
+  - `frontend/src/pages/Privacy.tsx`：公开页「存多久」和「删除会覆盖」里补上这两类记录
+  - `tasks/real-phone-checklist.md`：加一小段「酒店订一间 / SaaS 开一张工单，后台刷出来」
+  - 本文件开头「行业三档」那句更新：hotel、saas 不再是轻量档
+
+**要用户拍板的几件事**（见 2026-09-17 对话）：
+1. 预订号 / 工单号：从现在的**随机**（`BK-4821`）改成**按数据库顺序**（`BK-00001`、`TCK-00001`），和点餐 `FD-00001` 一致？
+2. 后台**只读**（和点餐一样，没有按钮）：预订状态固定「已确认」，工单状态固定「待处理」？还是工单要能在后台改成「处理中 / 已解决」？
+3. 两个页面**分开**（`/hotel-admin`、`/saas-admin`，演示时各开一个标签），还是合成一个？
+4. 现在存在客人档案里的预订和工单**不迁移**（演示数据，7 天就过期）？
+
 ---
 
 ## 可选项（做完再看）
