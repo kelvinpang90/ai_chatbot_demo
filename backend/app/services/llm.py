@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import time
+from datetime import date, timedelta
 from typing import NamedTuple
 
 import anthropic
@@ -232,9 +233,45 @@ NO_PHONE_ON_FILE = "This customer has not given us a phone number - WhatsApp doe
 # we know nothing" -- and invites the model to claim they are already on file.
 ANONYMOUS_CUSTOMER_TEXT = """You do not know who you are speaking with: this visitor reached you without a phone number, so there is no record on file and no earlier conversation behind them. Treat it as a first-time enquiry and ask for whatever you need."""
 
+# Today, and what to do with a day a customer names the way people do (2026-09-17).
+#
+# Found on a real phone: a guest asked the hotel bot for "这个周末2天" and was
+# told it could not know what date that is, then asked to type YYYY-MM-DD, with
+# an example from 2024. The model had never been told the date. Two tools said
+# it inside a refusal, which is no help to a model that asks the guest instead
+# of calling the tool.
+#
+# The next two weeks are listed day by day rather than today alone, because
+# turning "this weekend" or "下周三" into a date is weekday arithmetic, and that
+# is exactly where a model slips. Handed the calendar, it only has to read it.
+DATES_IN_WORDS = """Customers name days the way people do - 这个周末, 下周三, 明天, next Friday, esok, hujung minggu ini, the 20th. Work the date out yourself from the calendar above and say it back in plain words so they can correct you, for example "this Saturday 19 September to Sunday 20 September, one night?". Never ask them to type a date in a particular format, and never offer an example date that is not in the calendar above. Ask only what their words genuinely leave open - which weekend, how many nights - not what the calendar already answers."""
+
+CALENDAR_DAYS = 14
+
+
+def _today() -> date:
+    """Today on the server's clock, which the compose files pin to Malaysia time.
+
+    Its own function so a test can hold the date still.
+    """
+    return date.today()
+
+
+def _calendar() -> str:
+    """Today in words, then the fortnight ahead one short line a day."""
+    today = _today()
+    days = ", ".join(
+        (today + timedelta(days=offset)).strftime("%a %Y-%m-%d") for offset in range(CALENDAR_DAYS)
+    )
+    return (
+        f"Today is {today.strftime('%A')} {today.day} {today.strftime('%B %Y')} "
+        f"({today.isoformat()}), Malaysia time. The next two weeks: {days}.\n\n{DATES_IN_WORDS}"
+    )
+
+
 # What we hold that is worth a place in the prompt. `history` is left out because
-# it travels as the messages themselves, and the timestamps because the model has
-# no idea what today's date is and would only guess at how long ago they were.
+# it travels as the messages themselves, and the timestamps because nothing is
+# gained by telling the model how long ago a customer first wrote in.
 RECORD_FIELDS = (
     "phone",
     "username",
@@ -299,6 +336,10 @@ def build_system_blocks(
             ),
         },
     ]
+    # In the volatile block for the same reason as the document note: true of this
+    # day, not of this bot, and in the cached prefix it would throw the cache
+    # away at every midnight.
+    tail[-1]["text"] += f"\n\n{_calendar()}"
     if has_document:
         tail[-1]["text"] += f"\n\n{DOCUMENT_IN_HAND}"
     return tail

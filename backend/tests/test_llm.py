@@ -1,5 +1,6 @@
 import base64
 import json
+from datetime import date
 from unittest.mock import patch
 
 import anthropic
@@ -106,7 +107,8 @@ def test_a_visitor_with_no_number_is_told_to_be_a_stranger():
     one. Say plainly that nobody is on file instead."""
     volatile = llm.build_system_blocks(get_bot("retail"), None)[1]
 
-    assert volatile["text"] == llm.ANONYMOUS_CUSTOMER_TEXT
+    # Starts with, not equals: every volatile block now ends with today's calendar.
+    assert volatile["text"].startswith(llm.ANONYMOUS_CUSTOMER_TEXT)
     assert "no record on file" in volatile["text"]
     assert "{" not in volatile["text"]  # no record rendered, empty or otherwise
 
@@ -1143,3 +1145,50 @@ def test_a_bot_with_its_tools_is_not_told_it_has_none():
         llm.get_reply(bot, _customer(), history=[])
 
     assert llm.TOOLS_WITHHELD not in captured["system"][-1]["text"]
+
+
+# -- today's date (2026-09-17) --------------------------------------------------
+#
+# Found on a real phone: a guest asked the hotel bot for "这个周末2天" and was
+# told it could not know what date that is, then asked to type YYYY-MM-DD with
+# an example from 2024. The model had never been told the date; two tools
+# mentioned it only in a refusal, which a model that asks the guest instead of
+# calling the tool never sees.
+
+WEDNESDAY = date(2026, 9, 16)
+
+
+def test_every_turn_is_told_today_in_malaysia_with_the_weekday():
+    with patch.object(llm, "_today", return_value=WEDNESDAY):
+        volatile = llm.build_system_blocks(get_bot("hotel"), _customer())[1]["text"]
+
+    assert "Today is Wednesday 16 September 2026 (2026-09-16)" in volatile
+
+
+def test_the_next_two_weeks_are_spelled_out_so_no_weekday_is_worked_out_by_the_model():
+    """"This weekend" from a Wednesday is the 19th and 20th. Weekday arithmetic
+    is exactly what a model gets wrong, so it is handed the answer."""
+    with patch.object(llm, "_today", return_value=WEDNESDAY):
+        volatile = llm.build_system_blocks(get_bot("hotel"), None)[1]["text"]
+
+    assert "Sat 2026-09-19" in volatile and "Sun 2026-09-20" in volatile
+    assert "Tue 2026-09-29" in volatile
+    assert "2026-09-30" not in volatile
+
+
+def test_the_date_stays_out_of_the_cached_prefix():
+    """In the prefix, the cache would be thrown away at every midnight."""
+    with patch.object(llm, "_today", return_value=WEDNESDAY):
+        wednesday = llm.build_system_blocks(get_bot("hotel"), _customer())[0]
+    with patch.object(llm, "_today", return_value=date(2026, 9, 17)):
+        thursday = llm.build_system_blocks(get_bot("hotel"), _customer())[0]
+
+    assert wednesday == thursday
+    assert "2026-09-16" not in wednesday["text"]
+
+
+def test_a_day_said_the_way_people_say_it_is_worked_out_and_read_back_not_asked_for():
+    volatile = llm.build_system_blocks(get_bot("hotel"), _customer())[1]["text"]
+
+    assert llm.DATES_IN_WORDS in volatile
+    assert "Never ask them to type a date" in llm.DATES_IN_WORDS
