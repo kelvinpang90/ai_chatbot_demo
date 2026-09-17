@@ -232,6 +232,43 @@
   font-weight: 600;
 }
 
+/* English or Chinese (task 38.7). At the end of the tab row, and in the corner of
+   the token box, where it has to beat the box's rule that every button is the
+   blue submit. */
+.va-lang {
+  display: inline-flex;
+  margin-left: auto;
+  border: 1px solid var(--va-line);
+  border-radius: 8px;
+  overflow: hidden;
+  align-self: center;
+}
+
+.va-lang button,
+.va-gate .va-lang button {
+  background: var(--va-panel);
+  border: none;
+  border-radius: 0;
+  padding: 6px 12px;
+  color: var(--va-dim);
+  font: inherit;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.va-lang button.active,
+.va-gate .va-lang button.active {
+  background: var(--va-text);
+  color: #fff;
+  font-weight: 600;
+}
+
+.va-gate .va-lang {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}
+
 /* A table wider than a phone scrolls inside its panel instead of crushing every
    column to a word per line or pushing the whole page sideways. */
 .va-scroll {
