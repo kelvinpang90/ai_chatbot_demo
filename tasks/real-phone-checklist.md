@@ -17,7 +17,7 @@
    - **导演台** `https://chatbot.acuventech.com/console?token=<CONSOLE_TOKEN>`（**投到大屏**）
    - **ERP 订单** `https://erp.acuventech.com` → Sales Orders
    - **CRM 看板** `https://crm.acuventech.com/dashboard` → Pipeline
-   - **房产后台** `https://chatbot.acuventech.com/vertical-admin`
+   - **演示后台** `https://chatbot.acuventech.com/admin#realestate`（点餐 / 房产看房 / 酒店预订 / SaaS 工单四个栏目，点上面的按钮切换）
 2. 导演台顶栏是 `Live`；**确认两个开关都是常态**：「Turn tools off (control)」（没变红）、「Break next ERP call (drill)」（没变红）
 3. 手机给 **+60 17-394 8123** 发 `menu`，选**零售**
 
@@ -118,7 +118,7 @@
 | # | 手机上做什么 | 该看到什么 |
 |---|---|---|
 | 23 | `想约看房` | bot 在聊天里要**姓名 / 房源 / 日期**（不会弹表单） |
-| 24 | `陈家明 / PROP-202 / 下周六下午3点` | 确认预约；⭐ `/vertical-admin` 出预约、**年份是 2026**；⭐ **CRM 看板出卡**；⭐ **导演台里「保存预约」卡在「建 CRM 线索」卡之前**（串行，不是并发） |
+| 24 | `陈家明 / PROP-202 / 下周六下午3点` | 确认预约；⭐ 演示后台「房产看房」栏出预约（高亮）、**年份是 2026**；⭐ **CRM 看板出卡**；⭐ **导演台里「保存预约」卡在「建 CRM 线索」卡之前**（串行，不是并发） |
 
 顺带记一下：房产这段每轮回复比零售慢多少（串行多一次往返）。模型要是先写成 2025 被拒，应当**自己改对年份重存**，不回头问客户。
 
@@ -140,7 +140,7 @@
 | 24 | 上面任意一段对话进行到一半时**刷新导演台** | 回放一次到齐，**不再卡十几秒才补齐尾巴** |
 | 27 | 浏览器窗口拖到 **900px 以下** | 三栏上下堆叠，分隔条消失 |
 | 27 | 点「Light background」，**人眼看**浅色观感；**真鼠标拖**两条分隔条、双击复原 | 颜色正常；拖得动、双击回默认、刷新后宽度保留 |
-| 27 / 11.2 | 网页聊天 `https://chatbot.acuventech.com` 选**酒店**订一间房、选 **SaaS** 开一张工单 | 导演台出「订房 BK-…」「工单 TCK-…」业务卡片 |
+| 27 / 11.2 | 网页聊天 `https://chatbot.acuventech.com` 选**酒店**订一间房、选 **SaaS** 开一张工单 | 导演台出「订房 BK-…」「工单 TCK-…」业务卡片；⭐ 演示后台切到「酒店预订」栏，5 秒内出现同一个 `BK-…`（高亮、客人名和日期对得上）；切到「SaaS 工单」栏出现同一个 `TCK-…`（任务 38.5）。**再说一句「好的，开吧」**，工单栏仍只有一张 |
 | 11.3 | 网页聊天用**马来语**问一张不存在的单、问一件本店不做的事 | 承认查不到 / 不做，给下一步，不编 |
 | 4 | 打开 `https://chatbot.acuventech.com/console/history?token=<CONSOLE_TOKEN>` 抄一个 `conversation_id`，再开 `/console/history/<id>?token=<CONSOLE_TOKEN>` | 聊过两轮以上的对话 `cache_read_tokens > 0`（换 Haiku 后提示词缓存还在命中） |
 
@@ -182,7 +182,7 @@
 
 - **ERP**：1 张销售单、1 张出库单、1 张已验证发票、1 张 DRAFT 退款单
 - **CRM**：2 张线索卡（零售一张、房产一张）
-- **房产后台**：1 条预约
+- **演示后台**：1 条看房预约；做了电脑上那一步的话，再加 1 条酒店预订、1 张工单
 - 零售的在 `WA-` 开头的 demo 客户名下，CRM 的带 `[DEMO]` 前缀
 
 要清理：ERP 侧 `POST /api/admin/demo-reset`（整表清交易单据，主数据不动）；CRM 侧任务 34 的清理按 `[DEMO]` 标记删。**不清也行**，下次演示多几条历史反而更像真的在用。

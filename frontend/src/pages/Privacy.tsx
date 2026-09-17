@@ -77,7 +77,7 @@ const COPY: Record<Lang, Copy> = {
     htmlLang: 'zh-CN',
     title: '隐私与个人资料说明',
     subtitle: 'Acuven Technology · WhatsApp AI 客服演示（chatbot.acuventech.com）',
-    updated: '更新：2026-09-16',
+    updated: '更新：2026-09-17',
     askText: `要查阅、更正或删除您的资料，请在 WhatsApp 上给 ${WHATSAPP_NUMBER} 发一条消息。`,
     askButton: '在 WhatsApp 上联系我们',
     sections: [
@@ -146,6 +146,10 @@ const COPY: Record<Lang, Copy> = {
             text: '存在我们服务器的数据库里，目前不会自动删除，只能由我们人工删除。',
           },
           {
+            term: '餐饮订单、看房预约、酒店预订、支持工单（姓名、电话、地址、入住日期、您描述的问题）',
+            text: '同样存在我们服务器的数据库里，目前不会自动删除，只能由我们人工删除。',
+          },
+          {
             term: '演示 ERP / CRM 里的客户、订单、发票、联系人',
             text: '随这两个系统的业务数据保留，并会被不定期清理。',
           },
@@ -168,7 +172,7 @@ const COPY: Record<Lang, Copy> = {
         items: [
           {
             term: 'Acuven 的演示人员',
-            text: '凭管理后台的访问密钥，可以查看对话记录和 AI 的调用过程，也可以人工接管、代为回复。网页版聊天同样需要这把密钥才能打开。',
+            text: '凭管理后台的访问密钥，可以查看对话记录和 AI 的调用过程，也可以人工接管、代为回复。同一把密钥能打开演示后台，看到订单、预约、预订和工单连同上面的姓名电话。网页版聊天同样需要这把密钥才能打开。',
           },
           { term: '服务器管理员', text: '能直接访问服务器上的数据库和日志。' },
           {
@@ -188,7 +192,7 @@ const COPY: Record<Lang, Copy> = {
         items: [
           {
             term: '删除会覆盖',
-            text: '我们服务器上的对话记忆、完整对话记录和相关日志，以及演示 ERP / CRM 里由这次演示产生的客户、订单和联系人记录。',
+            text: '我们服务器上的对话记忆、完整对话记录和相关日志，您在演示中下的餐饮订单、看房预约、酒店预订和支持工单，以及演示 ERP / CRM 里由这次演示产生的客户、订单和联系人记录。',
           },
           {
             term: '删除不覆盖',
@@ -222,7 +226,7 @@ const COPY: Record<Lang, Copy> = {
     htmlLang: 'en',
     title: 'Privacy and Personal Data Notice',
     subtitle: 'Acuven Technology · WhatsApp AI customer service demo (chatbot.acuventech.com)',
-    updated: 'Updated: 2026-09-16',
+    updated: 'Updated: 2026-09-17',
     askText: `To see, correct or delete your data, send a message to ${WHATSAPP_NUMBER} on WhatsApp.`,
     askButton: 'Message us on WhatsApp',
     sections: [
@@ -291,6 +295,10 @@ const COPY: Record<Lang, Copy> = {
             text: 'Held in a database on our server. Not deleted automatically at present; it can only be deleted by us, by hand.',
           },
           {
+            term: 'Food orders, property viewings, hotel bookings and support tickets (name, number, address, stay dates, the problem you described)',
+            text: 'Held in the same database on our server. Not deleted automatically at present; they can only be deleted by us, by hand.',
+          },
+          {
             term: 'Customers, orders, invoices and contacts in the demo ERP and CRM',
             text: 'Kept as part of those systems’ business records, and cleared from time to time.',
           },
@@ -313,7 +321,7 @@ const COPY: Record<Lang, Copy> = {
         items: [
           {
             term: 'Acuven’s demo operators',
-            text: 'With the access key for the admin console they can read the conversations and the AI’s tool calls, take a conversation over, and reply in its place. The web version of the chat needs the same key to open at all.',
+            text: 'With the access key for the admin console they can read the conversations and the AI’s tool calls, take a conversation over, and reply in its place. The same key opens the demo back office, which lists the orders, viewings, bookings and tickets together with the names and numbers on them. The web version of the chat needs the same key to open at all.',
           },
           {
             term: 'Server administrators',
@@ -336,7 +344,7 @@ const COPY: Record<Lang, Copy> = {
         items: [
           {
             term: 'Deletion covers',
-            text: 'The conversation memory, the full conversation log and the related logs on our server, together with the customer, order and contact records this demo created in the demo ERP and CRM.',
+            text: 'The conversation memory, the full conversation log and the related logs on our server, the food orders, property viewings, hotel bookings and support tickets you made in the demo, and the customer, order and contact records this demo created in the demo ERP and CRM.',
           },
           {
             term: 'Deletion does not cover',

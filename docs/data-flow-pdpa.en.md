@@ -1,6 +1,6 @@
 # AI Customer Service: Data Flow and Personal Data Notice (PDPA)
 
-> Applies to: Acuven WhatsApp AI customer service demo (chatbot.acuventech.com) · Updated: 2026-09-15 · [中文](data-flow-pdpa.md)
+> Applies to: Acuven WhatsApp AI customer service demo (chatbot.acuventech.com) · Updated: 2026-09-17 · [中文](data-flow-pdpa.md)
 
 ## In one sentence
 
@@ -25,7 +25,7 @@ The web chat does not go through Meta and does not accept voice messages.
 | Full conversation log, input and output of every tool call, usage cost | Our server (MySQL) | **Not deleted automatically at present** |
 | Customer accounts, orders, e-invoices | ERP | Kept as part of the ERP's business records |
 | Contacts, deals, follow-up notes | CRM | Kept as part of the CRM's business records |
-| Food orders, property viewing bookings (name, phone, address) | Our server (MySQL) | Not deleted automatically at present |
+| Food orders, property viewing bookings, hotel bookings, support tickets (name, phone, address, stay dates, the problem the customer described) | Our server (MySQL) | Not deleted automatically at present |
 | Server logs (contain phone numbers, and in some cases the customer's own words) | Our server | Rotated by size (about 30 MB at most), cleared on every system update |
 | Photos, PDFs and voice messages sent by customers | **Not written to disk.** Photos are used for that reply only; PDFs are held in memory (up to 5 per customer) until the customer sends "menu" to start over or the server restarts; voice audio is discarded once transcribed | — |
 
@@ -43,7 +43,7 @@ None of these providers' servers are part of our system, and they may be located
 
 ## Who can see the data
 
-- **Acuven's demo operators:** with the access key for the admin console, they can view every conversation and tool call, take over a conversation, and reply on the bot's behalf. The web chat needs the same key; without it the page does not open, so nobody can type in a phone number to pull up someone else's conversation
+- **Acuven's demo operators:** with the access key for the admin console, they can view every conversation and tool call, take over a conversation, and reply on the bot's behalf. The same key opens the demo back office (`/admin`), which lists every food order, property viewing, hotel booking and support ticket with the names and phone numbers on them. The web chat needs the same key; without it the page does not open, so nobody can type in a phone number to pull up someone else's conversation
 - **Server administrators:** have direct access to the databases and logs on the server
 - **Anyone with an ERP or CRM account:** can see the customers, orders and follow-up notes the AI writes into those systems
 - The customer: sees their own conversation in WhatsApp
