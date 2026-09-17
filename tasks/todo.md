@@ -1775,6 +1775,58 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
+## 批次 07：导演台开场不空——每晚重灌的演示数据（2026-09-17 新增）
+
+> 用户原话「在 console 页面需要 mock data」，逐条追问后拍板（2026-09-17）：
+> 1. **目的**：线上演示开场不空，**既要「这系统在忙」的量，也要点得开的样板对话**
+> 2. **写进真库**（审计库），不是前端假开关；**导演台的实时滚动不造假**（开场用任务 29 的自动播放）；**接管 / 工具开关 / 故障演练不 seed**（全局开关，seed 成非默认就是弄坏真演示）
+> 3. **中 / 英 / 马来文**各自独立记录；**100+ 位客户、像跑了几周**
+> 4. 内容：**~15 段精品**由 Claude 一次生成、存 JSON 进仓库、用户审；**其余模板拼**
+> 5. **对话里提到的单据在后台必须查得到**，日期回填：
+>    - retail：**不往 ERP 写**，围绕 `erp_os` 重置后自带的几百张历史种子单编对话（只读 REST，「ERP 只走 REST」这条规则保住）
+>    - food / realestate / hotel / saas：直接写本仓库 verticals 四张表，时间回填（自己的库，不受那条规则约束）
+>    - CRM：retail 假客户经 REST 建联系人 + 线索，带标记，下次 seed 先按标记删
+> 6. **生命周期**：每天 **03:30** 跑一次（对齐 ERP 03:00 的 nightly reset），先清上一批再按「现在往前 4 周」重灌。手动重置了 ERP 就手动补跑一次
+> 7. 命令用户在 VPS 上执行，我只写
+
+**身份**：假客户的 `key_id` 是 `ZZ.SEED0001` 这种 BSUID 形状，**不是**方案里说的「无效号段」——`_known_name` 会先过 `identity()`，`seed-` 前缀会让导演台显示不出名字；`ZZ` 是 ISO 3166 的自定义码，不会撞真客户；没有手机号，所以「结束演示」和人工回复打不到任何真人。清理一律按这个前缀。
+
+**已知副作用（用户已知情）**：导演台成本合计和 `/admin` 各栏混入假数据；CRM 看板多二三十张假线索（和阻塞项 D 的脏数据同屏）。
+
+- [x] **任务 39.1：seed 命令骨架 + 清理 + 审计库 / Redis 写入 + 普通对话模板**——**2026-09-17 完成**
+  文件：`backend/app/tasks/seed_console.py`（新增）、`backend/app/tasks/seed_lines.py`（新增，三语模板）、`backend/tests/test_seed_console.py`（新增）
+  目标：`python -m app.tasks.seed_console` 清掉 `ZZ.SEED%` 再灌 90 位普通客户（5 行业 × 3 语言 × 6）；`--clear` 只清
+  验收：pytest 覆盖「清理不碰真客户」「时间都在过去 28 天内」「每个客户在导演台上有名字」；本地 MySQL + Redis 容器真跑一次，`/console/history/customers` 读回来
+
+  **做了什么**
+  - 90 位客户，每人最新一段对话 1-2 个话题 + 一句道谢；约 30% 几天前还有一段更早的。开场白和真 WhatsApp 线一样是 `disclaimer.en + GREETING_SUFFIX_EN`；channel 全是 `whatsapp`
+  - **工具输出不是写死的**：seed 在 `local.serving(bot, None)` 里调**真的** `hotel_search_rooms` / `saas_search_known_issues`，卡片内容就是这个工具今天会答的。retail / food / realestate 的普通对话**没有工具卡**（它们的只读工具要么在 ERP 里——39.3，要么根本没有，房源和 FAQ 在 prompt 里）
+  - 回复里的每个价格 / 政策逐条对着 `app/bots/data/*.json` 写；token 数是编的（system 2600-4200 首轮 cache write、之后 cache read），**成本用 `cost.cost_myr` 算**，模型取 `bot.model or settings.anthropic_model`，和真调用同一套算法
+  - 时间：营业时间 9-22 点，过去 28 天；**最近 1 小时内不落任何 seed**，所以当天第一个真客户一开口就是最新那条，导演台跟随模式跟过去
+  - **偏离一处（设计上的）**：**不经 `audit_store` 写**，自己开连接，**清 + 灌在一个事务里**，任何失败回滚、退出码非 0。`AuditStore` 出错静默丢行是为了不让客户等，放在 seed 上就是「报成功、屏幕半满」。代价是三条 INSERT 的列清单和 `audit.py` 各写了一份（表结构还是用 `audit.SCHEMA` 建）
+  - Redis 写完**用一个新的 `UserStore` 读回最后一条**——共享 `user_store` Redis 挂了会静默退回进程内存，seed 进程一退名字就没了
+  - 删 Redis 资料按 `everyone(limit=5000)` 扫 `ZZ.SEED` 前缀，不按编号范围删
+
+  **验证**
+  - 容器里全套 **1049 passed / 10 skipped**（新增 29 条）
+  - **变异检查**：把清理条件改成 `"%"`（清全表）→ `test_clears_only_seed_keys…` 变红；把一个工单查询改成 `"zzz qqq"` → 两条「工具必须查到东西」变红
+  - **真 MySQL 8 + Redis 7 容器**，TZ=Asia/Kuala_Lumpur，先写一位真客户 `60173948123`（一行对话 + 资料），然后：
+    - 连跑两次：第二次 `Cleared 953 rows, 90 profiles`，**正好等于第一次写入的 624+35+294**；两次之后 `chat_messages` 都是「seed 行 + 真客户那行」，没有翻倍
+    - `/console/history/customers`：**91 位、91 位都有名字**、真客户在；日期跨度 08-21 → 09-17 15:40（跑的时候 ~17:00，静默一小时成立）；90 位合计 RM 3.51
+    - `/console/history/{id}` 读一段酒店对话：开场白 → 有接机吗 → 回复 → 槟城有什么房 → `hotel_search_rooms` 卡（ok，输出是真 JSON）→ 回复 → 道谢；4 次模型调用、RM 0.033
+    - tool_calls / model_usage 里 `message_id IS NULL` 的行 **0**
+    - `--clear` 之后只剩真客户那行和那份资料
+  - 顺带踩了自己检查脚本的坑：SQL 字面量里的 `%` 没转义，`audit_store.query` 报错进了 30 秒熔断，之后的读全是 `[]`——**是检查脚本的错，不是 seed 的**，转义后重跑得到上面的数
+
+  **没验**：**浏览器里没看导演台的样子**（前端没改，接口形状已读回）；线上没跑（39.6 由用户执行）。**已知限制**：Redis 资料 7 天 TTL，cron 停了超过 7 天，列表会只剩 `ZZ.SEED…` 编号没有名字
+- [ ] **任务 39.2：verticals 四张表的单据写入，日期回填**（food 订单 / 看房预约 / 酒店预订 / 工单，对话里引用的编号与表里一致）
+- [ ] **任务 39.3：retail 读 ERP 种子单填进对话**（只读 REST）。⚠️ `app.tasks.cleanup` 会触发 ERP 重置、单据全部重生，跑完 cleanup 要补跑 seed
+- [ ] **任务 39.4：CRM 联系人 + 线索的写入与按标记删除**。⚠️ 标记不能以 `[DEMO]` 开头——`crm_client.is_marked` 是锚定前缀匹配，`cleanup` 按它删联系人，撞上就会被 cleanup 顺手删掉（`[DEMO-SEED]` 不以 `[DEMO]` 开头，可用，但要写测试钉住）
+- [ ] **任务 39.5：Claude 生成 15 段精品 JSON**（用户审）
+- [ ] **任务 39.6：VPS crontab 安装命令 + 手动补跑命令**（用户执行）
+
+---
+
 ## 可选项（做完再看）
 
 - [ ] **现场导入客户自己的商品表**。`crm_os` 已经有 `/api/contacts/import` 和模板下载接口，ERP 侧大概也有。真做成「他发一个 CSV，五分钟后 bot 用他的真实商品回答」，说服力比剧本 2b 还强一档——但工作量大得多，等前面几批跑顺了再看
