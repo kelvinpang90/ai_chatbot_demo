@@ -1823,7 +1823,22 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - [ ] **任务 39.3：retail 读 ERP 种子单填进对话**（只读 REST）。⚠️ `app.tasks.cleanup` 会触发 ERP 重置、单据全部重生，跑完 cleanup 要补跑 seed
 - [ ] **任务 39.4：CRM 联系人 + 线索的写入与按标记删除**。⚠️ 标记不能以 `[DEMO]` 开头——`crm_client.is_marked` 是锚定前缀匹配，`cleanup` 按它删联系人，撞上就会被 cleanup 顺手删掉（`[DEMO-SEED]` 不以 `[DEMO]` 开头，可用，但要写测试钉住）
 - [ ] **任务 39.5：Claude 生成 15 段精品 JSON**（用户审）
-- [ ] **任务 39.6：VPS crontab 安装命令 + 手动补跑命令**（用户执行）
+- [x] **任务 39.6：VPS crontab 安装命令 + 手动补跑命令**——**2026-09-17 已装上**（用户让我直接上 VPS 装，原计划「用户执行」作废；提前于 39.2-39.5 做，用户拍板「先装定时任务」）
+  **首次线上 seed**：同日 39.1 部署后我在 VPS 上跑了一次 `docker exec ai_chatbot_backend python -m app.tasks.seed_console`，exit 0，90 位 / 674 条消息。容器内只读回查：seed 90 位、日期 08-20 → 09-16；**原有 14 位真客户 278 条消息都在**；抽 `ZZ.SEED0001/0045/0090` 导演台能读出名字。真客户今天有对话，比 seed 都新，所以列表最上面是他们
+  **装了什么**：`ubuntu` 用户的 crontab **追加**一行（原有 `rs-roof-pms` 03:05 备份保留）：
+  ```
+  30 3 * * * { date; /usr/bin/docker exec ai_chatbot_backend python -m app.tasks.seed_console; echo "exit=$?"; } >> /home/ubuntu/logs/ai_chatbot_seed_console.log 2>&1
+  ```
+  - 主机时区就是 `Asia/Kuala_Lumpur`，所以 `30 3` 就是马来西亚 03:30，不用换算
+  - 装之前查过：`erp_celery_beat` 的 `DEMO_MODE=true`、TZ 同为吉隆坡，03:00 的 nightly reset 真的在跑——39.3 的 retail 对话依赖这个时序
+  - 改之前的 crontab 备份在 `/home/ubuntu/logs/crontab.before-seed-console.bak`
+  **验证**：用 `env -i PATH=/usr/bin:/bin /bin/sh -c` 模拟 cron 的精简环境，把 crontab 里那行原样跑了一次：日志写出日期 + `Cleared: 1024 rows, 90 profiles`（= 首次写入的 674+36+314，线上「先清再灌」这条路也走通了）+ `Seeded: 90 customers` + `exit=0`
+  **没验**：真正由 cron 在 03:30 触发的那一次（明早看日志）
+  **常用命令**（VPS 上）：
+  - 看日志：`tail -n 20 ~/logs/ai_chatbot_seed_console.log`
+  - 手动补跑（例如白天在 ERP 后台手动重置过）：`docker exec ai_chatbot_backend python -m app.tasks.seed_console`
+  - 清掉假数据：同上加 `--clear`
+  - 停掉定时：`crontab -l | grep -v app.tasks.seed_console | crontab -`
 
 ---
 
