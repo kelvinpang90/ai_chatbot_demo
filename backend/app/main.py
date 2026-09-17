@@ -8,6 +8,7 @@ from app.routers.internal_whatsapp import router as internal_whatsapp_router
 from app.routers.wecom_webhook import router as wecom_webhook_router
 from app.routers.whatsapp_webhook import router as whatsapp_webhook_router
 from app.verticals.food.routes import router as food_router
+from app.verticals.hotel.routes import router as hotel_router
 from app.verticals.realestate.routes import router as realestate_router
 
 logging.basicConfig(level=logging.INFO)
@@ -20,6 +21,7 @@ app.include_router(internal_whatsapp_router)
 app.include_router(console_router)
 app.include_router(realestate_router)
 app.include_router(food_router)
+app.include_router(hotel_router)
 
 
 @app.get("/health")

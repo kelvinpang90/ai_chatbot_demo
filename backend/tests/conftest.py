@@ -22,6 +22,7 @@ from app.services import audit, crm_client, doc_store, erp_client, notify, outbo
 from app.services.user_store import user_store
 from app.session_store import session_store
 from app.verticals import db as verticals_db
+from app.verticals.hotel import models as hotel_models
 
 
 def _with_credentials(name, module):
@@ -162,3 +163,75 @@ def _no_push_queue_left_open():
     notify.close()
     yield
     notify.close()
+
+
+class FakeHotelStore:
+    """Enough of MySQL for the statements `verticals/hotel/models.py` writes.
+
+    Shared rather than kept in one module, unlike the food and property stand-ins,
+    because two modules drive it: the tools that book (`test_local_tools.py`) and
+    the back office that lists (`test_verticals_hotel.py`). Rows are held in the
+    types PyMySQL hands back -- `date`, `Decimal`, `datetime` -- so the reading
+    side is exercised on what it will really get.
+    """
+
+    def __init__(self, fails: bool = False):
+        self.rows: list[dict] = []
+        self.fails = fails
+
+    def execute(self, sql: str, params: tuple = ()) -> int:
+        if self.fails:
+            raise verticals_db.StoreUnavailable("the verticals database is unreachable")
+        if sql.startswith("INSERT INTO hotel_bookings"):
+            row = self._typed(dict(zip(hotel_models._INSERT_COLUMNS, params)))
+            row["updated_at"] = None
+            row["id"] = len(self.rows) + 1
+            self.rows.append(row)
+            return row["id"]
+        if sql.startswith("UPDATE hotel_bookings"):
+            *stay, updated_at, row_id, customer_key = params
+            for row in self.rows:
+                if row["id"] == row_id and row["customer_key"] == customer_key:
+                    row.update(self._typed(dict(zip(hotel_models._STAY_COLUMNS, stay))))
+                    row["updated_at"] = _moment(updated_at)
+            return 0
+        raise AssertionError(f"unexpected statement: {sql}")
+
+    def query(self, sql: str, params: tuple = ()) -> list[dict]:
+        if self.fails:
+            raise verticals_db.StoreUnavailable("the verticals database is unreachable")
+        rows = sorted(self.rows, key=lambda row: (row["booked_at"], row["id"]), reverse=True)
+        if "WHERE customer_key = %s AND id = %s" in sql:
+            rows = [row for row in rows if (row["customer_key"], row["id"]) == params[:2]]
+        elif "WHERE customer_key = %s" in sql:
+            rows = [row for row in rows if row["customer_key"] == params[0]]
+        return [dict(row) for row in rows[: params[-1]]]
+
+    @staticmethod
+    def _typed(row: dict) -> dict:
+        from datetime import date
+        from decimal import Decimal
+
+        for column in ("check_in", "check_out"):
+            if column in row:
+                row[column] = date.fromisoformat(row[column])
+        for column in ("rate_per_night_rm", "total_rm"):
+            if column in row:
+                row[column] = Decimal(row[column])
+        if "booked_at" in row:
+            row["booked_at"] = _moment(row["booked_at"])
+        return row
+
+
+def _moment(text: str):
+    from datetime import datetime
+
+    return datetime.strptime(text, "%Y-%m-%d %H:%M:%S.%f")
+
+
+@pytest.fixture
+def hotel_store():
+    """The resort's bookings table, in memory."""
+    store = FakeHotelStore()
+    with patch.object(hotel_models, "store", store):
+        yield store

@@ -12,11 +12,15 @@ open a ticket and a hotel bot that cannot change a booking are two questions awa
 from being caught, and those are the two questions everybody asks.
 
 What is stored lives in `UserProfile.profile[bot_id]`, i.e. in the same record
-the customer's phone number keys -- so a booking made on Monday is still there on
+the customer's phone number keys -- so a ticket opened on Monday is still there on
 Wednesday, for as long as the record lives. The tools mutate the profile object
 the router is holding rather than saving one of their own: the router saves at
 the end of the turn, and a second copy written here would simply be overwritten
 by it.
+
+Hotel bookings are the exception since task 38.3: they are written to the resort's
+own table (`verticals/hotel`), so a back office can list every guest's, and the
+guest's record holds none of them.
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import json
 import logging
 import re
 import secrets
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -33,6 +38,8 @@ from anthropic import beta_tool
 
 from app.bots.registry import BotConfig
 from app.services.user_store import UserProfile
+from app.verticals import StoreUnavailable
+from app.verticals.hotel import models as hotel_bookings
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,36 @@ NO_BOOKING = (
     "There is no booking on file for this guest. Say so plainly -- never invent "
     "a booking number -- and offer to make one."
 )
+# The resort's booking system (task 38.3). The same posture as the restaurant's:
+# a database that is down must never become "your room is booked".
+NO_GUEST = (
+    "This conversation has no guest record to hold a booking, so nothing can be "
+    "booked or looked up here. Say you cannot book it right now and offer to "
+    "have a colleague call them back."
+)
+BOOKING_NOT_SAVED = (
+    "The room could NOT be booked -- the resort's booking system is unreachable. "
+    "Tell the guest plainly that it did not go through and offer to have a "
+    "colleague call them back. Never tell them it is booked and never make up a "
+    "booking number."
+)
+BOOKING_NOT_CHANGED = (
+    "The booking could NOT be changed -- the resort's booking system is "
+    "unreachable, so it stands as it was. Tell the guest plainly and offer to "
+    "have a colleague call them back. Do not tell them it has changed."
+)
+# Found running task 38.3 through the real model: a guest's "帮我订" was booked
+# at once and again on "确认", and the back office showed the same stay twice.
+ALREADY_BOOKED = (
+    "This exact stay was already booked for this guest, so no second booking was "
+    "made. Give them this booking number. Do not call it a new or a corrected "
+    "booking."
+)
+BOOKINGS_UNREADABLE = (
+    "The resort's booking system could not be reached just now, so their bookings "
+    "could not be checked. Say so plainly and offer to have a colleague call them "
+    "back. Do not repeat dates or totals from earlier in the conversation."
+)
 NO_TICKET = (
     "There are no support tickets on file for this customer. Say so plainly and "
     "offer to open one; never invent a ticket number."
@@ -57,9 +94,9 @@ NO_KNOWN_ISSUE = (
     "do not guess a fix, and offer to open a support ticket."
 )
 
-# Both records live inside one customer's profile in Redis. Twenty is far more
-# than a demo will ever make and still small enough that a runaway loop cannot
-# grow the record without bound.
+# Tickets live inside one customer's profile in Redis. Twenty is far more than a
+# demo will ever make and still small enough that a runaway loop cannot grow the
+# record without bound.
 MAX_RECORDS = 20
 
 # A stay nobody would book by chat. Mostly a guard against a mistyped year
@@ -363,6 +400,29 @@ def hotel_search_rooms(location: str = "", guests: int = 0, max_price_rm: float 
     return _dump(matches) if matches else NO_ROOMS
 
 
+def _guest() -> UserProfile:
+    """The guest this turn belongs to, or a refusal saying why there is none.
+
+    Outside a conversation is NO_TURN, as for every tool here. A conversation with
+    no record behind it cannot hold a booking any more: bookings are filed under
+    the customer the channel established, and there is nobody to file this one
+    under -- the restaurant's tools draw the same line.
+    """
+    current = _current()
+    if current.customer is None:
+        raise _Refused(NO_GUEST)
+    return current.customer
+
+
+def _same_stay(bookings: list, stay: dict):
+    """The booking among these that is exactly this stay, if there is one."""
+    wanted = (stay["room_type"], stay["check_in"], stay["check_out"], stay["guests"])
+    return next(
+        (b for b in bookings if (b.room_type, b.check_in, b.check_out, b.guests) == wanted),
+        None,
+    )
+
+
 @beta_tool
 def hotel_create_booking(room_type: str, check_in: str, check_out: str, guests: int) -> str:
     """Book a room for this guest and give them the booking number.
@@ -378,21 +438,33 @@ def hotel_create_booking(room_type: str, check_in: str, check_out: str, guests: 
         guests: How many people are staying.
     """
     try:
-        booking = _stay(room_type, check_in, check_out, guests)
-        bookings = list(_stored("bookings"))
-        booking = {
-            "booking_id": _reference("BK"),
-            **booking,
-            "status": "Confirmed",
-            "booked_at": _now(),
-        }
-        bookings.append(booking)
-        _store("bookings", bookings)
+        stay = _stay(room_type, check_in, check_out, guests)
+        guest = _guest()
     except _Refused as refusal:
         return str(refusal)
 
-    logger.info("hotel booking %s created for the current guest", booking["booking_id"])
-    return _dump(booking)
+    try:
+        # The same stay twice is the model repeating itself -- once when the guest
+        # says "book it" and again when they say "yes", or two calls in one turn --
+        # not a guest who wants two identical rooms on the same nights. The
+        # booking that exists is the answer; a second row is a back office that
+        # shows the demo tripping over itself.
+        same = _same_stay(hotel_bookings.bookings_for(guest.key_id), stay)
+        if same is not None:
+            return _dump({**same.for_the_guest(), "note": ALREADY_BOOKED})
+        booking = hotel_bookings.book(
+            customer_key=guest.key_id,
+            customer_name=guest.display_name or "",
+            phone=guest.phone or "",
+            stay=stay,
+            at=time.time(),
+        )
+    except StoreUnavailable:
+        logger.warning("hotel booking not saved: the booking system is unreachable")
+        return BOOKING_NOT_SAVED
+
+    logger.info("hotel booking %s created for the current guest", booking.booking_id)
+    return _dump(booking.for_the_guest())
 
 
 @beta_tool
@@ -408,14 +480,15 @@ def hotel_get_booking(booking_id: str = "") -> str:
         booking_id: A specific booking number. Leave empty for all of theirs.
     """
     try:
-        bookings = _stored("bookings")
+        guest = _guest()
     except _Refused as refusal:
         return str(refusal)
 
-    wanted = str(booking_id or "").strip().casefold()
-    if wanted:
-        bookings = [b for b in bookings if str(b.get("booking_id", "")).casefold() == wanted]
-    return _dump(bookings) if bookings else NO_BOOKING
+    try:
+        found = hotel_bookings.bookings_for(guest.key_id, str(booking_id or "").strip())
+    except StoreUnavailable:
+        return BOOKINGS_UNREADABLE
+    return _dump([booking.for_the_guest() for booking in found]) if found else NO_BOOKING
 
 
 @beta_tool
@@ -440,39 +513,39 @@ def hotel_modify_booking(
         guests: A new party size.
     """
     try:
-        bookings = list(_stored("bookings"))
+        guest = _guest()
     except _Refused as refusal:
         return str(refusal)
 
-    wanted = str(booking_id or "").strip().casefold()
-    position = next(
-        (
-            index
-            for index, booking in enumerate(bookings)
-            if str(booking.get("booking_id", "")).casefold() == wanted
-        ),
-        None,
-    )
-    if position is None:
+    number = str(booking_id or "").strip()
+    try:
+        # Theirs or nothing: the lookup is by this guest as well as the number.
+        found = hotel_bookings.bookings_for(guest.key_id, number) if number else []
+    except StoreUnavailable:
+        return BOOKINGS_UNREADABLE
+    if not found:
         return NO_BOOKING
 
-    current = bookings[position]
+    current = found[0]
     try:
         # Priced from scratch off whatever the booking now says, so a change of
         # room and a change of dates cannot leave a total belonging to neither.
         changed = _stay(
-            room_type or current.get("room_type", ""),
-            check_in or current.get("check_in", ""),
-            check_out or current.get("check_out", ""),
-            guests or current.get("guests", 0),
+            room_type or current.room_type,
+            check_in or current.check_in,
+            check_out or current.check_out,
+            guests or current.guests,
             arriving_is_new=bool(str(check_in or "").strip()),
         )
     except _Refused as refusal:
         return str(refusal)
 
-    bookings[position] = {**current, **changed, "updated_at": _now()}
-    _store("bookings", bookings)
-    return _dump(bookings[position])
+    try:
+        updated = hotel_bookings.change(current, changed, at=time.time())
+    except StoreUnavailable:
+        logger.warning("hotel booking %s not changed: the booking system is unreachable", number)
+        return BOOKING_NOT_CHANGED
+    return _dump(updated.for_the_guest())
 
 
 # --------------------------------------------------------------------------- #

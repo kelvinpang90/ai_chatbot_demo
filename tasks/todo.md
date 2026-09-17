@@ -1678,39 +1678,52 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **没验**：真机；房产看房（「下周六下午3点」）没用真模型单独跑——它走同一块提示词，而且工具本来就会拒收过去的日期
 
-### 酒店和 SaaS 客服各补一个后台（2026-09-17 用户提出，**计划待用户确认**）
+### 酒店和 SaaS 客服各补一个后台（2026-09-17 用户提出）
 
 **为什么**：用户问「酒店有后台下单记录吗」——没有。酒店和 SaaS 是当初的「轻量档」（本文件开头「行业三档」、任务 11.2）：工具能订房、开工单，但记录只存在**这位客人自己的 Redis 档案**里（`tools/local.py` 的 `_stored` / `_store`），7 天过期，最多 20 条，**没有任何页面能列出所有客人的记录**。演示时这两个行业缺了「刷新后台，单子就在那里」这一步，而零售（真 ERP）、点餐（`/food-admin`）、房产（`/vertical-admin`）都有。
 
-**照抄的现成做法**（任务 25 点餐后台，已在线上跑着）：共享 `infra_mysql` 里的一张表（`verticals/db.py` 的 `store`，`CREATE TABLE IF NOT EXISTS` 首次使用时自动建）→ 工具直接写库 → `GET /api/verticals/<行业>/...` 挂导演台 token → 一个只读、每几秒自动刷新、新行高亮的页面。**`/api/` 已按前缀代理，nginx 和 vite 都不用改**；数据库连不上时工具回「现在办不了」、接口回 503，绝不假装成功。
+**照抄的现成做法**（任务 25 点餐后台，已在线上跑着）：共享 `infra_mysql` 里的一张表（`verticals/db.py` 的 `store`，`CREATE TABLE IF NOT EXISTS` 首次使用时自动建）→ 工具直接写库 → `GET /api/verticals/<行业>/...` 挂导演台 token。**`/api/` 已按前缀代理，nginx 和 vite 都不用改**；数据库连不上时工具回「现在办不了」、接口回 503，绝不假装成功。
 
-- [ ] **任务 38.3：酒店预订写进后台 + `/hotel-admin` 页面**
-  1. `backend/app/verticals/hotel/`（新）：`__init__.py`、`models.py`（`hotel_bookings` 表：客户键、姓名、电话、分店、房型、入住 / 退房、晚数、人数、每晚价、总价、状态、下单时间、修改时间；读写函数）、`routes.py`（`GET /api/verticals/hotel/bookings`，挂 token，库挂了回 503）
-  2. `backend/app/main.py`：挂上路由（一行）
-  3. `backend/app/tools/local.py`：`hotel_create_booking` / `hotel_get_booking` / `hotel_modify_booking` 从「存客人档案」改为读写这张表；**只能查、改这个客户自己名下的**（按客户键，和点餐查单同一规则）。算价逻辑 `_stay` 不动，搜房 `hotel_search_rooms` 不动（房型仍来自 `hotel.json`）
-  4. `frontend/src/pages/HotelAdmin.tsx`（新）+ `frontend/src/main.tsx`（加 `/hotel-admin`）+ `frontend/src/api.ts`（一个读接口）：照 `FoodAdmin.tsx`——token 门、自动刷新、新预订高亮。列：预订号、客人（姓名 / 电话）、分店、房型、入住 → 退房（几晚）、人数、总价、状态、时间；改过期的标一下
-  5. 测试：表读写、只能碰自己的预订、库挂了不假装订上、接口鉴权和 503（照 `test_food_ordering.py` / `test_verticals_realestate.py` 的 `FakeStore`）
-  验收：全套过；前端 build + oxlint 0；本地真模型订一间房 → 行出现在后台；**部署后用户手机订一间、`/hotel-admin` 刷出来**
+**2026-09-17 用户拍板**：① 编号改成数据库顺序（`BK-00001`、`TCK-00001`）② 后台**只读** ③ **所有 demo 场景的后台合并成一个页面、每个场景一个栏目**（不再各开 `/hotel-admin`、`/saas-admin`）④ 客人档案里现有的预订 / 工单不迁移。因为 ③，页面从 38.3 / 38.4 里拿出来，单独成任务 38.5
 
-- [ ] **任务 38.4：SaaS 工单写进后台 + `/saas-admin` 页面**
-  1. `backend/app/verticals/saas/`（新）：`models.py`（`saas_tickets` 表：客户键、姓名、电话、主题、描述、优先级、状态、开单时间）、`routes.py`（`GET /api/verticals/saas/tickets`）
-  2. `backend/app/main.py`：挂路由
-  3. `backend/app/tools/local.py`：`saas_create_ticket` / `saas_get_tickets` 改为读写这张表，同样只碰自己的；`saas_search_known_issues` 不动
-  4. `frontend/src/pages/SaasAdmin.tsx`（新）+ `main.tsx` + `api.ts`：列：工单号、客户、优先级（urgent 标红）、主题、描述、状态、时间
-  5. 测试同上
-  验收：同上，换成开一张工单、`/saas-admin` 刷出来
+- [x] **任务 38.3：酒店预订写进数据库 + 后台接口**——**2026-09-17 完成**（页面按用户决定 ③ 挪到 38.5）
 
-- [ ] **任务 38.5：文档跟上**（两个后台都做完后，小改）
+  **一句话**：酒店 bot 订的房、改的期，现在写进共享 MySQL 的 `hotel_bookings` 表，`GET /api/verticals/hotel/bookings` 能列出所有客人的预订；客人档案里不再存预订。
+
+  **做了什么**
+  - 新增 `backend/app/verticals/hotel/`：`models.py`（表 + `book` / `change` / `bookings` / `bookings_for`；编号 `BK-00001` 由行 id 推出、不单独存）、`routes.py`（挂导演台 token，库挂了回 503）；`main.py` 挂路由
+  - `tools/local.py`：`hotel_create_booking` / `hotel_get_booking` / `hotel_modify_booking` 改为读写这张表。**查、改都按「渠道确认的客户 + 编号」一起查**，报别人的编号查不到也改不了；`UPDATE` 语句本身也带客户条件。算价 `_stay` 和搜房 `hotel_search_rooms` 没动
+  - 数据库连不上：订房回 `BOOKING_NOT_SAVED`（明确「没订上，别给编号」）、改期回 `BOOKING_NOT_CHANGED`、查询回 `BOOKINGS_UNREADABLE`
+  - **没有客人档案的对话不能订房**（`NO_GUEST`），和点餐同一条线。以前是「存在只活一轮的临时字典里」；网页聊天现在必须先输手机号，所以这只是防御，实际走不到
+
+  **偏离计划：多加了一道防重复**。真模型实测时撞见一次：客人说「帮我订」bot 当场下单（同一轮还并行调了两次），客人说「确认」又订一次，后台出现两条一模一样的预订，bot 还说「刚才编号有误」。**同一客人、同房型、同日期、同人数的预订已存在时，不建第二条，返回原来那张并附 `ALREADY_BOOKED` 说明**（别说成新订或更正）。这个毛病以前就有（存档案时一样会重复），只是现在会出现在后台上。不同日期或人数仍然是新预订
+
+  **验证**
+  - 后端全套 **1013 passed / 7 skipped**。新增 `tests/test_verticals_hotel.py`（后台按新到旧列出、改期后显示新内容和修改时间、库挂了 503、没 token / token 放 query 都 401、编号解析）；`test_local_tools.py` 新增编号顺序、给模型的结果不带客户信息、库挂了不假装订上、改期写失败不说已改、别人的编号查不到改不了、同一次入住只订一次、不同入住仍各算一条。内存替身 `FakeHotelStore` 放在 `conftest.py`（两个测试文件共用），行里存的是 PyMySQL 真实返回的类型（`date` / `Decimal` / `datetime`）
+  - 改了的旧测试：原来断言「预订写进客人档案」的几条（写入落在路由手上的那个 profile、坏掉的槽位会重建）改用 SaaS 工单来测，因为那套机制 SaaS 还在用；「没有档案的访客也能订」改成「不能订但说明原因」
+  - **变异检查 3/3 抓到**：拆掉防重复、查单不带客户条件、库挂了照样返回编号——各自对应的测试都变红，文件已还原
+  - **真 MySQL 8 容器跑了一遍**（假替身验证不了 SQL 本身）：建表、订房、改房型重新算价（RM 960）、编号 `BK-00001` / `BK-00002` 连续、中文名 utf8mb4 存取、别人查不到也改不了、时间是马来西亚时间——全对
+  - **真模型 + 真 MySQL 通过对话订房**：「兰卡威海景套房，两个大人，下周六入住住两晚，帮我订」→ bot 复述「9月26日入住、28日退房」请确认 →「确认预订」→ 调一次 `hotel_create_booking`，表里出现 `BK-00005`（客人、电话、房型、日期、RM 1160 都对），客人档案里没有预订。（第一次跑撞见了上面说的重复，才加的防重复）
+
+  **没验**：线上部署后的真表（线上 `VERTICALS_MYSQL_URL` 点餐在用，表会首次使用时自动建）；没有页面可以看，要等 38.5
+
+- [ ] **任务 38.4：SaaS 工单写进数据库 + 后台接口**
+  1. `backend/app/verticals/saas/`（新）：`models.py`（`saas_tickets` 表：客户键、姓名、电话、主题、描述、优先级、状态、开单时间；编号 `TCK-00001`）、`routes.py`（`GET /api/verticals/saas/tickets`）；`main.py` 挂路由
+  2. `backend/app/tools/local.py`：`saas_create_ticket` / `saas_get_tickets` 改为读写这张表，只碰自己的；`saas_search_known_issues` 不动。**同样加防重复**（同一客人、同主题同描述的未结工单不开第二张）
+  3. 测试照 38.3；客人档案那套机制届时只剩点餐购物车在用，相关旧测试改用购物车或删掉
+  验收：全套过；真 MySQL + 真模型开一张工单能在接口里查到；部署
+
+- [ ] **任务 38.5：统一后台页面——所有 demo 场景一个页面、每个场景一个栏目**
+  - 新页面（暂定 `/admin`），栏目：**点餐 / 房产看房 / 酒店预订 / SaaS 工单**，外加零售（**零售怎么放待用户定**，见 2026-09-17 对话）；同一把 token；当前栏目记在地址里（例如 `/admin#hotel`），能直接收藏某个栏目
+  - 现有 `FoodAdmin.tsx` / `VerticalAdmin.tsx` 的列表搬进栏目；**旧地址 `/food-admin`、`/vertical-admin` 保留**，打开对应栏目（演示时已有的书签和清单不失效）
+  - 每个栏目照点餐后台：自动刷新、新记录高亮、库挂了显示「后台暂不可用」而不是空列表
+  验收：前端 build + oxlint 0；浏览器里逐个栏目看过；手机宽度能用
+
+- [ ] **任务 38.6：文档跟上**（小改）
   - `docs/data-flow-pdpa.md` / `.en.md`「存了什么」表：「餐饮订单、看房预约」那行加上**酒店预订、支持工单**（同样存本系统 MySQL、目前不自动删除）
   - `frontend/src/pages/Privacy.tsx`：公开页「存多久」和「删除会覆盖」里补上这两类记录
-  - `tasks/real-phone-checklist.md`：加一小段「酒店订一间 / SaaS 开一张工单，后台刷出来」
+  - `tasks/real-phone-checklist.md`：开始前的标签改成统一后台；加一小段「酒店订一间 / SaaS 开一张工单，后台对应栏目刷出来」
   - 本文件开头「行业三档」那句更新：hotel、saas 不再是轻量档
-
-**要用户拍板的几件事**（见 2026-09-17 对话）：
-1. 预订号 / 工单号：从现在的**随机**（`BK-4821`）改成**按数据库顺序**（`BK-00001`、`TCK-00001`），和点餐 `FD-00001` 一致？
-2. 后台**只读**（和点餐一样，没有按钮）：预订状态固定「已确认」，工单状态固定「待处理」？还是工单要能在后台改成「处理中 / 已解决」？
-3. 两个页面**分开**（`/hotel-admin`、`/saas-admin`，演示时各开一个标签），还是合成一个？
-4. 现在存在客人档案里的预订和工单**不迁移**（演示数据，7 天就过期）？
 
 ---
 

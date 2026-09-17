@@ -1,4 +1,8 @@
-"""The hotel and SaaS tools: the bots whose back office is their own JSON.
+"""The hotel and SaaS tools.
+
+Since task 38.3 the hotel's bookings are written to the resort's own table, which
+every test here gets an in-memory copy of (`hotel_store` in conftest.py); the SaaS
+tickets still live on the customer's record.
 
 Two things are worth holding on to here. One is that nothing the guest is told
 is arithmetic the model did -- the rate, the nights and the total all come off
@@ -11,6 +15,7 @@ import json
 from datetime import date, timedelta
 from unittest.mock import patch
 
+import pytest
 from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock, BetaUsage
 
 from app.bots.registry import get_bot
@@ -18,6 +23,8 @@ from app.console import events
 from app.services import llm
 from app.services.user_store import UserProfile
 from app.tools import local
+from app.verticals import StoreUnavailable
+from app.verticals.hotel import models as hotel_models
 
 HOTEL = get_bot("hotel")
 SAAS = get_bot("saas")
@@ -26,6 +33,12 @@ SAAS = get_bot("saas")
 # the suite happens to run on.
 SOON = (date.today() + timedelta(days=30)).isoformat()
 LATER = (date.today() + timedelta(days=33)).isoformat()
+
+
+@pytest.fixture(autouse=True)
+def _resort(hotel_store):
+    """Every booking in this module lands in the in-memory bookings table."""
+    yield hotel_store
 
 
 def _guest(**fields) -> UserProfile:
@@ -179,7 +192,7 @@ def test_changing_the_room_reprices_the_stay_at_the_new_rate():
     assert changed["total_rm"] == 2850
 
 
-def test_a_guest_already_staying_can_still_add_a_night():
+def test_a_guest_already_staying_can_still_add_a_night(hotel_store):
     """The rule is that nobody is checked in to a date that has gone, not that a
     guest standing at the desk cannot extend. Refusing here would be the bot
     telling someone in the room that their own stay is in the past."""
@@ -194,9 +207,7 @@ def test_a_guest_already_staying_can_still_add_a_night():
             )
         )
     # A day passes: the stay is now under way.
-    profile.profile["hotel"]["bookings"][0]["check_in"] = (
-        date.today() - timedelta(days=1)
-    ).isoformat()
+    hotel_store.rows[0]["check_in"] = date.today() - timedelta(days=1)
 
     with local.serving(HOTEL, profile):
         extended = json.loads(
@@ -315,26 +326,36 @@ def test_a_write_lands_on_the_profile_the_router_is_about_to_save():
     moment later by the router saving the one it has been holding all along.
     """
     profile = _guest()
-    booking = _booking(profile)
-    assert profile.profile["hotel"]["bookings"][0]["booking_id"] == booking["booking_id"]
+    with local.serving(SAAS, profile):
+        ticket = json.loads(local.saas_create_ticket("Slow dashboard", "Takes a minute."))
+    assert profile.profile["saas"]["tickets"][0]["ticket_id"] == ticket["ticket_id"]
 
 
 def test_a_slot_that_came_back_unusable_is_started_over_rather_than_raised():
     """The profile is free-form and read back off Redis; a customer mid-sentence
     is the wrong moment to discover that something else once wrote there."""
     profile = _guest()
-    profile.profile["hotel"] = "written by something that is not this"
+    profile.profile["saas"] = "written by something that is not this"
+    with local.serving(SAAS, profile):
+        ticket = json.loads(local.saas_create_ticket("Slow dashboard", "Takes a minute."))
+    assert profile.profile["saas"]["tickets"][0]["ticket_id"] == ticket["ticket_id"]
+
+
+def test_a_booking_goes_to_the_resort_not_onto_the_guest_record(hotel_store):
+    """Task 38.3: the back office can only list what is in its table."""
+    profile = _guest(display_name="Aisyah")
     booking = _booking(profile)
-    assert profile.profile["hotel"]["bookings"][0]["booking_id"] == booking["booking_id"]
-
-
-def test_one_bot_does_not_write_into_another_bot_slot():
-    profile = _guest()
-    _booking(profile)
     with local.serving(SAAS, profile):
         local.saas_create_ticket("Slow dashboard", "Takes a minute to load.")
-    assert set(profile.profile) == {"hotel", "saas"}
-    assert "tickets" not in profile.profile["hotel"]
+
+    (row,) = hotel_store.rows
+    assert (row["customer_key"], row["customer_name"], row["phone"]) == (
+        "60173948123",
+        "Aisyah",
+        "60173948123",
+    )
+    assert hotel_models.booking_no(row["id"]) == booking["booking_id"]
+    assert not profile.profile.get("hotel")
     assert "bookings" not in profile.profile["saas"]
 
 
@@ -346,13 +367,14 @@ def test_one_guest_cannot_see_another_guest_booking():
         assert local.hotel_get_booking() == local.NO_BOOKING
 
 
-def test_a_visitor_we_hold_no_record_for_still_gets_a_working_booking():
-    """The web chat can reach a bot with no profile behind it. Better a booking
-    that lives for the conversation than a tool that fails in front of a customer.
-    """
+def test_a_visitor_we_hold_no_record_for_cannot_book_but_is_told_why(hotel_store):
+    """A booking is filed under the customer the channel established; with nobody
+    to file it under, it is refused -- the restaurant draws the same line. The
+    web chat asks for a number before any bot, so this is a guard, not a path."""
     with local.serving(HOTEL, None):
-        booking = json.loads(local.hotel_create_booking("Family Suite", SOON, LATER, 4))
-        assert json.loads(local.hotel_get_booking())[0]["booking_id"] == booking["booking_id"]
+        assert local.hotel_create_booking("Family Suite", SOON, LATER, 4) == local.NO_GUEST
+        assert local.hotel_get_booking() == local.NO_GUEST
+    assert hotel_store.rows == []
 
 
 def test_a_tool_called_outside_a_conversation_says_so_instead_of_crashing():
@@ -434,3 +456,68 @@ def test_get_reply_opens_the_turn_so_a_ticket_reaches_the_customer_record():
 
     # And the turn is closed behind it, rather than leaking into the next one.
     assert local.saas_get_tickets() == local.NO_TURN
+
+
+# --------------------------------------------------------------------------- #
+# Hotel: the booking system behind it (task 38.3)
+# --------------------------------------------------------------------------- #
+
+
+def test_booking_numbers_run_in_order():
+    first = _booking(_guest())
+    second = _booking(_guest(phone="60129998888"))
+    assert (first["booking_id"], second["booking_id"]) == ("BK-00001", "BK-00002")
+
+
+def test_what_the_model_is_given_back_does_not_carry_whose_record_it_is():
+    booking = _booking(_guest(display_name="Aisyah"))
+    assert {"customer_key", "customer_name", "phone", "id"}.isdisjoint(booking)
+
+
+def test_a_booking_system_that_is_down_never_becomes_a_booked_room(hotel_store):
+    hotel_store.fails = True
+    with local.serving(HOTEL, _guest()):
+        answer = local.hotel_create_booking("Sea View Suite", SOON, LATER, 2)
+        looked_up = local.hotel_get_booking()
+    assert answer == local.BOOKING_NOT_SAVED
+    assert "BK-" not in answer
+    assert looked_up == local.BOOKINGS_UNREADABLE
+    assert hotel_store.rows == []
+
+
+def test_a_change_that_cannot_be_saved_is_not_reported_as_made(hotel_store):
+    """Found, then lost on the write: the guest must not hear it has changed."""
+    profile = _guest()
+    booking = _booking(profile)
+    with patch.object(hotel_models, "change", side_effect=StoreUnavailable("down")):
+        with local.serving(HOTEL, profile):
+            answer = local.hotel_modify_booking(booking["booking_id"], guests=1)
+    assert answer == local.BOOKING_NOT_CHANGED
+    assert hotel_store.rows[0]["guests"] == 2
+
+
+def test_the_same_stay_asked_for_twice_is_one_booking_not_two(hotel_store):
+    """Seen through the real model: booked on "帮我订", booked again on "确认"."""
+    profile = _guest()
+    first = _booking(profile)
+    second = _booking(profile)
+
+    assert len(hotel_store.rows) == 1
+    assert second["booking_id"] == first["booking_id"]
+    assert second["note"] == local.ALREADY_BOOKED
+
+
+def test_a_different_stay_for_the_same_guest_is_still_its_own_booking(hotel_store):
+    profile = _guest()
+    _booking(profile)
+    with local.serving(HOTEL, profile):
+        local.hotel_create_booking("Sea View Suite", SOON, LATER, 3)
+    assert len(hotel_store.rows) == 2
+
+
+def test_a_booking_number_read_out_by_somebody_else_cannot_be_changed(hotel_store):
+    booking = _booking(_guest(phone="60173948123"))
+    with local.serving(HOTEL, _guest(phone="60129998888")):
+        assert local.hotel_modify_booking(booking["booking_id"], guests=1) == local.NO_BOOKING
+        assert local.hotel_get_booking(booking["booking_id"]) == local.NO_BOOKING
+    assert hotel_store.rows[0]["guests"] == 2
