@@ -1980,9 +1980,25 @@ def test_a_confirmed_order_leaves_the_phone_buzzing_afterwards(_credentials, _pu
     push = queued[0]
     assert push.delay_seconds == erp.settings.push_delay_seconds
     assert CONFIRMED_ORDER["document_no"] in push.text
-    # Three languages, because it is a line the model did not write -- the same
-    # rule test_whatsapp_webhook.py pins for every other canned message.
+    # Three languages while we have not read a word of theirs -- the same rule
+    # test_whatsapp_webhook.py pins for every other canned message.
     assert len(push.text.split(" / ")) == 3
+
+
+def test_the_order_push_is_in_the_language_the_customer_writes_in(_credentials, _push_queue):
+    """Task 38.1: queued inside the turn, so the record is right there to ask."""
+    local.customer().language = "zh"
+    posts = [_response(_LOGIN), _response(DRAFT_ORDER, 201), _response(CONFIRMED_ORDER)]
+    queued = []
+
+    with patch.object(notify, "add", side_effect=queued.append):
+        with patch.object(api_client.httpx, "post", side_effect=posts):
+            with patch.object(api_client.httpx, "get", return_value=_response(SKU_DETAIL)):
+                erp.erp_create_sales_order(3, [{"sku_id": 12, "quantity": 3}])
+
+    (push,) = queued
+    assert "已确认" in push.text and CONFIRMED_ORDER["document_no"] in push.text
+    assert " / " not in push.text
 
 
 def test_the_template_parameters_are_in_the_order_the_document_promised(

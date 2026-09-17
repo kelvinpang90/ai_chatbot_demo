@@ -160,7 +160,7 @@ def test_asking_for_a_person_hands_it_over_and_says_so_once():
     with patch.object(llm, "get_reply", return_value="(the bot should not answer)"):
         sent = dispatch_message(_said(phone, "can I speak to a human please"))
 
-    assert sent[0]["text"]["body"] == handover.HANDED_OVER_MESSAGE
+    assert sent[0]["text"]["body"] == handover.HANDED_OVER_MESSAGE.en
     assert handover.active(user_store.get(phone)) is True
 
 

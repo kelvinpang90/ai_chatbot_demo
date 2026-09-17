@@ -24,6 +24,7 @@ from anthropic import beta_tool
 
 from app.config import settings
 from app.services import audit, outbox
+from app.services.language import Localized
 from app.tools import local
 from app.verticals import StoreUnavailable
 from app.verticals.realestate import models
@@ -160,18 +161,19 @@ def _flow_token() -> str:
 
 # Sent by the router in place of a form Meta refused to deliver. Canned rather
 # than written by the model, because by the time the refusal comes back the
-# model's turn is over -- and trilingual for that reason, like every other line
-# the model did not write (see test_every_canned_reply_is_written_in_all_three_languages).
-UNDELIVERED_FORM_MESSAGE = (
-    "抱歉，预约表格暂时打不开。请直接在这里回复：您的姓名、想看哪一套房源，以及方便的日期。 / "
-    "Sorry, the booking form could not be opened. Just reply here with your name, "
-    "which property you would like to see, and a date that suits you. / "
-    "Maaf, borang tempahan tidak dapat dibuka. Sila balas di sini dengan nama anda, "
-    "hartanah yang ingin dilihat, dan tarikh yang sesuai."
+# model's turn is over -- and written in all three languages for that reason, like
+# every other line the model did not write. The router sends the one on the
+# customer's record (task 38.1).
+UNDELIVERED_FORM_MESSAGE = Localized(
+    zh="抱歉，预约表格暂时打不开。请直接在这里回复：您的姓名、想看哪一套房源，以及方便的日期。",
+    en="Sorry, the booking form could not be opened. Just reply here with your name, "
+    "which property you would like to see, and a date that suits you.",
+    ms="Maaf, borang tempahan tidak dapat dibuka. Sila balas di sini dengan nama anda, "
+    "hartanah yang ingin dilihat, dan tarikh yang sesuai.",
 )
 
 
-def undelivered_form_fallback(payload: dict) -> str | None:
+def undelivered_form_fallback(payload: dict) -> Localized | None:
     """What to say in the chat if Meta refuses this payload, when it is our form.
 
     None for anything else, including somebody else's Flow: a future food form

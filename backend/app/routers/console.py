@@ -544,10 +544,9 @@ def send_demo_summary(request: DemoSummaryRequest) -> DemoSummaryResult:
     being served; the log does.
     """
     key_id, conversation_id = _conversation_to_close(request.key_id)
-    built = summary.for_conversation(conversation_id)
-    if built is None:
+    counted = summary.tally(conversation_id)
+    if counted is None:
         raise HTTPException(status_code=404, detail="Nothing recorded for that conversation")
-    text, counted = built
 
     profile = user_store.get(key_id)
     if profile is None or not profile.phone:
@@ -557,6 +556,7 @@ def send_demo_summary(request: DemoSummaryRequest) -> DemoSummaryResult:
             status_code=409, detail="No phone number on file for that customer any more"
         )
 
+    text = summary.compose(counted, profile.language)
     notify.send_now(profile.phone, text)
     return DemoSummaryResult(
         key_id=key_id,

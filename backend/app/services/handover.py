@@ -24,6 +24,7 @@ import time
 
 from app.config import settings
 from app.console import events
+from app.services.language import Localized
 from app.services.user_store import user_store
 
 logger = logging.getLogger(__name__)
@@ -56,14 +57,14 @@ HANDOVER_TOOL = "handover"
 # deploy. Read at each call rather than bound to a module constant, so a test
 # can move it without reloading this module.
 
-# What the customer is told when they ask for a person. Three languages, like
-# every other line the model did not write -- and the only one either side of
-# this sends automatically: going back to the bot says nothing at all, because a
-# customer who is told "the robot is back" has been shown the join.
-HANDED_OVER_MESSAGE = (
-    "好的，我帮您转接同事，请稍等一下。 / "
-    "Of course - I'm passing you to a colleague now, one moment. / "
-    "Baik, saya sambungkan anda kepada rakan sekerja saya, sekejap ya."
+# What the customer is told when they ask for a person, in the language they
+# asked in (task 38.1: "找人工客服" used to get all three) -- and the only line
+# either side of this sends automatically: going back to the bot says nothing at
+# all, because a customer who is told "the robot is back" has been shown the join.
+HANDED_OVER_MESSAGE = Localized(
+    zh="好的，我帮您转接同事，请稍等一下。",
+    en="Of course - I'm passing you to a colleague now, one moment.",
+    ms="Baik, saya sambungkan anda kepada rakan sekerja saya, sekejap ya.",
 )
 
 

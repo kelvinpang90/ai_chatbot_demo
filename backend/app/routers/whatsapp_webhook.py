@@ -21,6 +21,8 @@ from app.services import (
     whatsapp,
     whatsapp_media,
 )
+from app.services import language
+from app.services.language import Localized
 from app.services.user_store import user_store
 from app.session_store import session_store
 from app.tools import erp, realestate
@@ -28,52 +30,55 @@ from app.tools import erp, realestate
 router = APIRouter(prefix="/webhook/whatsapp")
 logger = logging.getLogger(__name__)
 
-# The canned replies, in all three languages the demo is sold in.
+# The canned replies, written in all three languages the demo is sold in.
 #
 # These are the only things a customer reads that the model did not write, and
-# they turn up mid-conversation -- so they cannot be answered in the language the
-# customer is writing in the way every other reply is. Seen on a real phone on
-# 2026-09-11: a conversation in Chinese about a helmet, and then one flat English
-# sentence, which reads as the seam it is. `llm.FALLBACK_REPLY` had already
-# settled the shape for this; these follow it. Anything added here follows it too.
-RATE_LIMIT_MESSAGE = (
-    "您今天在这个 demo 的消息次数已用完，请明天再试。 / "
-    "You've reached today's message limit for this demo - please try again tomorrow. / "
-    "Anda telah mencapai had mesej harian untuk demo ini - sila cuba lagi esok."
+# they turn up mid-conversation. Seen on a real phone on 2026-09-11: a
+# conversation in Chinese about a helmet, and then one flat English sentence,
+# which reads as the seam it is. So they went out in all three at once -- until
+# 2026-09-17 (task 38.1), when "找人工客服" answered in three languages read as a
+# seam of its own. Now each is sent once, in the language on the customer's
+# record (`language.remember`), and in all three only while we have not read a
+# word of theirs. `llm.FALLBACK_REPLY` has the same shape; anything added here
+# follows it too.
+RATE_LIMIT_MESSAGE = Localized(
+    zh="您今天在这个 demo 的消息次数已用完，请明天再试。",
+    en="You've reached today's message limit for this demo - please try again tomorrow.",
+    ms="Anda telah mencapai had mesej harian untuk demo ini - sila cuba lagi esok.",
 )
-UNSUPPORTED_TYPE_MESSAGE = (
-    "抱歉，这个 demo 只能读文字、语音、图片和 PDF，请直接打字告诉我。 / "
-    "Sorry, I can only read text, voice, photo and PDF messages in this demo - "
-    "please type your question instead. / "
-    "Maaf, demo ini hanya boleh membaca teks, suara, gambar dan PDF - "
-    "sila taip soalan anda."
+UNSUPPORTED_TYPE_MESSAGE = Localized(
+    zh="抱歉，这个 demo 只能读文字、语音、图片和 PDF，请直接打字告诉我。",
+    en="Sorry, I can only read text, voice, photo and PDF messages in this demo - "
+    "please type your question instead.",
+    ms="Maaf, demo ini hanya boleh membaca teks, suara, gambar dan PDF - "
+    "sila taip soalan anda.",
 )
 # One line for both ways a voice note can come to nothing, because the customer's
 # next move is the same either way. Which of the two it was is on the console.
-VOICE_UNREADABLE_MESSAGE = (
-    "抱歉，这条语音我没听清，请直接打字告诉我。 / "
-    "Sorry, I couldn't make out that voice message - please type your question instead. / "
-    "Maaf, saya tidak dapat menangkap mesej suara itu - sila taip soalan anda."
+VOICE_UNREADABLE_MESSAGE = Localized(
+    zh="抱歉，这条语音我没听清，请直接打字告诉我。",
+    en="Sorry, I couldn't make out that voice message - please type your question instead.",
+    ms="Maaf, saya tidak dapat menangkap mesej suara itu - sila taip soalan anda.",
 )
 # Same posture for a photo. Three ways it can come to nothing -- the download
 # failed, the file was over the cap, or it is a format the model cannot read --
 # and one thing left for the customer to do about any of them.
-IMAGE_UNREADABLE_MESSAGE = (
-    "抱歉，这张照片我打不开，麻烦再发一次，或者直接说说您看到的是什么。 / "
-    "Sorry, I couldn't open that photo - please try sending it again, "
-    "or describe what you're seeing. / "
-    "Maaf, saya tidak dapat membuka gambar itu - sila hantar semula, "
-    "atau ceritakan apa yang anda lihat."
+IMAGE_UNREADABLE_MESSAGE = Localized(
+    zh="抱歉，这张照片我打不开，麻烦再发一次，或者直接说说您看到的是什么。",
+    en="Sorry, I couldn't open that photo - please try sending it again, "
+    "or describe what you're seeing.",
+    ms="Maaf, saya tidak dapat membuka gambar itu - sila hantar semula, "
+    "atau ceritakan apa yang anda lihat.",
 )
 # A file has one more way to come to nothing than a photo does -- it can be a
 # type the model cannot read at all -- and that one is worth naming, because
 # unlike a failed download it tells the customer something they can act on.
-DOCUMENT_UNREADABLE_MESSAGE = (
-    "抱歉，这个文件我打不开，这个 demo 目前只能读 PDF，麻烦转成 PDF 再发一次。 / "
-    "Sorry, I couldn't open that file - this demo can only read PDFs, "
-    "so please export it as a PDF and send it again. / "
-    "Maaf, saya tidak dapat membuka fail itu - demo ini hanya boleh membaca PDF, "
-    "sila hantar semula dalam bentuk PDF."
+DOCUMENT_UNREADABLE_MESSAGE = Localized(
+    zh="抱歉，这个文件我打不开，这个 demo 目前只能读 PDF，麻烦转成 PDF 再发一次。",
+    en="Sorry, I couldn't open that file - this demo can only read PDFs, "
+    "so please export it as a PDF and send it again.",
+    ms="Maaf, saya tidak dapat membuka fail itu - demo ini hanya boleh membaca PDF, "
+    "sila hantar semula dalam bentuk PDF.",
 )
 GREETING_SUFFIX_EN = "How can I help you today?"
 # Not a tool the model called, but the same thing to the person watching the
@@ -267,7 +272,7 @@ def _handle_incoming_message(message: dict, contact: dict | None = None) -> None
         )
 
 
-def _say_instead_of_the_form(payload: dict, fallback: str, refused: Exception) -> None:
+def _say_instead_of_the_form(payload: dict, fallback: Localized, refused: Exception) -> None:
     """Meta would not deliver a form: ask for the same details in the chat.
 
     Here in the send loop, because this is the first moment anybody knows. The
@@ -303,14 +308,15 @@ def _say_instead_of_the_form(payload: dict, fallback: str, refused: Exception) -
         logger.info("not sending the form fallback to %s: a person has it", to)
         return
 
-    whatsapp.send_raw(whatsapp.build_text_message(to, fallback))
+    text = fallback.pick(profile.language if profile else None)
+    whatsapp.send_raw(whatsapp.build_text_message(to, text))
     if profile is None:
         return
-    profile.add_message("assistant", fallback)
+    profile.add_message("assistant", text)
     user_store.save(profile)
     audit.begin_for(profile, audit.WHATSAPP)
     try:
-        audit.record_message("assistant", fallback)
+        audit.record_message("assistant", text)
     finally:
         audit.close()
 
@@ -369,7 +375,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
 
     if not session_store.check_and_increment_daily_count(sender.key):
         logger.info("Rate limit hit for %s", sender.key)
-        return _canned(sender, RATE_LIMIT_MESSAGE)
+        return _canned(sender, RATE_LIMIT_MESSAGE, (message.get("text") or {}).get("body", ""))
 
     msg_type = message.get("type")
     if msg_type == "interactive":
@@ -388,7 +394,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
         block = message.get("image") or {}
         photo = _fetch_photo(block)
         if photo is None:
-            return _canned(sender, IMAGE_UNREADABLE_MESSAGE)
+            return _canned(sender, IMAGE_UNREADABLE_MESSAGE, str(block.get("caption") or ""))
         # The picture travels beside the turn, not inside it: what the history
         # keeps is the caption under a marker, which is all the model can use on
         # a later turn anyway.
@@ -397,18 +403,26 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
             _photo_text(str(block.get("caption") or "")),
             source=audit.IMAGE,
             image=photo,
+            their_words=str(block.get("caption") or ""),
         )
 
     if msg_type == "document":
         block = message.get("document") or {}
         document = _fetch_document(block)
         if document is None:
-            return _canned(sender, DOCUMENT_UNREADABLE_MESSAGE)
+            return _canned(sender, DOCUMENT_UNREADABLE_MESSAGE, str(block.get("caption") or ""))
         # Filed before the turn runs, because this is not a one-turn attachment:
         # every message from here on hangs it back on the line below until the
         # customer sends another file or starts the demo over.
         doc_store.remember(sender.key, document)
-        return _handle_text_message(sender, document.marker, source=audit.DOCUMENT)
+        # The caption is theirs; the filename in the marker is not, and
+        # "Quotation_2026.pdf" would read as English.
+        return _handle_text_message(
+            sender,
+            document.marker,
+            source=audit.DOCUMENT,
+            their_words=str(block.get("caption") or ""),
+        )
 
     if msg_type != "text":
         logger.info("Ignoring unsupported message type '%s' from %s", msg_type, sender.key)
@@ -670,7 +684,7 @@ def _remember_identity(profile, sender: Sender) -> None:
         profile.display_name = sender.username
 
 
-def _canned(sender: "Sender", message: str) -> list[dict]:
+def _canned(sender: "Sender", message: Localized, their_words: str = "") -> list[dict]:
     """One of the bot's own apologies -- unless a person has the conversation.
 
     Every one of these sits on a path that returns before `_handle_text_message`
@@ -681,11 +695,17 @@ def _canned(sender: "Sender", message: str) -> list[dict]:
     announce there is a bot. "This demo can only read text, voice, photo and
     PDF" arriving in the middle of a human conversation is the join made visible
     in one line.
+
+    In the language of `their_words` if this message had any we can read, else
+    the one on their record, else all three (task 38.1). Nothing is filed here:
+    these paths keep no record, and a stranger over the daily cap is still one.
     """
-    if handover.active(user_store.get(sender.key)):
+    profile = user_store.get(sender.key)
+    if handover.active(profile):
         logger.info("swallowing a canned reply to %s: a person has it", sender.key)
         return []
-    return [whatsapp.build_text_message(sender.key, message)]
+    known = language.detect(their_words) or (profile.language if profile else None)
+    return [whatsapp.build_text_message(sender.key, message.pick(known))]
 
 
 def _asked_for_a_person(text: str) -> bool:
@@ -724,7 +744,12 @@ def _handle_text_message(
     text: str,
     source: str = audit.TEXT,
     image: llm.Image | None = None,
+    their_words: str | None = None,
 ) -> list[dict]:
+    """`their_words` is what the customer wrote themselves, when `text` is not
+    all theirs: a photo's caption without our marker, a file's caption without
+    its filename, nothing at all for a button they tapped. Left out, it is `text`.
+    """
     if text.strip().lower() in MENU_KEYWORDS:
         logger.info("Menu reset requested by %s", sender.key)
         _start_over(sender)
@@ -732,6 +757,9 @@ def _handle_text_message(
 
     profile = user_store.get_or_create(sender.key)
     _remember_identity(profile, sender)
+    # Before anything answers, so the handover line below is already in the
+    # language this very message was written in.
+    language.remember(profile, text if their_words is None else their_words)
 
     if handover.active(profile):
         # A person has this conversation. The message is filed so the transcript
@@ -745,8 +773,9 @@ def _handle_text_message(
     if _asked_for_a_person(text):
         logger.info("%s asked for a person", sender.key)
         handover.begin(profile, reason=text.strip()[:200])
-        _record_while_silent(profile, text, source, reply=handover.HANDED_OVER_MESSAGE)
-        return [whatsapp.build_text_message(sender.key, handover.HANDED_OVER_MESSAGE)]
+        reply = handover.HANDED_OVER_MESSAGE.pick(profile.language)
+        _record_while_silent(profile, text, source, reply=reply)
+        return [whatsapp.build_text_message(sender.key, reply)]
 
     if profile.bot_id is None:
         logger.info("No bot selected yet for %s, showing bot list", sender.key)
@@ -874,7 +903,10 @@ def _handle_interactive_reply(sender: Sender, interactive: dict) -> list[dict]:
     said = _resolve_quick_question(profile.bot_id, selected_id) or _resolve_product_choice(
         selected_id, str(selected.get("title") or "")
     )
-    return _handle_text_message(sender, said, source=audit.INTERACTIVE) if said else []
+    if not said:
+        return []
+    # A button's title is our wording, not theirs: it says nothing about their language.
+    return _handle_text_message(sender, said, source=audit.INTERACTIVE, their_words="")
 
 
 def _handle_flow_reply(sender: Sender, nfm_reply: dict) -> list[dict]:
@@ -914,7 +946,7 @@ def _handle_flow_reply(sender: Sender, nfm_reply: dict) -> list[dict]:
     # `_handle_text_message` opens the turn this belongs to, which is why the
     # write above it does not open one of its own.
     said = realestate.book_from_form(nfm_reply, profile.phone or "")
-    return _handle_text_message(sender, said, source=audit.INTERACTIVE)
+    return _handle_text_message(sender, said, source=audit.INTERACTIVE, their_words="")
 
 
 def _resolve_product_choice(row_id: str, title: str) -> str | None:

@@ -12,6 +12,7 @@ from app.config import settings
 from app.services import erp_client, invoice_pdf, notify, outbox, whatsapp, whatsapp_media
 from app.services import phone as phone_service
 from app.services.api_client import ApiClientError
+from app.services.language import Localized
 from app.services.whatsapp_media import MediaError
 from app.tools import local
 
@@ -557,13 +558,14 @@ def erp_create_customer(
 NO_ORDERS = "This customer has no orders in the ERP system."
 
 # What the phone says half a minute after an order, with nobody having asked
-# (task 19). Three languages for the reason every canned line in this project is:
-# it is the one message in the conversation the model did not write, and an
-# English sentence arriving alone in a Chinese chat reads as the seam it is.
-ORDER_PUSH = (
-    "您的订单 {order_no} 已确认，合计 {total}，我们正在为您备货。 / "
-    "Your order {order_no} is confirmed, total {total}. We're getting it ready now. / "
-    "Pesanan anda {order_no} telah disahkan, jumlah {total}. Kami sedang menyediakannya."
+# (task 19). Written in three languages for the reason every canned line in this
+# project is: it is the one message in the conversation the model did not write,
+# and an English sentence arriving alone in a Chinese chat reads as the seam it
+# is. Sent in the one on the customer's record (task 38.1).
+ORDER_PUSH = Localized(
+    zh="您的订单 {order_no} 已确认，合计 {total}，我们正在为您备货。",
+    en="Your order {order_no} is confirmed, total {total}. We're getting it ready now.",
+    ms="Pesanan anda {order_no} telah disahkan, jumlah {total}. Kami sedang menyediakannya.",
 )
 
 
@@ -650,7 +652,9 @@ def _promise_an_update(order: dict) -> None:
     notify.add(
         notify.Push(
             delay_seconds=settings.push_delay_seconds,
-            text=ORDER_PUSH.format(order_no=order_no, total=total),
+            text=ORDER_PUSH.format(order_no=order_no, total=total).pick(
+                local.customer_language()
+            ),
             # For the day this fires outside the 24-hour window. The order of
             # these three is docs/whatsapp-templates.md's, not ours.
             template=notify.Template(

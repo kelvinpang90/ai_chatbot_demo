@@ -25,7 +25,16 @@ from app.routers.whatsapp_webhook import (
     _resolve_quick_question,
     dispatch_message,
 )
-from app.services import doc_store, llm, notify, outbox, transcribe, whatsapp, whatsapp_media
+from app.services import (
+    doc_store,
+    handover,
+    llm,
+    notify,
+    outbox,
+    transcribe,
+    whatsapp,
+    whatsapp_media,
+)
 from app.services.user_store import user_store
 from app.tools import erp as erp_tools
 from app.tools import food as food_tools
@@ -47,6 +56,10 @@ def test_every_canned_reply_is_written_in_all_three_languages():
     a real phone on 2026-09-11, in the middle of a Chinese conversation. This
     guards the shape rather than the wording: a fourth canned message added in a
     year's time should fail here rather than on someone's screen.
+
+    Since task 38.1 each is sent in one language when the customer's is known,
+    so all three have to be really there -- a blank Malay line would go out as
+    an empty message to exactly the customers who write in Malay.
     """
     canned = {
         "RATE_LIMIT_MESSAGE": RATE_LIMIT_MESSAGE,
@@ -64,15 +77,17 @@ def test_every_canned_reply_is_written_in_all_three_languages():
         "realestate.UNDELIVERED_FORM_MESSAGE": realestate_tools.UNDELIVERED_FORM_MESSAGE,
         # Scene 3's "your food is on its way", sent by a timer after the turn ended.
         "food.ON_THE_WAY_PUSH": food_tools.ON_THE_WAY_PUSH,
+        # The screenshot that started task 38.1.
+        "handover.HANDED_OVER_MESSAGE": handover.HANDED_OVER_MESSAGE,
     }
     for name, message in canned.items():
-        parts = [part.strip() for part in message.split(" / ")]
-        assert len(parts) == 3, f"{name} is not in three languages"
-        assert any("一" <= ch <= "鿿" for ch in parts[0]), f"{name} has no Chinese first"
-        assert parts[1].isascii(), f"{name} has no English second"
-        assert parts[2].isascii(), f"{name} has no Malay third"
-        # WhatsApp refuses a text body over 4096 characters.
-        assert len(message) <= 4096, f"{name} is too long for WhatsApp"
+        assert any("一" <= ch <= "鿿" for ch in message.zh), f"{name} has no Chinese"
+        assert message.en.strip() and message.en.isascii(), f"{name} has no English"
+        assert message.ms.strip() and message.ms.isascii(), f"{name} has no Malay"
+        assert message.en != message.ms, f"{name} has English where Malay should be"
+        # Unknown language: all three, and WhatsApp refuses a body over 4096.
+        assert len(message.pick(None).split(" / ")) == 3, f"{name} is not in three languages"
+        assert len(message.pick(None)) <= 4096, f"{name} is too long for WhatsApp"
 
 
 def test_extract_messages_reads_nested_meta_payload():
@@ -707,7 +722,7 @@ def test_a_transcription_that_fails_asks_for_typing_and_says_why_on_the_console(
                 sent = dispatch_message(_voice_message(phone))
 
     get_reply.assert_not_called()
-    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE.pick(None)
     ended = [e for e in events.since(0) if e.type == events.TOOL_END]
     assert ended[0].status == "error" and "quota exceeded" in ended[0].output
     events.clear()
@@ -724,7 +739,7 @@ def test_a_download_that_fails_is_answered_rather_than_thrown():
     ):
         sent = dispatch_message(_voice_message(phone))
 
-    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE.pick(None)
 
 
 def test_a_clip_with_nothing_audible_never_becomes_an_empty_turn():
@@ -740,7 +755,7 @@ def test_a_clip_with_nothing_audible_never_becomes_an_empty_turn():
             sent = dispatch_message(_voice_message(phone))
 
     get_reply.assert_not_called()
-    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE.pick(None)
     assert user_store.get(phone).history == []
     ended = [e for e in events.since(0) if e.type == events.TOOL_END]
     assert ended[0].status == "ok" and ended[0].output == "(nothing audible)"
@@ -757,7 +772,7 @@ def test_an_audio_message_with_no_media_id_is_answered_without_a_download():
         sent = dispatch_message(no_id)
 
     fetch.assert_not_called()
-    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == VOICE_UNREADABLE_MESSAGE.pick(None)
     failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
     assert len(failures) == 1 and "no media id" in failures[0].output
     events.clear()
@@ -772,7 +787,7 @@ def test_a_message_type_nobody_handles_is_still_answered_with_the_type_it_instea
 
     sent = dispatch_message(sticker)
 
-    assert sent[0]["text"]["body"] == UNSUPPORTED_TYPE_MESSAGE
+    assert sent[0]["text"]["body"] == UNSUPPORTED_TYPE_MESSAGE.pick(None)
 
 
 # -- photos (task 14) ----------------------------------------------------------
@@ -904,7 +919,7 @@ def test_a_photo_download_that_fails_is_answered_rather_than_thrown():
             sent = dispatch_message(_photo_message(phone))
 
     get_reply.assert_not_called()
-    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE.pick(None)
     ended = [e for e in events.since(0) if e.type == events.TOOL_END]
     assert ended[0].status == "error" and "too big" in ended[0].output
     events.clear()
@@ -922,7 +937,7 @@ def test_a_format_the_model_cannot_read_never_becomes_an_api_call():
             sent = dispatch_message(_photo_message(phone))
 
     get_reply.assert_not_called()
-    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE.pick(None)
     ended = [e for e in events.since(0) if e.type == events.TOOL_END]
     assert ended[0].status == "error" and "image/tiff" in ended[0].output
     events.clear()
@@ -938,7 +953,7 @@ def test_an_image_message_with_no_media_id_is_answered_without_a_download():
         sent = dispatch_message(no_id)
 
     fetch.assert_not_called()
-    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == IMAGE_UNREADABLE_MESSAGE.pick(None)
     failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
     assert len(failures) == 1 and "no media id" in failures[0].output
     events.clear()
@@ -1142,7 +1157,7 @@ def test_a_file_that_will_not_download_is_answered_rather_than_thrown():
             sent = dispatch_message(_document_message(phone))
 
     get_reply.assert_not_called()
-    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE.pick(None)
     ended = [e for e in events.since(0) if e.type == events.TOOL_END]
     assert ended[0].status == "error" and "too big" in ended[0].output
     events.clear()
@@ -1162,7 +1177,7 @@ def test_a_word_file_never_becomes_an_api_call():
             sent = dispatch_message(_document_message(phone))
 
     get_reply.assert_not_called()
-    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE.pick(None)
     ended = [e for e in events.since(0) if e.type == events.TOOL_END]
     assert ended[0].status == "error" and "wordprocessingml" in ended[0].output
     events.clear()
@@ -1178,7 +1193,7 @@ def test_a_document_message_with_no_media_id_is_answered_without_a_download():
         sent = dispatch_message(no_id)
 
     fetch.assert_not_called()
-    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE
+    assert sent[0]["text"]["body"] == DOCUMENT_UNREADABLE_MESSAGE.pick(None)
     failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
     assert len(failures) == 1 and "no media id" in failures[0].output
     events.clear()

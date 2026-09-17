@@ -29,6 +29,7 @@ from anthropic import beta_tool
 from app.bots import registry as bots
 from app.config import settings
 from app.services import notify
+from app.services.language import Localized
 from app.tools import local
 from app.verticals import StoreUnavailable
 from app.verticals.food import models
@@ -44,13 +45,14 @@ CART = "cart"
 # Kept after an order so the next one does not have to ask again.
 ADDRESS = "delivery_address"
 
-# Sent by the push timer, after the model's turn has ended -- so it is canned, and
-# written in all three languages like every other line the model did not write
-# (test_every_canned_reply_is_written_in_all_three_languages).
-ON_THE_WAY_PUSH = (
-    "您的订单 {order_no} 已出餐，骑手预计 {minutes} 分钟送达。 / "
-    "Your order {order_no} has left the kitchen - the rider should be with you in about {minutes} minutes. / "
-    "Pesanan anda {order_no} sudah siap - penghantar dijangka tiba dalam {minutes} minit."
+# Sent by the push timer, after the model's turn has ended -- so it is canned,
+# written in all three languages like every other line the model did not write,
+# and sent in the one on the customer's record (task 38.1).
+ON_THE_WAY_PUSH = Localized(
+    zh="您的订单 {order_no} 已出餐，骑手预计 {minutes} 分钟送达。",
+    en="Your order {order_no} has left the kitchen - "
+    "the rider should be with you in about {minutes} minutes.",
+    ms="Pesanan anda {order_no} sudah siap - penghantar dijangka tiba dalam {minutes} minit.",
 )
 
 NO_TURN = (
@@ -272,7 +274,9 @@ def food_place_order(delivery_address: str, customer_name: str = "") -> str:
     will_buzz = notify.available() and notify.add(
         notify.Push(
             delay_seconds=ready_after,
-            text=ON_THE_WAY_PUSH.format(order_no=order_no, minutes=models.RIDER_MINUTES),
+            text=ON_THE_WAY_PUSH.format(order_no=order_no, minutes=models.RIDER_MINUTES).pick(
+                local.customer_language()
+            ),
         )
     )
     total = models.subtotal_of(lines) + fee

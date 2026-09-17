@@ -258,6 +258,17 @@ def test_the_order_queues_the_push_for_the_moment_it_leaves_the_kitchen(fake_sto
     assert push.template is None
 
 
+def test_the_kitchen_push_is_in_the_language_the_customer_writes_in(fake_store, on_whatsapp):
+    """Task 38.1: scene 3's buzz, in English for someone who ordered in English."""
+    on_whatsapp.language = "en"
+    food.food_update_cart(SCENE_4B)
+    food.food_place_order("12 Jalan Ampang")
+
+    (push,) = _queued()
+    assert "left the kitchen" in push.text and "FD-00001" in push.text
+    assert " / " not in push.text
+
+
 def test_when_the_push_can_arrive_the_back_office_already_says_on_the_way(fake_store, on_whatsapp):
     """The one thing this design exists for. The push is dispatched after the
     reply, so it lands at ready_at or later -- and from ready_at the row reads

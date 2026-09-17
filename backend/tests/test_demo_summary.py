@@ -101,6 +101,20 @@ def test_the_document_numbers_come_out_of_what_the_tool_returned(_audit):
     assert "SO-2026-00001, SO-2026-00002" in text
 
 
+def test_the_summary_is_one_paragraph_in_their_language_when_we_know_it(_audit):
+    """Task 38.1. Three paragraphs was the long line at its longest."""
+    calls = [_call("erp_create_sales_order", '{"order_no": "SO-2026-00001"}')]
+
+    with patch.object(audit_store, "query", side_effect=_answers(_messages(), calls)):
+        counted = summary.tally(CONVERSATION)
+
+    english = summary.compose(counted, "en")
+    assert "In the last" in english
+    assert not any("一" <= ch <= "鿿" for ch in english)
+    assert "Dalam" not in english
+    assert summary.compose(counted).count("\n\n") == 2
+
+
 def test_a_tool_result_that_is_not_json_does_not_take_the_summary_down(_audit):
     """A refusal comes back as a sentence. It is still a call that ran, and it
     still must not become a document number in the closing message."""

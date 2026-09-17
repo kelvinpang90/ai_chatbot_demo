@@ -259,12 +259,14 @@ def _phrase(activity: Activity, count: int, references: list[str], language: str
     return text + brackets.format(", ".join(references)) if references else text
 
 
-def compose(tally: Tally) -> str:
-    """The message itself, in all three languages.
+def compose(tally: Tally, language: str | None = None) -> str:
+    """The message itself: in the customer's language, or in all three.
 
-    Separated by blank lines rather than the " / " every other canned line in
-    this project uses. Those are one sentence and this is three paragraphs; run
-    together with slashes it would be unreadable on the screen it is written for.
+    All three only when their record does not know which they write in (task
+    38.1). Then separated by blank lines rather than the " / " every other
+    canned line in this project uses: those are one sentence and this is three
+    paragraphs, and run together with slashes it would be unreadable on the
+    screen it is written for.
     """
     zh = "、".join(_phrase(*line, "zh") for line in tally.lines)
     en = ", ".join(_phrase(*line, "en") for line in tally.lines)
@@ -304,16 +306,11 @@ def compose(tally: Tally) -> str:
         head_en = f"📋 We talked for {tally.minutes} minutes just now."
         head_ms = f"📋 Kita berbual selama {tally.minutes} minit tadi."
 
-    return "\n\n".join(
-        (
-            f"{head_zh}{KEEPSAKE_ZH}",
-            f"{head_en} {KEEPSAKE_EN}",
-            f"{head_ms} {KEEPSAKE_MS}",
-        )
-    )
-
-
-def for_conversation(conversation_id: str) -> tuple[str, Tally] | None:
-    """The closing message for one demo, with the tally it was built from."""
-    counted = tally(conversation_id)
-    return None if counted is None else (compose(counted), counted)
+    paragraphs = {
+        "zh": f"{head_zh}{KEEPSAKE_ZH}",
+        "en": f"{head_en} {KEEPSAKE_EN}",
+        "ms": f"{head_ms} {KEEPSAKE_MS}",
+    }
+    if language in paragraphs:
+        return paragraphs[language]
+    return "\n\n".join(paragraphs.values())

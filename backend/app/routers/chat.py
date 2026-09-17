@@ -17,7 +17,7 @@ from app.models import (
     SendMessageResponse,
 )
 from app.routers.console import require_console_write
-from app.services import audit, llm, phone
+from app.services import audit, language, llm, phone
 from app.services.user_store import UserProfile, identity, user_store
 
 router = APIRouter(prefix="/api")
@@ -168,6 +168,9 @@ def send_message(key: str, body: SendMessageRequest) -> SendMessageResponse:
     # they would have no conversation to belong to.
     audit.begin_for(profile, audit.WEB)
     try:
+        # The same record as the phone, so the same rule: what they write here
+        # decides the language of the lines the model does not write (task 38.1).
+        language.remember(profile, body.message)
         profile.add_message("user", body.message)
         audit.record_message("user", body.message)
         # The customer record goes to the model, which is what makes this the same

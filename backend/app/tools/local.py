@@ -160,6 +160,16 @@ def customer() -> "UserProfile | None":
     return None if current is None else current.customer
 
 
+def customer_language() -> str | None:
+    """The language on this customer's record, for a line a tool writes itself.
+
+    None outside a conversation or before they have written anything we could
+    read, which a `Localized` line answers in all three (task 38.1).
+    """
+    current = customer()
+    return current.language if current is not None else None
+
+
 def caller_phone() -> str:
     """The number the channel itself established for this conversation, or "".
 

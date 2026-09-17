@@ -12,6 +12,7 @@ from app.bots.registry import BotConfig
 from app.config import settings
 from app.console import cost, events
 from app.services import audit
+from app.services.language import Localized
 from app.services.user_store import UserProfile
 from app.session_store import Message
 from app.tools import local
@@ -118,10 +119,12 @@ def _base_media_type(mime_type: str) -> str:
     return mime_type.split(";")[0].strip().lower()
 
 
-FALLBACK_REPLY = (
-    "抱歉，我这边出了点问题，请稍后再试。 / "
-    "Sorry, something went wrong on my end - please try again shortly. / "
-    "Maaf, ada sedikit masalah pada sistem - sila cuba sebentar lagi."
+# Sent in the customer's language when their record knows it, and in all three
+# when it does not (task 38.1) -- see `language.Localized`.
+FALLBACK_REPLY = Localized(
+    zh="抱歉，我这边出了点问题，请稍后再试。",
+    en="Sorry, something went wrong on my end - please try again shortly.",
+    ms="Maaf, ada sedikit masalah pada sistem - sila cuba sebentar lagi.",
 )
 
 # The one rule every bot needs and none of them can be trusted to carry alone:
@@ -572,16 +575,16 @@ def get_reply(
             _record_usage(bot, model, response)
     except anthropic.APIError:
         logger.exception("Claude API call failed")
-        return FALLBACK_REPLY
+        return FALLBACK_REPLY.pick(customer.language if customer else None)
 
     if response is None:
         logger.error("Tool runner finished without producing a message")
-        return FALLBACK_REPLY
+        return FALLBACK_REPLY.pick(customer.language if customer else None)
 
-    return _reply_text(bot, response)
+    return _reply_text(bot, response, customer.language if customer else None)
 
 
-def _reply_text(bot: BotConfig, response) -> str:
+def _reply_text(bot: BotConfig, response, language: str | None = None) -> str:
     """The words to send, or the apology, but never nothing.
 
     Two ways a turn can finish without a usable answer, both of which used to be
@@ -605,10 +608,10 @@ def _reply_text(bot: BotConfig, response) -> str:
             bot.id,
             MAX_REPLY_TOKENS,
         )
-        return FALLBACK_REPLY
+        return FALLBACK_REPLY.pick(language)
     if not text:
         logger.error("bot=%s produced no text to send (stop_reason=%s)", bot.id, stop_reason)
-        return FALLBACK_REPLY
+        return FALLBACK_REPLY.pick(language)
 
     # Appended to what goes out, and deliberately not to what is remembered --
     # see `without_sources`.

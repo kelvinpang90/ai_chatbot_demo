@@ -46,10 +46,10 @@ CUSTOMER_SERVICE_WINDOW_SECONDS = 24 * 60 * 60
 # the send is a Cloud API error and the phone stays quiet.
 ORDER_CONFIRMED = "order_confirmed"
 ORDER_SHIPPED = "order_shipped"
-# Templates are approved per language, and there is no language on the customer
-# record to pick one by: `UserProfile.language` exists and nothing has ever
-# written to it. So a template goes out in English. The free-form path below is
-# under no such constraint and carries all three.
+# Templates are approved per language, and only the English ones were submitted
+# (docs/whatsapp-templates.md). So a template goes out in English even though
+# `UserProfile.language` is now kept (task 38.1). The free-form path below is
+# under no such constraint: the tool that queued it picked the customer's.
 TEMPLATE_LANGUAGE = "en"
 
 # What the console calls a push, so the second screen shows the thing the

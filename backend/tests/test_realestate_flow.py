@@ -464,10 +464,10 @@ def test_a_refused_form_is_followed_by_the_question_in_the_chat(flow_configured,
             _handle_incoming_message(_text_message(phone, "I want to see it"))
 
     bodies = [p["text"]["body"] for p in sent if p.get("type") == "text"]
-    assert bodies[-1] == realestate.UNDELIVERED_FORM_MESSAGE
+    assert bodies[-1] == realestate.UNDELIVERED_FORM_MESSAGE.en
     # The model reads it next turn, so their answer arrives in a conversation that
     # already says the form failed.
-    assert user_store.get(phone).history[-1].content == realestate.UNDELIVERED_FORM_MESSAGE
+    assert user_store.get(phone).history[-1].content == realestate.UNDELIVERED_FORM_MESSAGE.en
     # And the room still sees Meta said no.
     failures = [e for e in events.since(0) if e.type == events.SEND_FAILED]
     assert failures and "139000" in failures[0].output
@@ -510,8 +510,9 @@ def test_a_refused_message_that_is_not_our_form_still_fails_loudly():
             _handle_incoming_message(_text_message(phone, "hi"))
 
     assert all(
-        realestate.UNDELIVERED_FORM_MESSAGE not in json.dumps(call.args[0], ensure_ascii=False)
+        line not in json.dumps(call.args[0], ensure_ascii=False)
         for call in sent.call_args_list
+        for line in realestate.UNDELIVERED_FORM_MESSAGE
     )
     assert [e.type for e in events.since(0)].count(events.SEND_FAILED) == 1
     events.clear()

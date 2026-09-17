@@ -193,12 +193,12 @@ def test_get_reply_returns_fallback_on_api_error():
     plain = get_bot("hotel")
     with patch.object(llm, "get_tools", return_value=[]):
         with patch.object(llm._client.messages, "create", side_effect=error):
-            assert llm.get_reply(plain, _customer(), history=[]) == llm.FALLBACK_REPLY
+            assert llm.get_reply(plain, _customer(), history=[]) == llm.FALLBACK_REPLY.pick(None)
 
     with_tools = get_bot("retail")
     assert llm.get_tools(with_tools.id)
     with patch.object(llm._client.beta.messages, "parse", side_effect=error):
-        assert llm.get_reply(with_tools, _customer(), history=[]) == llm.FALLBACK_REPLY
+        assert llm.get_reply(with_tools, _customer(), history=[]) == llm.FALLBACK_REPLY.pick(None)
 
 
 def test_bot_without_tools_takes_the_plain_single_turn_path():
@@ -473,7 +473,7 @@ def test_a_reply_cut_off_at_the_token_ceiling_becomes_the_fallback():
 
     with patch.object(llm, "get_tools", return_value=[]):
         with patch.object(llm._client.messages, "create", return_value=truncated):
-            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY
+            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY.pick(None)
 
 
 def test_a_sentence_cut_off_mid_word_is_not_sent_either():
@@ -484,7 +484,7 @@ def test_a_sentence_cut_off_mid_word_is_not_sent_either():
 
     with patch.object(llm, "get_tools", return_value=[]):
         with patch.object(llm._client.messages, "create", return_value=truncated):
-            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY
+            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY.pick(None)
 
 
 def test_a_turn_that_produced_no_text_becomes_the_fallback():
@@ -493,7 +493,7 @@ def test_a_turn_that_produced_no_text_becomes_the_fallback():
 
     with patch.object(llm, "get_tools", return_value=[]):
         with patch.object(llm._client.messages, "create", return_value=silent):
-            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY
+            assert llm.get_reply(bot, _customer(), history=[]) == llm.FALLBACK_REPLY.pick(None)
 
 
 def test_get_reply_never_returns_something_whatsapp_would_refuse():
