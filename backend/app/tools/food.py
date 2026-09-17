@@ -7,8 +7,8 @@ its way in -- "your food is on its way" -- timed for the moment the back office
 starts saying the same thing (see `verticals/food/models.py`).
 
 **The cart lives on the customer's record, the order in the back office.** A
-cart is a sentence in progress: it belongs with the conversation, in the slot
-the hotel's bookings and the SaaS tickets already use (`local.records()`), and
+cart is a sentence in progress: it belongs with the conversation, in the bot's
+slot on the customer's record (`local.records()`), and
 it is in front of the model on the next turn without asking for it. An order is
 what the restaurant has to act on, so it is a row on the screen.
 

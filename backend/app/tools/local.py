@@ -1,38 +1,33 @@
-"""Tools for the bots that have no back office behind them.
+"""Tools for the hotel and SaaS support bots.
 
-`retail` calls a real ERP and a real CRM. `hotel` and `saas` have neither, and
-until now they answered out of the JSON in their bot file alone -- which on the
+`retail` calls a real ERP and a real CRM. `hotel` and `saas` had neither, and at
+first they answered out of the JSON in their bot file alone -- which on the
 console screen looks like nothing happening at all, next to a bot whose every
 sentence is a visible call. Same shell, then: these tools read the bot's own
-`context_data` and keep whatever the customer creates in that customer's slot of
-their profile record.
+`context_data` for the rooms and the known issues.
 
 Read-only would have given away the trick immediately. A support bot that cannot
 open a ticket and a hotel bot that cannot change a booking are two questions away
 from being caught, and those are the two questions everybody asks.
 
-What is stored lives in `UserProfile.profile[bot_id]`, i.e. in the same record
-the customer's phone number keys -- so a ticket opened on Monday is still there on
-Wednesday, for as long as the record lives. The tools mutate the profile object
-the router is holding rather than saving one of their own: the router saves at
-the end of the turn, and a second copy written here would simply be overwritten
-by it.
+What a customer creates is written to that business's own table on the shared
+verticals MySQL -- `verticals/hotel` for bookings (task 38.3), `verticals/saas` for
+tickets (task 38.4) -- so a back office can list everyone's. Until then it lived
+on each customer's Redis record, where nothing could list it.
 
-Hotel bookings are the exception since task 38.3: they are written to the resort's
-own table (`verticals/hotel`), so a back office can list every guest's, and the
-guest's record holds none of them.
+`serving` still opens a slot in the customer's record for the answering bot; the
+restaurant's cart is kept there (`records()`), and nothing in this module is.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-import secrets
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from anthropic import beta_tool
 
@@ -40,6 +35,7 @@ from app.bots.registry import BotConfig
 from app.services.user_store import UserProfile
 from app.verticals import StoreUnavailable
 from app.verticals.hotel import models as hotel_bookings
+from app.verticals.saas import models as saas_tickets
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +81,38 @@ BOOKINGS_UNREADABLE = (
     "could not be checked. Say so plainly and offer to have a colleague call them "
     "back. Do not repeat dates or totals from earlier in the conversation."
 )
+# The support desk's ticket system (task 38.4), with the hotel's posture.
+NO_CUSTOMER = (
+    "This conversation has no customer record to hold a ticket, so none can be "
+    "opened or looked up here. Say you cannot open one right now and offer to "
+    "have a colleague call them back."
+)
+TICKET_NOT_OPENED = (
+    "The ticket could NOT be opened -- the support ticket system is unreachable. "
+    "Tell the customer plainly that it did not go through and offer to have a "
+    "colleague call them back. Never tell them a ticket is open and never make "
+    "up a ticket number."
+)
+TICKETS_UNREADABLE = (
+    "The support ticket system could not be reached just now, so their tickets "
+    "could not be checked. Say so plainly and offer to have a colleague call them "
+    "back. Do not repeat a ticket number or a status from earlier in the "
+    "conversation."
+)
+# Found running task 38.4 through the real model: a ticket was opened on "帮我开个
+# 工单", reworded and opened again on "好的，开吧", and the customer was told the
+# first number had been wrong. Free text is reworded every time, so matching it
+# catches nothing; what the code can know is that this customer opened one a
+# moment ago, and whether it is the same problem is for the model, which has read
+# the conversation.
+RECENT_TICKET_MINUTES = 15
+RECENT_TICKET = (
+    "This customer already has this ticket, opened in the last few minutes, so no "
+    "new ticket was opened. If they are talking about the same problem, give them "
+    "this number and do not call it a new or a corrected ticket. Only if what they "
+    "describe now is clearly a different problem, call saas_create_ticket again "
+    "with different_problem set to true."
+)
 NO_TICKET = (
     "There are no support tickets on file for this customer. Say so plainly and "
     "offer to open one; never invent a ticket number."
@@ -93,11 +121,6 @@ NO_KNOWN_ISSUE = (
     "Nothing in the known-issues list matches that. Say it is not a known issue, "
     "do not guess a fix, and offer to open a support ticket."
 )
-
-# Tickets live inside one customer's profile in Redis. Twenty is far more than a
-# demo will ever make and still small enough that a runaway loop cannot grow the
-# record without bound.
-MAX_RECORDS = 20
 
 # A stay nobody would book by chat. Mostly a guard against a mistyped year
 # turning into a four-figure bill.
@@ -132,7 +155,8 @@ class _Serving:
     """Which bot is answering, and where that bot's records for this customer are.
 
     `store` is a live reference into `UserProfile.profile[bot.id]`, not a copy:
-    writing through it is what puts a ticket on the record the router saves. For
+    writing through it is what puts the restaurant's cart on the record the router
+    saves. For
     a visitor we hold no profile for it is a plain dict that dies with the turn,
     so the tools still work within the conversation and simply do not outlive it.
     """
@@ -241,33 +265,8 @@ def _catalogue(key: str) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
-def _stored(name: str) -> list[dict]:
-    """What this customer has on file, without creating the slot to say "none"."""
-    rows = _current().store.get(name)
-    return rows if isinstance(rows, list) else []
-
-
-def _store(name: str, records: list[dict]) -> None:
-    _current().store[name] = records[-MAX_RECORDS:]
-
-
 def _dump(value) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
-
-
-def _reference(prefix: str) -> str:
-    """A booking or ticket number.
-
-    Random rather than counted: a counter would need somewhere of its own to
-    live, and two customers whose first booking is both numbered 1001 would look
-    wrong on a screen the whole demo is watched through.
-    """
-    return f"{prefix}-{secrets.randbelow(9000) + 1000}"
-
-
-def _now() -> str:
-    """The local wall clock, which the compose files pin to Asia/Kuala_Lumpur."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
 # --------------------------------------------------------------------------- #
@@ -400,7 +399,7 @@ def hotel_search_rooms(location: str = "", guests: int = 0, max_price_rm: float 
     return _dump(matches) if matches else NO_ROOMS
 
 
-def _guest() -> UserProfile:
+def _guest(missing: str = NO_GUEST) -> UserProfile:
     """The guest this turn belongs to, or a refusal saying why there is none.
 
     Outside a conversation is NO_TURN, as for every tool here. A conversation with
@@ -410,7 +409,7 @@ def _guest() -> UserProfile:
     """
     current = _current()
     if current.customer is None:
-        raise _Refused(NO_GUEST)
+        raise _Refused(missing)
     return current.customer
 
 
@@ -589,8 +588,19 @@ def saas_search_known_issues(query: str) -> str:
     return _dump(matches[:MAX_ISSUE_RESULTS]) if matches else NO_KNOWN_ISSUE
 
 
+def _opened_lately(tickets: list):
+    """The newest of these if it was opened in the last few minutes, else None."""
+    if not tickets:
+        return None
+    newest = tickets[0]
+    opened = datetime.fromisoformat(newest.opened_at)
+    return newest if datetime.now() - opened < timedelta(minutes=RECENT_TICKET_MINUTES) else None
+
+
 @beta_tool
-def saas_create_ticket(subject: str, description: str, priority: str = "normal") -> str:
+def saas_create_ticket(
+    subject: str, description: str, priority: str = "normal", different_problem: bool = False
+) -> str:
     """Open a support ticket and give the customer the ticket number.
 
     Open one when the known issues do not cover the problem, when the fix did not
@@ -603,9 +613,12 @@ def saas_create_ticket(subject: str, description: str, priority: str = "normal")
             already tried, in their own words.
         priority: One of low, normal, high, urgent. Use urgent only for something
             that has stopped them working entirely.
+        different_problem: Leave false. Set true only after this tool has shown
+            you a ticket they opened minutes ago and the customer is describing
+            a genuinely separate problem.
     """
     try:
-        tickets = list(_stored("tickets"))
+        customer = _guest(NO_CUSTOMER)
     except _Refused as refusal:
         return str(refusal)
 
@@ -623,18 +636,28 @@ def saas_create_ticket(subject: str, description: str, priority: str = "normal")
         # sight of everyone who could notice.
         return f"Priority must be one of: {', '.join(PRIORITIES)}."
 
-    ticket = {
-        "ticket_id": _reference("TCK"),
-        "subject": subject[:MAX_SUBJECT_CHARS],
-        "description": description[:MAX_DESCRIPTION_CHARS],
-        "priority": level,
-        "status": "open",
-        "opened_at": _now(),
-    }
-    tickets.append(ticket)
-    _store("tickets", tickets)
-    logger.info("support ticket %s opened for the current customer", ticket["ticket_id"])
-    return _dump(ticket)
+    subject = subject[:MAX_SUBJECT_CHARS]
+    description = description[:MAX_DESCRIPTION_CHARS]
+    try:
+        if not different_problem:
+            recent = _opened_lately(saas_tickets.tickets_for(customer.key_id))
+            if recent is not None:
+                return _dump({**recent.for_the_customer(), "note": RECENT_TICKET})
+        ticket = saas_tickets.open_ticket(
+            customer_key=customer.key_id,
+            customer_name=customer.display_name or "",
+            phone=customer.phone or "",
+            subject=subject,
+            description=description,
+            priority=level,
+            at=time.time(),
+        )
+    except StoreUnavailable:
+        logger.warning("support ticket not opened: the ticket system is unreachable")
+        return TICKET_NOT_OPENED
+
+    logger.info("support ticket %s opened for the current customer", ticket.ticket_id)
+    return _dump(ticket.for_the_customer())
 
 
 @beta_tool
@@ -648,14 +671,15 @@ def saas_get_tickets(ticket_id: str = "") -> str:
         ticket_id: A specific ticket number. Leave empty for all of theirs.
     """
     try:
-        tickets = _stored("tickets")
+        customer = _guest(NO_CUSTOMER)
     except _Refused as refusal:
         return str(refusal)
 
-    wanted = str(ticket_id or "").strip().casefold()
-    if wanted:
-        tickets = [t for t in tickets if str(t.get("ticket_id", "")).casefold() == wanted]
-    return _dump(tickets) if tickets else NO_TICKET
+    try:
+        found = saas_tickets.tickets_for(customer.key_id, str(ticket_id or "").strip())
+    except StoreUnavailable:
+        return TICKETS_UNREADABLE
+    return _dump([ticket.for_the_customer() for ticket in found]) if found else NO_TICKET
 
 
 TOOLS = [

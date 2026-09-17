@@ -23,6 +23,7 @@ from app.services.user_store import user_store
 from app.session_store import session_store
 from app.verticals import db as verticals_db
 from app.verticals.hotel import models as hotel_models
+from app.verticals.saas import models as saas_models
 
 
 def _with_credentials(name, module):
@@ -234,4 +235,41 @@ def hotel_store():
     """The resort's bookings table, in memory."""
     store = FakeHotelStore()
     with patch.object(hotel_models, "store", store):
+        yield store
+
+
+class FakeSaasStore:
+    """Enough of MySQL for the statements `verticals/saas/models.py` writes."""
+
+    def __init__(self, fails: bool = False):
+        self.rows: list[dict] = []
+        self.fails = fails
+
+    def execute(self, sql: str, params: tuple = ()) -> int:
+        if self.fails:
+            raise verticals_db.StoreUnavailable("the verticals database is unreachable")
+        if not sql.startswith("INSERT INTO saas_tickets"):
+            raise AssertionError(f"unexpected statement: {sql}")
+        row = dict(zip(saas_models.INSERT_COLUMNS, params))
+        row["opened_at"] = _moment(row["opened_at"])
+        row["id"] = len(self.rows) + 1
+        self.rows.append(row)
+        return row["id"]
+
+    def query(self, sql: str, params: tuple = ()) -> list[dict]:
+        if self.fails:
+            raise verticals_db.StoreUnavailable("the verticals database is unreachable")
+        rows = sorted(self.rows, key=lambda row: (row["opened_at"], row["id"]), reverse=True)
+        if "WHERE customer_key = %s AND id = %s" in sql:
+            rows = [row for row in rows if (row["customer_key"], row["id"]) == params[:2]]
+        elif "WHERE customer_key = %s" in sql:
+            rows = [row for row in rows if row["customer_key"] == params[0]]
+        return [dict(row) for row in rows[: params[-1]]]
+
+
+@pytest.fixture
+def saas_store():
+    """The support desk's tickets table, in memory."""
+    store = FakeSaasStore()
+    with patch.object(saas_models, "store", store):
         yield store

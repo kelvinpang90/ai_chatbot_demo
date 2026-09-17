@@ -1,18 +1,19 @@
 """The hotel and SaaS tools.
 
-Since task 38.3 the hotel's bookings are written to the resort's own table, which
-every test here gets an in-memory copy of (`hotel_store` in conftest.py); the SaaS
-tickets still live on the customer's record.
+Since tasks 38.3 and 38.4 the hotel's bookings and the SaaS tickets are written to
+each business's own table, which every test here gets an in-memory copy of
+(`hotel_store` and `saas_store` in conftest.py).
 
 Two things are worth holding on to here. One is that nothing the guest is told
 is arithmetic the model did -- the rate, the nights and the total all come off
 the catalogue, because a bot with no booking system behind it is exactly the one
 that could quietly agree to a price nobody can honour. The other is where a
-write lands: in the profile object the router is about to save, not in a copy of
-it.
+write lands: in the business's own table, where a back office can list it -- and,
+for the restaurant's cart, in the profile object the router is about to save
+rather than a copy of it.
 """
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -25,6 +26,7 @@ from app.services.user_store import UserProfile
 from app.tools import local
 from app.verticals import StoreUnavailable
 from app.verticals.hotel import models as hotel_models
+from app.verticals.saas import models as saas_models
 
 HOTEL = get_bot("hotel")
 SAAS = get_bot("saas")
@@ -36,9 +38,9 @@ LATER = (date.today() + timedelta(days=33)).isoformat()
 
 
 @pytest.fixture(autouse=True)
-def _resort(hotel_store):
-    """Every booking in this module lands in the in-memory bookings table."""
-    yield hotel_store
+def _back_offices(hotel_store, saas_store):
+    """Every booking and ticket in this module lands in an in-memory table."""
+    yield
 
 
 def _guest(**fields) -> UserProfile:
@@ -297,12 +299,11 @@ def test_a_ticket_needs_a_subject_and_what_actually_happened():
         assert "subject" in local.saas_create_ticket("Cannot log in", "  ")
 
 
-def test_an_unknown_priority_is_refused_rather_than_quietly_downgraded():
-    profile = _guest()
-    with local.serving(SAAS, profile):
+def test_an_unknown_priority_is_refused_rather_than_quietly_downgraded(saas_store):
+    with local.serving(SAAS, _guest()):
         answer = local.saas_create_ticket("Site down", "Nobody can log in.", "P0")
     assert "low, normal, high, urgent" in answer
-    assert profile.profile.get("saas", {}).get("tickets") is None
+    assert saas_store.rows == []
 
 
 def test_a_long_description_is_kept_within_the_record_it_lives_in():
@@ -320,33 +321,34 @@ def test_a_long_description_is_kept_within_the_record_it_lives_in():
 
 
 def test_a_write_lands_on_the_profile_the_router_is_about_to_save():
-    """The whole mechanism: the tool mutates the caller's object, not a copy.
+    """The whole mechanism: a slot write mutates the caller's object, not a copy.
 
     A tool that saved a profile of its own would have its work overwritten a
-    moment later by the router saving the one it has been holding all along.
+    moment later by the router saving the one it has been holding all along. The
+    restaurant's cart is what still lives here since tasks 38.3 and 38.4.
     """
     profile = _guest()
-    with local.serving(SAAS, profile):
-        ticket = json.loads(local.saas_create_ticket("Slow dashboard", "Takes a minute."))
-    assert profile.profile["saas"]["tickets"][0]["ticket_id"] == ticket["ticket_id"]
+    with local.serving(get_bot("food"), profile):
+        local.records()["cart"] = {"F01": 2}
+    assert profile.profile["food"]["cart"] == {"F01": 2}
 
 
 def test_a_slot_that_came_back_unusable_is_started_over_rather_than_raised():
     """The profile is free-form and read back off Redis; a customer mid-sentence
     is the wrong moment to discover that something else once wrote there."""
     profile = _guest()
-    profile.profile["saas"] = "written by something that is not this"
-    with local.serving(SAAS, profile):
-        ticket = json.loads(local.saas_create_ticket("Slow dashboard", "Takes a minute."))
-    assert profile.profile["saas"]["tickets"][0]["ticket_id"] == ticket["ticket_id"]
+    profile.profile["food"] = "written by something that is not this"
+    with local.serving(get_bot("food"), profile):
+        local.records()["cart"] = {"F01": 1}
+    assert profile.profile["food"]["cart"] == {"F01": 1}
 
 
-def test_a_booking_goes_to_the_resort_not_onto_the_guest_record(hotel_store):
-    """Task 38.3: the back office can only list what is in its table."""
+def test_a_booking_goes_to_the_resort_not_onto_the_guest_record(hotel_store, saas_store):
+    """Tasks 38.3 and 38.4: a back office can only list what is in its table."""
     profile = _guest(display_name="Aisyah")
     booking = _booking(profile)
     with local.serving(SAAS, profile):
-        local.saas_create_ticket("Slow dashboard", "Takes a minute to load.")
+        ticket = json.loads(local.saas_create_ticket("Slow dashboard", "Takes a minute to load."))
 
     (row,) = hotel_store.rows
     assert (row["customer_key"], row["customer_name"], row["phone"]) == (
@@ -355,8 +357,11 @@ def test_a_booking_goes_to_the_resort_not_onto_the_guest_record(hotel_store):
         "60173948123",
     )
     assert hotel_models.booking_no(row["id"]) == booking["booking_id"]
+    (opened,) = saas_store.rows
+    assert (opened["customer_key"], opened["customer_name"]) == ("60173948123", "Aisyah")
+    assert saas_models.ticket_no(opened["id"]) == ticket["ticket_id"]
     assert not profile.profile.get("hotel")
-    assert "bookings" not in profile.profile["saas"]
+    assert not profile.profile.get("saas")
 
 
 def test_one_guest_cannot_see_another_guest_booking():
@@ -385,18 +390,6 @@ def test_a_tool_called_outside_a_conversation_says_so_instead_of_crashing():
     assert local.saas_create_ticket("Anything", "at all") == local.NO_TURN
 
 
-def test_a_record_cannot_grow_without_bound():
-    """It lives inside one Redis key alongside the conversation history."""
-    profile = _guest()
-    with local.serving(SAAS, profile):
-        for index in range(local.MAX_RECORDS + 5):
-            local.saas_create_ticket(f"Ticket {index}", "Something happened.")
-        kept = json.loads(local.saas_get_tickets())
-    assert len(kept) == local.MAX_RECORDS
-    # The oldest go, not the newest: the ones still being talked about are recent.
-    assert kept[-1]["subject"] == f"Ticket {local.MAX_RECORDS + 4}"
-
-
 # --------------------------------------------------------------------------- #
 # The wiring, end to end
 # --------------------------------------------------------------------------- #
@@ -414,7 +407,7 @@ def _assistant_message(content: list, stop_reason: str) -> BetaMessage:
     )
 
 
-def test_get_reply_opens_the_turn_so_a_ticket_reaches_the_customer_record():
+def test_get_reply_opens_the_turn_so_a_ticket_reaches_the_back_office(saas_store):
     """Without this, every tool above answers NO_TURN in production.
 
     The tools take only the arguments the model fills in, so "whose conversation
@@ -443,15 +436,15 @@ def test_get_reply_opens_the_turn_so_a_ticket_reaches_the_customer_record():
         reply = llm.get_reply(SAAS, profile, history=[])
 
     assert reply == "Ticket opened."
-    tickets = profile.profile["saas"]["tickets"]
-    assert [ticket["subject"] for ticket in tickets] == ["Export to CSV fails"]
+    (row,) = saas_store.rows
+    assert (row["subject"], row["customer_key"]) == ("Export to CSV fails", profile.key_id)
 
     # And it goes up on the console the same way a retail ERP call does, which is
     # the whole reason these bots have tools at all.
     start, end = [event for event in events.since(0) if event.type != events.USAGE]
     assert start.type == events.TOOL_START and start.tool == "saas_create_ticket"
     assert end.type == events.TOOL_END and end.status == "ok"
-    assert tickets[0]["ticket_id"] in end.output
+    assert saas_models.ticket_no(row["id"]) in end.output
     events.clear()
 
     # And the turn is closed behind it, rather than leaking into the next one.
@@ -521,3 +514,81 @@ def test_a_booking_number_read_out_by_somebody_else_cannot_be_changed(hotel_stor
         assert local.hotel_modify_booking(booking["booking_id"], guests=1) == local.NO_BOOKING
         assert local.hotel_get_booking(booking["booking_id"]) == local.NO_BOOKING
     assert hotel_store.rows[0]["guests"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# SaaS: the ticket system behind it (task 38.4)
+# --------------------------------------------------------------------------- #
+
+
+def _ticket(
+    profile: UserProfile, subject: str = "Export fails", description: str = "Nothing happens."
+) -> dict:
+    with local.serving(SAAS, profile):
+        return json.loads(local.saas_create_ticket(subject, description, "high"))
+
+
+def test_ticket_numbers_run_in_order():
+    first = _ticket(_guest())
+    second = _ticket(_guest(phone="60129998888"))
+    assert (first["ticket_id"], second["ticket_id"]) == ("TCK-00001", "TCK-00002")
+    assert {"customer_key", "customer_name", "phone", "id"}.isdisjoint(first)
+
+
+def test_a_ticket_system_that_is_down_never_becomes_an_open_ticket(saas_store):
+    saas_store.fails = True
+    with local.serving(SAAS, _guest()):
+        answer = local.saas_create_ticket("Export fails", "Nothing happens.", "high")
+        looked_up = local.saas_get_tickets()
+    assert answer == local.TICKET_NOT_OPENED
+    assert "TCK-" not in answer
+    assert looked_up == local.TICKETS_UNREADABLE
+    assert saas_store.rows == []
+
+
+def test_a_ticket_number_read_out_by_somebody_else_finds_nothing():
+    ticket = _ticket(_guest(phone="60173948123"))
+    with local.serving(SAAS, _guest(phone="60129998888")):
+        assert local.saas_get_tickets(ticket["ticket_id"]) == local.NO_TICKET
+        assert local.saas_get_tickets() == local.NO_TICKET
+
+
+def test_a_visitor_we_hold_no_record_for_cannot_open_a_ticket_but_is_told_why(saas_store):
+    with local.serving(SAAS, None):
+        assert local.saas_create_ticket("Export fails", "Nothing happens.") == local.NO_CUSTOMER
+        assert local.saas_get_tickets() == local.NO_CUSTOMER
+    assert saas_store.rows == []
+
+
+def test_the_same_problem_reported_twice_is_one_ticket_not_two(saas_store):
+    """Seen through the real model: opened on "帮我开个工单", reworded and opened
+    again on "好的，开吧" -- so this deliberately rewords the second one too."""
+    profile = _guest()
+    first = _ticket(profile, subject="报表导出卡在99%无法完成")
+    second = _ticket(profile, subject="报表导出卡在99%")
+
+    assert len(saas_store.rows) == 1
+    assert second["ticket_id"] == first["ticket_id"]
+    assert second["note"] == local.RECENT_TICKET
+
+
+def test_a_genuinely_different_problem_is_opened_when_the_model_says_so(saas_store):
+    profile = _guest()
+    _ticket(profile)
+    with local.serving(SAAS, profile):
+        other = json.loads(
+            local.saas_create_ticket(
+                "Cannot log in", "Password reset email never arrives.", different_problem=True
+            )
+        )
+    assert len(saas_store.rows) == 2
+    assert "note" not in other
+
+
+def test_a_ticket_from_an_hour_ago_does_not_hold_back_a_new_one(saas_store):
+    profile = _guest()
+    _ticket(profile)
+    saas_store.rows[0]["opened_at"] = datetime.now() - timedelta(hours=1)
+    second = _ticket(profile, subject="Cannot log in", description="Reset email never arrives.")
+    assert len(saas_store.rows) == 2
+    assert "note" not in second
