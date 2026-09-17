@@ -1,4 +1,4 @@
-/* The property agency's back office (task 23).
+/* The demos' back office (task 23; one page with a tab per demo since task 38.5).
  *
  * Light, plain and tabular, and that is the whole design brief: this screen
  * stands in for the client's own system, next to the ERP and CRM tabs it is
@@ -201,4 +201,74 @@
 .va-tag.moving {
   background: #e3eefc;
   color: #1f5fbf;
+}
+
+.va-tag.urgent {
+  background: #fde7e2;
+  color: #b3452b;
+}
+
+/* One tab per demo (task 38.5). Links, so the tab lives in the address. */
+.va-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.va-tabs a {
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--va-dim);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.va-tabs a.active {
+  background: var(--va-panel);
+  border-color: var(--va-line);
+  color: var(--va-text);
+  font-weight: 600;
+}
+
+/* A table wider than a phone scrolls inside its panel instead of crushing every
+   column to a word per line or pushing the whole page sideways. */
+.va-scroll {
+  overflow-x: auto;
+}
+
+.va-scroll table {
+  min-width: 640px;
+}
+
+/* The number column: "TCK-00003" broken over two lines reads as two things. */
+.va-scroll td:first-child {
+  white-space: nowrap;
+}
+
+.va-wide {
+  min-width: 220px;
+  max-width: 420px;
+}
+
+@media (max-width: 600px) {
+  .va {
+    padding: 12px;
+  }
+
+  .va-head h1 {
+    font-size: 18px;
+  }
+
+  .va-gate {
+    padding: 16px;
+  }
+
+  .va-gate input {
+    min-width: 0;
+    width: 100%;
+    max-width: 280px;
+    box-sizing: border-box;
+  }
 }

@@ -4,7 +4,7 @@ import LanguageSwitcher from './components/LanguageSwitcher'
 import PhoneEntry from './pages/PhoneEntry'
 import BotSelect from './pages/BotSelect'
 import Chat from './pages/Chat'
-import { TokenGate } from './pages/VerticalAdmin'
+import { TokenGate } from './pages/Admin'
 import {
   resetSession,
   selectBot,

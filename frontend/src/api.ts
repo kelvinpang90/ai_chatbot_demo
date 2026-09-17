@@ -118,7 +118,9 @@ export function storedToken(): string {
     } catch {
       // Private windows refuse. The token still works for this page load.
     }
-    window.history.replaceState(null, '', window.location.pathname)
+    // The hash stays: on the back office it names the tab (task 38.5), and a
+    // link to `/admin?token=…#hotel` should land on the hotel.
+    window.history.replaceState(null, '', window.location.pathname + window.location.hash)
     return fromUrl
   }
   try {
@@ -488,6 +490,54 @@ export interface FoodOrder {
 
 export function readFoodOrders(token: string): Promise<FoodOrder[]> {
   return request<FoodOrder[]>('/api/verticals/food/orders', {
+    headers: { 'X-Console-Token': token },
+  })
+}
+
+/** One stay at Langkawi Breeze Resort (task 38.3). Mirrors Booking in verticals/hotel/models.py. */
+export interface HotelBooking {
+  id: number
+  booking_id: string
+  customer_key: string
+  customer_name: string
+  phone: string
+  location: string
+  room_type: string
+  check_in: string
+  check_out: string
+  nights: number
+  guests: number
+  rate_per_night_rm: number
+  total_rm: number
+  status: string
+  // Naive local time, sliced rather than parsed -- see `Viewing.created_at`.
+  booked_at: string
+  updated_at: string | null
+}
+
+export function readHotelBookings(token: string): Promise<HotelBooking[]> {
+  return request<HotelBooking[]>('/api/verticals/hotel/bookings', {
+    headers: { 'X-Console-Token': token },
+  })
+}
+
+/** One ticket at CloudDesk's support desk (task 38.4). Mirrors Ticket in verticals/saas/models.py. */
+export interface SupportTicket {
+  id: number
+  ticket_id: string
+  customer_key: string
+  customer_name: string
+  phone: string
+  subject: string
+  description: string
+  priority: string
+  status: string
+  // Naive local time, sliced rather than parsed -- see `Viewing.created_at`.
+  opened_at: string
+}
+
+export function readSupportTickets(token: string): Promise<SupportTicket[]> {
+  return request<SupportTicket[]>('/api/verticals/saas/tickets', {
     headers: { 'X-Console-Token': token },
   })
 }
