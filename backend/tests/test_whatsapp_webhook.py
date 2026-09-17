@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.bots.registry import list_bots
 from app.config import settings
 from app.console import events
 from app.main import app
@@ -1272,3 +1273,54 @@ def test_a_turn_that_queued_nothing_starts_no_clock():
         dispatch_message(_text_message(phone, "hello"))
 
     assert notify.dispatch(phone) == []
+
+
+# -- the demo menu in two languages, and for anyone new (2026-09-17) -----------
+#
+# The customers this is shown to read Chinese at least as readily as English,
+# and the list was English top to bottom. WhatsApp caps a row title at 24
+# characters, which "Food Delivery Assistant 餐饮外卖点餐助手" does not fit, so
+# each bot carries a `menu_title` written to fit rather than two names clipped.
+
+
+def _menu_for(phone: str) -> dict:
+    (sent,) = dispatch_message(_text_message(phone, "menu"))
+    assert sent["type"] == "interactive"
+    return sent["interactive"]
+
+
+def test_the_menu_speaks_chinese_as_well_as_english():
+    menu = _menu_for("60129995001")
+
+    assert menu["action"]["button"] == "选择 Select"
+    assert "AI Chatbot Demo" in menu["header"]["text"] and "演示" in menu["header"]["text"]
+    assert "欢迎" in menu["body"]["text"] and "Welcome" in menu["body"]["text"]
+    (section,) = menu["action"]["sections"]
+    assert section["title"] == "演示场景 Demo types"
+
+
+def test_every_row_title_is_the_bots_bilingual_menu_title_uncut():
+    """Uncut is the point: `list_row` clips at 24 silently, so a title one
+    character too long would reach the phone missing its last word."""
+    menu = _menu_for("60129995002")
+    rows = menu["action"]["sections"][0]["rows"]
+
+    for bot in list_bots():
+        assert len(bot.menu_title) <= whatsapp.MAX_ROW_TITLE_CHARS, bot.menu_title
+    assert [row["title"] for row in rows] == [bot.menu_title for bot in list_bots()]
+    assert all(any("一" <= ch <= "鿿" for ch in row["title"]) for row in rows)
+
+
+def test_a_stranger_who_opens_with_a_sticker_is_shown_the_menu():
+    """A first word can be a sticker as easily as "hi". Telling someone we have
+    never met that the demo only reads text answers a question they did not
+    ask; the menu answers the one they did."""
+    phone = "60129995003"
+    sticker = {**_voice_message(phone), "type": "sticker", "sticker": {"id": "media-stk-2"}}
+
+    sent = dispatch_message(sticker)
+
+    assert [message["type"] for message in sent] == ["interactive"]
+    assert sent[0]["interactive"]["type"] == "list"
+    # And, like "hi", it leaves no record behind.
+    assert user_store.get(phone) is None

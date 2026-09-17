@@ -412,6 +412,14 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
 
     if msg_type != "text":
         logger.info("Ignoring unsupported message type '%s' from %s", msg_type, sender.key)
+        # Someone who has not picked a demo yet -- a stranger, or anyone back at
+        # the menu -- gets the menu, whatever their first word was. A sticker is
+        # as likely an opener as "hi", and "this demo only reads text" is the
+        # wrong first thing to tell a person we have never spoken to. Read with
+        # `get`, never `get_or_create`: like "hi", it must leave no record.
+        profile = user_store.get(sender.key)
+        if not handover.active(profile) and (profile is None or profile.bot_id is None):
+            return _send_bot_list(sender.key)
         return _canned(sender, UNSUPPORTED_TYPE_MESSAGE)
 
     text = message.get("text", {}).get("body", "")
@@ -957,13 +965,17 @@ def _start_conversation(to: str, bot: BotConfig) -> list[dict]:
 
 
 def _send_bot_list(to: str) -> list[dict]:
-    rows = [whatsapp.list_row(bot.id, bot.name.en, bot.description.en) for bot in list_bots()]
+    # Chinese beside English, not instead of it: this goes out before we know a
+    # word of what the customer reads. Each piece is inside its own WhatsApp cap
+    # (button 20, section title 24, row title 24), so nothing is clipped on the
+    # phone -- the row titles come ready-sized from each bot's `menu_title`.
+    rows = [whatsapp.list_row(bot.id, bot.menu_title, bot.description.en) for bot in list_bots()]
     return [
         whatsapp.build_interactive_list(
             to,
-            body_text="Welcome! Which type of AI assistant would you like to try?",
-            button_text="Select",
-            sections=[{"title": "Demo types", "rows": rows}],
-            header_text="AI Chatbot Demo",
+            body_text="欢迎！想试哪一种 AI 客服？\nWelcome! Which AI assistant would you like to try?",
+            button_text="选择 Select",
+            sections=[{"title": "演示场景 Demo types", "rows": rows}],
+            header_text="AI 客服演示 · AI Chatbot Demo",
         )
     ]

@@ -6,6 +6,7 @@
     "en": "Menu browsing, ordering, delivery status",
     "ms": "Semak menu, buat pesanan, semak status penghantaran"
   },
+  "menu_title": "餐饮外卖 Food Delivery",
   "icon": "🍜",
   "disclaimer": {
     "zh": "这是演示数据，并非真实餐厅平台，仅用于产品体验展示。",

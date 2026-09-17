@@ -7,6 +7,7 @@
     "en": "Product recommendations, order tracking, returns & exchanges",
     "ms": "Cadangan produk, semakan pesanan, pemulangan & penjejakan"
   },
+  "menu_title": "电商零售 Retail",
   "icon": "🛍️",
   "disclaimer": {
     "zh": "这是演示环境：商品、库存和订单来自一套真实运行的 ERP 系统，里面装的是演示数据。",

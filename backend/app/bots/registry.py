@@ -15,6 +15,11 @@ class LocalizedText(BaseModel):
 class BotConfig(BaseModel):
     id: str
     name: LocalizedText
+    # The row title on the WhatsApp demo menu: Chinese and English side by side,
+    # written to fit WhatsApp's 24-character cap. Its own field rather than the
+    # two names joined, because "Food Delivery Assistant 餐饮外卖点餐助手" is 32
+    # and the list would clip it mid-word without saying so.
+    menu_title: str
     description: LocalizedText
     icon: str
     disclaimer: LocalizedText
