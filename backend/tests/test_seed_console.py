@@ -1,4 +1,4 @@
-"""The console seed (task 39.1): what it files, and what it must never touch.
+"""The console seed (tasks 39.1, 39.2): what it files, and what it must never touch.
 
 The batch is built in memory and checked as data; the writing half is run
 against a fake connection that records every statement. That the SQL itself
@@ -17,14 +17,68 @@ from app.console import cost
 from app.routers import console
 from app.services import phone
 from app.services.user_store import UserProfile, identity, user_store
-from app.tasks import seed_console, seed_lines
+from app.tasks import seed_console, seed_documents, seed_lines
+from app.tools import local
+from app.verticals.food import models as food_models
+from app.verticals.hotel import models as hotel_models
+from app.verticals.realestate import models as realestate_models
+from app.verticals.saas import models as saas_models
 
 NOW = time.mktime((2026, 9, 17, 3, 30, 0, 0, 0, -1))
 
 
+class FakeFiler(seed_documents.Filer):
+    """Hands back what the model functions would, and remembers every call."""
+
+    def __init__(self):
+        super().__init__()
+        self.documents = []
+
+    def _next(self, kind, **fields):
+        self.filed += 1
+        self.documents.append({"kind": kind, "id": self.filed, **fields})
+        return self.filed
+
+    def food_order(self, *, key_id, name, lines, address, fee, at):
+        return self._next("food", key_id=key_id, lines=lines, fee=fee, at=at)
+
+    def hotel_booking(self, *, key_id, name, stay, at):
+        n = self._next("hotel", key_id=key_id, stay=stay, at=at)
+        return hotel_models.Booking(
+            id=n, booking_id=hotel_models.booking_no(n), customer_key=key_id, customer_name=name, phone="",
+            status=hotel_models.CONFIRMED, booked_at="2026-09-01 10:00:00.000", **stay,
+        )
+
+    def ticket(self, *, key_id, name, subject, description, priority, at):
+        n = self._next("saas", key_id=key_id, at=at)
+        return saas_models.Ticket(
+            id=n, ticket_id=saas_models.ticket_no(n), customer_key=key_id, customer_name=name, phone="",
+            subject=subject, description=description, priority=priority, status=saas_models.OPEN,
+            opened_at="2026-09-01 10:00:00.000",
+        )
+
+    def viewing(self, *, name, listing_id, viewing_date, preferred_time, at):
+        n = self._next("realestate", name=name, at=at)
+        return realestate_models.Viewing(
+            id=n, listing_id=listing_id, customer_name=name, phone="", viewing_date=viewing_date.isoformat(),
+            preferred_time=preferred_time, created_at="2026-09-01 10:00:00.000",
+            area="Somewhere", property_type="Condo", price_rm=500000.0,
+        )
+
+
 @pytest.fixture(scope="module")
-def batch():
-    return seed_console.plan(NOW, random.Random(7))
+def filed():
+    filer = FakeFiler()
+    return seed_console.plan(NOW, random.Random(7), filer), filer
+
+
+@pytest.fixture(scope="module")
+def batch(filed):
+    return filed[0]
+
+
+def _tool_rows(conversation, tool):
+    return [row for row in conversation.rows if row.kind == "tool" and row.values["tool"] == tool]
 
 
 class FakeCursor:
@@ -108,9 +162,9 @@ def test_the_batch_is_spread_over_the_weeks_not_piled_on_one_day(batch):
     assert len(days) >= 15
 
 
-def test_every_tool_call_found_something(batch):
+def test_every_room_search_found_something(batch):
     """A query that matches nothing draws a card saying so, on every run."""
-    calls = [row for c in batch for conv in c.conversations for row in conv.rows if row.kind == "tool"]
+    calls = [row for c in batch for conv in c.conversations for row in _tool_rows(conv, "hotel_search_rooms")]
     assert calls
     for row in calls:
         assert isinstance(json.loads(row.values["output"]), list), row.values
@@ -213,7 +267,131 @@ def test_a_seeded_profile_has_no_phone_to_send_to(batch, mysql):
     assert profile.phone is None
 
 
-def test_refuses_to_run_without_both_stores(capsys):
-    with patch.object(settings, "mysql_url", ""), patch.object(settings, "redis_url", "redis://r:6379/0"):
+@pytest.mark.parametrize("missing", ["mysql_url", "redis_url", "verticals_mysql_url"])
+def test_refuses_to_run_without_all_three_stores(missing, capsys):
+    urls = {
+        "mysql_url": "mysql://u:p@db:3306/chat",
+        "redis_url": "redis://r:6379/0",
+        "verticals_mysql_url": "mysql://u:p@db:3306/verticals",
+    }
+    urls[missing] = ""
+    with patch.multiple(settings, **urls):
         assert seed_console.main([]) == 2
-    assert "MYSQL_URL and REDIS_URL" in capsys.readouterr().out
+    assert "VERTICALS_MYSQL_URL" in capsys.readouterr().out
+
+
+# --- the documents (task 39.2) --------------------------------------------------
+
+
+def test_three_documents_per_industry_and_language(filed):
+    _, filer = filed
+    assert Counter(d["kind"] for d in filer.documents) == {"food": 9, "hotel": 9, "saas": 9, "realestate": 9}
+    assert all(seed_console.is_seeded(d["key_id"]) for d in filer.documents if "key_id" in d)
+
+
+def test_retail_files_nothing_yet(batch):
+    for customer in batch:
+        if customer.bot_id == "retail":
+            assert not [row for conv in customer.conversations for row in conv.rows if row.kind == "tool"]
+
+
+@pytest.mark.parametrize(
+    "tool, field",
+    [("food_place_order", "order_no"), ("hotel_create_booking", "booking_id"), ("saas_create_ticket", "ticket_id")],
+)
+def test_the_reply_names_the_number_that_was_filed(batch, tool, field):
+    seen = 0
+    for customer in batch:
+        for conv in customer.conversations:
+            for row in _tool_rows(conv, tool):
+                number = json.loads(row.values["output"])[field]
+                reply = next(r for r in conv.rows if r.kind == "message" and r.at > row.at)
+                assert reply.values["role"] == "assistant"
+                assert number in reply.values["content"], (number, reply.values["content"])
+                seen += 1
+    assert seen == 9
+
+
+def test_a_viewing_is_saved_the_way_the_console_reads_it(batch):
+    rows = [row for c in batch for conv in c.conversations for row in _tool_rows(conv, "book_property_viewing")]
+    assert len(rows) == 9
+    for row in rows:
+        assert "IS ALREADY SAVED" in row.values["output"] and "#" in row.values["output"]
+
+
+def test_a_document_is_dated_the_moment_its_tool_ran(filed):
+    batch, filer = filed
+    creating = {
+        "food": "food_place_order",
+        "hotel": "hotel_create_booking",
+        "saas": "saas_create_ticket",
+        "realestate": "book_property_viewing",
+    }
+    moments = {
+        (customer.bot_id, row.at)
+        for customer in batch
+        for conv in customer.conversations
+        for row in conv.rows
+        if row.kind == "tool" and row.values["tool"] == creating.get(customer.bot_id)
+    }
+    assert {(d["kind"], d["at"]) for d in filer.documents} == moments
+
+
+def test_a_food_order_is_priced_off_the_menu(filed):
+    batch, filer = filed
+    for document in filer.documents:
+        if document["kind"] != "food":
+            continue
+        customer = next(c for c in batch if c.key_id == document["key_id"])
+        placed = json.loads(_tool_rows(customer.conversations[-1], "food_place_order")[0].values["output"])
+        assert placed["total"] == f"RM {food_models.subtotal_of(document['lines']) + document['fee']:.2f}"
+
+
+def test_a_hotel_stay_is_one_the_live_tool_would_book(filed):
+    from datetime import date
+
+    from app.bots.registry import get_bot
+
+    _, filer = filed
+    stays = [d["stay"] for d in filer.documents if d["kind"] == "hotel"]
+    for stay in stays:
+        assert date.fromisoformat(stay["check_in"]) >= date.today()
+        with local.serving(get_bot("hotel"), None):
+            assert local._stay(stay["room_type"], stay["check_in"], stay["check_out"], stay["guests"]) == stay
+
+
+@pytest.mark.parametrize("issue", seed_lines.ISSUES, ids=lambda issue: issue["query"])
+def test_a_ticketed_issue_is_not_a_known_one(issue):
+    """Or the bot on screen opens a ticket for something it had a fix for."""
+    from app.bots.registry import get_bot
+
+    output = seed_console._tool_output(get_bot("saas"), "saas_search_known_issues", {"query": issue["query"]})
+    assert output == local.NO_KNOWN_ISSUE
+
+
+def test_no_filer_means_no_documents():
+    batch = seed_console.plan(NOW, random.Random(7))
+    tools = {row.values["tool"] for c in batch for conv in c.conversations for row in conv.rows if row.kind == "tool"}
+    assert tools <= {"hotel_search_rooms", "saas_search_known_issues"}
+
+
+class RecordingStore:
+    def __init__(self):
+        self.statements = []
+
+    def execute(self, sql, params=()):
+        self.statements.append((sql, params))
+        return 0
+
+
+def test_clearing_documents_touches_only_what_the_seed_filed():
+    recording = RecordingStore()
+    with patch.object(seed_documents, "store", recording):
+        seed_documents.clear(seed_console.SEED_PREFIX)
+    keyed = [(sql, params) for sql, params in recording.statements if "customer_key" in sql]
+    assert [sql.split()[2] for sql, _ in keyed] == ["food_orders", "hotel_bookings", "saas_tickets"]
+    assert all(params == ("ZZ.SEED%",) for _, params in keyed)
+    assert [sql for sql, _ in recording.statements if "customer_key" not in sql] == [
+        "DELETE v FROM realestate_viewings v JOIN seed_console_viewings s ON s.viewing_id = v.id",
+        "DELETE FROM seed_console_viewings",
+    ]

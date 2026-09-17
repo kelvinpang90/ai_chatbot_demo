@@ -1,9 +1,11 @@
-"""What the seeded customers say, and what the bots said back (task 39.1).
+"""What the seeded customers say, and what the bots said back (tasks 39.1, 39.2).
 
-The ordinary conversations only: a price asked, an opening hour, a known issue
-looked up. Nothing here names a document -- an order number, a booking, a ticket
--- because every document a conversation mentions has to exist in the back
-office it was filed in, and those are tasks 39.2 to 39.4.
+Two kinds. The ordinary conversations (`TOPICS`): a price asked, an opening
+hour, a known issue looked up. And the ones that end in a document (`DEALS`): a
+food order, a hotel booking, a support ticket, a property viewing. Those are
+templates rather than finished lines, because the number in the reply -- FD-,
+BK-, TCK-, viewing # -- only exists once the seed has filed the document in the
+back office it belongs to, and the reply has to name the one that is there.
 
 Every figure in a reply is the one in the bot's own `app/bots/data/*.json`. A
 seeded reply quoting a price the live bot would not quote is the one thing on
@@ -379,5 +381,170 @@ TOPICS: dict[str, dict[str, tuple[Topic, ...]]] = {
                 {"query": "file upload stuck"},
             ),
         ),
+    },
+}
+
+
+# --- conversations that end in a document (task 39.2) --------------------------
+
+# Within the food outlet's 8km of central Kuala Lumpur.
+ADDRESSES = (
+    "No. 12, Jalan Telawi 3, Bangsar Baru, 59100 Kuala Lumpur",
+    "B-12-3, Residensi Pantai, Jalan Pantai Dalam, 59200 Kuala Lumpur",
+    "Unit 8-2, Menara KL Eco City, Jalan Bangsar, 59200 Kuala Lumpur",
+    "15, Jalan Kampung Pandan, 55100 Kuala Lumpur",
+    "7, Lorong Maarof, Bangsar Park, 59000 Kuala Lumpur",
+    "A-3-5, Sri Putramas, Jalan Kuching, 51200 Kuala Lumpur",
+    "21, Jalan Ampang Hilir, 55000 Kuala Lumpur",
+    "Level 9, Wisma UOA II, Jalan Pinang, 50450 Kuala Lumpur",
+)
+
+# What a customer raises that the known-issues list does not cover, which is
+# exactly when the bot opens a ticket. The query is what the model would search
+# with; a test holds that none of them matches a known issue, or the bot on
+# screen would be opening a ticket for something it should have fixed.
+ISSUES = (
+    {
+        "query": "export pdf fails",
+        "subject": "Export to PDF fails on a large project",
+        "description": "Export to PDF fails every time on the main project (300+ items). Smaller projects export fine.",
+        "priority": "normal",
+        "ask": {
+            "zh": "导出 PDF 一直失败，我们主项目有 300 多条，小项目就没问题",
+            "en": "Export to PDF keeps failing on our main project, it has 300+ items. Small projects are fine",
+            "ms": "Export PDF asyik gagal untuk projek utama kami (300+ item). Projek kecil ok je",
+        },
+    },
+    {
+        "query": "invitation email never arrived",
+        "subject": "New teammate never receives the invitation email",
+        "description": "Invited a new teammate twice; the invitation email never arrived, including the spam folder.",
+        "priority": "normal",
+        "ask": {
+            "zh": "邀请新同事加入，发了两次邀请邮件他都没收到，垃圾箱也没有",
+            "en": "I invited a new teammate twice but the invitation email never arrived, not in spam either",
+            "ms": "Saya dah jemput rakan sekerja baru dua kali tapi email jemputan tak sampai, spam pun takde",
+        },
+    },
+    {
+        "query": "billing charged twice",
+        "subject": "Charged twice for the Team plan this month",
+        "description": "The card was charged twice for the Team plan (RM 49) this month.",
+        "priority": "high",
+        "ask": {
+            "zh": "这个月 Team 套餐扣了我们两次钱，RM 49 扣了两笔",
+            "en": "We got charged twice for the Team plan this month, two RM 49 charges on the card",
+            "ms": "Bulan ni kami kena caj dua kali untuk pakej Team, dua kali RM 49",
+        },
+    },
+    {
+        "query": "recurring item stopped generating",
+        "subject": "Recurring items stopped being generated",
+        "description": "Weekly recurring items stopped being generated since Monday; the whole team relies on them.",
+        "priority": "urgent",
+        "ask": {
+            "zh": "每周自动重复的事项从星期一开始就没有生成了，整个团队都靠这个",
+            "en": "Our weekly recurring items stopped generating since Monday, the whole team depends on them",
+            "ms": "Item berulang mingguan tak dijana sejak Isnin, satu team bergantung pada benda ni",
+        },
+    },
+)
+
+PRIORITY_WORDS = {
+    "zh": {"low": "低", "normal": "普通", "high": "高", "urgent": "紧急"},
+    "en": {"low": "low", "normal": "normal", "high": "high", "urgent": "urgent"},
+    "ms": {"low": "rendah", "normal": "biasa", "high": "tinggi", "urgent": "segera"},
+}
+
+VIEWING_TIMES = {
+    "zh": ("早上10点", "下午3点", "晚上7点"),
+    "en": ("10am", "3pm", "after 6pm"),
+    "ms": ("10 pagi", "petang", "lepas kerja"),
+}
+
+LOCATION_WORDS = {
+    "zh": {"Langkawi": "兰卡威", "Penang": "槟城"},
+    "en": {"Langkawi": "Langkawi", "Penang": "Penang"},
+    "ms": {"Langkawi": "Langkawi", "Penang": "Pulau Pinang"},
+}
+
+# Format strings, filled from the document as it was filed.
+DEALS: dict[str, dict[str, dict[str, str]]] = {
+    "food": {
+        "zh": {
+            "item": "{quantity}份 {name}",
+            "joiner": "、",
+            "ask_items": "我要{items}",
+            "cart_line": "• {quantity} × {name}  {line_total}",
+            "cart_reply": "好的，购物车里有：\n{lines}\n运费 {fee}，共 *{total}*。送到哪里呢？",
+            "ask_address": "送到 {address}",
+            "placed_reply": "下单成功 ✅ 订单号 *{order_no}*，共 *{total}*。大约 {minutes} 分钟送到，出餐时会 WhatsApp 通知您。",
+        },
+        "en": {
+            "item": "{quantity} {name}",
+            "joiner": ", ",
+            "ask_items": "Can I get {items}",
+            "cart_line": "• {quantity} × {name}  {line_total}",
+            "cart_reply": "Sure! Your cart:\n{lines}\nDelivery {fee}, total *{total}*. Where should we deliver?",
+            "ask_address": "{address}",
+            "placed_reply": "Order placed ✅ *{order_no}*, total *{total}*. It should arrive in about {minutes} minutes, and you'll get a message when it leaves the kitchen.",
+        },
+        "ms": {
+            "item": "{quantity} {name}",
+            "joiner": ", ",
+            "ask_items": "Nak order {items}",
+            "cart_line": "• {quantity} × {name}  {line_total}",
+            "cart_reply": "Baik! Troli anda:\n{lines}\nPenghantaran {fee}, jumlah *{total}*. Nak hantar ke mana?",
+            "ask_address": "Hantar ke {address}",
+            "placed_reply": "Pesanan berjaya ✅ *{order_no}*, jumlah *{total}*. Dijangka sampai dalam {minutes} minit, dan anda akan dapat mesej bila makanan keluar dari dapur.",
+        },
+    },
+    "hotel": {
+        "zh": {
+            "ask_rooms": "{location} {guests} 个人，{check_in} 住 {nights} 晚，有什么房？",
+            "room_line": "• *{room_type}* RM {price}/晚",
+            "rooms_reply": "{location}适合 {guests} 位的房型有：\n{lines}\n想订哪一间？",
+            "ask_book": "订 {room_type}",
+            "booked_reply": "订好了 ✅ 预订号 *{booking_id}*\n{room_type}，{check_in} 入住、{check_out} 退房，{nights} 晚 {guests} 位，共 *RM {total}*。",
+        },
+        "en": {
+            "ask_rooms": "Rooms in {location} for {guests}, {nights} nights from {check_in}?",
+            "room_line": "• *{room_type}* RM {price}/night",
+            "rooms_reply": "In {location} for {guests} guests:\n{lines}\nWhich one would you like?",
+            "ask_book": "Let's go with the {room_type}",
+            "booked_reply": "Booked ✅ *{booking_id}*\n{room_type}, check-in {check_in}, check-out {check_out}, {nights} nights for {guests}, total *RM {total}*.",
+        },
+        "ms": {
+            "ask_rooms": "Bilik di {location} untuk {guests} orang, {nights} malam dari {check_in}?",
+            "room_line": "• *{room_type}* RM {price}/malam",
+            "rooms_reply": "Di {location} untuk {guests} orang:\n{lines}\nNak tempah yang mana?",
+            "ask_book": "Ambil {room_type}",
+            "booked_reply": "Tempahan berjaya ✅ *{booking_id}*\n{room_type}, daftar masuk {check_in}, daftar keluar {check_out}, {nights} malam untuk {guests} orang, jumlah *RM {total}*.",
+        },
+    },
+    "saas": {
+        "zh": {
+            "ticket_reply": "这个不在我们的已知问题里，我已经帮您开了工单 *{ticket_id}*（优先级：{priority}），技术团队会尽快跟进。",
+        },
+        "en": {
+            "ticket_reply": "That isn't a known issue, so I've opened ticket *{ticket_id}* for you (priority: {priority}). Our engineers will follow up shortly.",
+        },
+        "ms": {
+            "ticket_reply": "Ini bukan isu yang diketahui, jadi saya dah buka tiket *{ticket_id}* (keutamaan: {priority}). Jurutera kami akan hubungi anda secepat mungkin.",
+        },
+    },
+    "realestate": {
+        "zh": {
+            "ask_viewing": "我想看 {listing_id}（{area}），{viewing_date} {preferred_time}，我叫 {name}",
+            "viewing_reply": "收到 ✅ {listing_id} 的看房申请已提交：{viewing_date} {preferred_time}。经纪人会打电话跟您确认时间。",
+        },
+        "en": {
+            "ask_viewing": "I'd like to view {listing_id} in {area} on {viewing_date}, {preferred_time}. My name is {name}",
+            "viewing_reply": "Done ✅ Your viewing request for {listing_id} on {viewing_date} ({preferred_time}) is in. The agent will call you to confirm the time.",
+        },
+        "ms": {
+            "ask_viewing": "Saya nak tengok {listing_id} di {area} pada {viewing_date}, {preferred_time}. Nama saya {name}",
+            "viewing_reply": "Baik ✅ Permohonan lawatan {listing_id} pada {viewing_date} ({preferred_time}) sudah dihantar. Ejen akan telefon untuk sahkan masa.",
+        },
     },
 }
