@@ -172,7 +172,7 @@
   /* WhatsApp screenshot, full width under the heading */
   .wa { margin-top: 5mm; }
   .wa .frame { border: 1px solid var(--line); border-radius: 3mm; overflow: hidden; box-shadow: 0 2mm 6mm rgba(15,23,42,.10); }
-  .wa .shot { height: 112mm; background: #efe7de; }
+  .wa .shot { height: 106mm; background: #efe7de; }
   .wa img { width: 100%; height: 100%; object-fit: cover; object-position: center bottom; display: block; }
   .cap-line { font-size: 9pt; font-weight: 700; color: var(--ink2); margin-bottom: 2mm; letter-spacing: .3px; }
 
@@ -187,6 +187,8 @@
   .bo .shot { height: 52mm; overflow: hidden; }
   /* Show the top-left two thirds of the page, so the newest row is legible in print. */
   .bo img { width: 150%; height: auto; display: block; }
+  /* Already cropped to the table when captured: show it as is. */
+  .bo .shot[data-fit] img { width: 100%; }
 
   /* placeholder until a screenshot is dropped in */
   .ph {
@@ -445,7 +447,7 @@
     <div>
       <div class="bo">
     <div class="cap-line" data-zh="后台：客户在 WhatsApp 下的单，直接出现在 ERP 的销售单里">BACK OFFICE · The WhatsApp order, already in your ERP's sales orders</div>
-    <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-retail" data-shared="1" data-label="ERP · Sales orders"></div></div>
+    <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-retail" data-shared="1" data-fit="1" data-label="ERP · Sales orders"></div></div>
       </div>
       <div class="tryit" data-zh="<b>试一试：</b>给 demo 号发 <code>menu</code>，选「电商零售」，问「这个 earbuds 还有 stock 吗？」"><b>Try it:</b> send <code>menu</code> to the demo number, pick Retail, and ask "Do you have the Sony earbuds in stock?"</div>
     </div>
