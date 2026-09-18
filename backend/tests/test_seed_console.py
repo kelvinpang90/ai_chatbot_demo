@@ -8,6 +8,7 @@ import json
 import random
 import time
 from collections import Counter
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -15,9 +16,10 @@ import pytest
 from app.config import settings
 from app.console import cost
 from app.routers import console
-from app.services import phone
+from app.services import erp_client, phone
+from app.services.api_client import ApiClientError
 from app.services.user_store import UserProfile, identity, user_store
-from app.tasks import seed_console, seed_documents, seed_lines
+from app.tasks import seed_console, seed_documents, seed_lines, seed_retail
 from app.tools import local
 from app.verticals.food import models as food_models
 from app.verticals.hotel import models as hotel_models
@@ -395,3 +397,189 @@ def test_clearing_documents_touches_only_what_the_seed_filed():
         "DELETE v FROM realestate_viewings v JOIN seed_console_viewings s ON s.viewing_id = v.id",
         "DELETE FROM seed_console_viewings",
     ]
+
+
+# --- retail over the ERP (task 39.3) --------------------------------------------
+
+
+def _ago(days):
+    return (date.fromtimestamp(NOW) - timedelta(days=days)).isoformat()
+
+
+class FakeErp:
+    """erp_os's routes the seed and the four read-only tools touch, and nothing else."""
+
+    def __init__(self, *, down=False):
+        self.down = down
+        self.customers = [
+            # Newest order yesterday, a contact, a phone: a buyer.
+            {"id": 1, "code": "CUS-001", "name": "Sunrise Hypermart Sdn Bhd", "contact_person": "Lim Ah Kow", "phone": "+60 3-2284 1111", "currency": "MYR"},
+            {"id": 2, "code": "CUS-002", "name": "Megamart Retail Group Sdn Bhd", "contact_person": "Tan Wei Ming", "phone": "+60 3-2142 2222", "currency": "MYR"},
+            # The bot's own account: never a buyer.
+            {"id": 3, "code": "WA-60123456789-2609051423", "name": "Ahmad Faizal", "contact_person": "Ahmad Faizal", "phone": "+60 12-345 6789", "currency": "MYR"},
+            # No contact person to speak as.
+            {"id": 4, "code": "CUS-004", "name": "Kedai Runcit Sdn Bhd", "contact_person": None, "phone": "+60 3-5555 4444", "currency": "MYR"},
+            # Newest order older than the window.
+            {"id": 5, "code": "CUS-005", "name": "Old Trading Sdn Bhd", "contact_person": "Wong Ah Beng", "phone": "+60 4-228 5555", "currency": "MYR"},
+            # Ordered today: no "after" that is not also the quiet hour.
+            {"id": 6, "code": "CUS-006", "name": "Today Mart Sdn Bhd", "contact_person": "Cheah Boon Hock", "phone": "+60 4-228 6666", "currency": "MYR"},
+        ]
+        self.orders = [
+            {"document_no": "SO-SEED-00210", "customer_id": 6, "business_date": _ago(0), "status": "DRAFT", "currency": "MYR", "total_incl_tax": "100.0000"},
+            {"document_no": "SO-SEED-00209", "customer_id": 1, "business_date": _ago(1), "status": "CONFIRMED", "currency": "MYR", "total_incl_tax": "2839.8400"},
+            {"document_no": "SO-SEED-00208", "customer_id": 3, "business_date": _ago(2), "status": "CONFIRMED", "currency": "MYR", "total_incl_tax": "299.0000"},
+            {"document_no": "SO-SEED-00207", "customer_id": 4, "business_date": _ago(3), "status": "INVOICED", "currency": "MYR", "total_incl_tax": "50.0000"},
+            {"document_no": "SO-SEED-00206", "customer_id": 2, "business_date": _ago(5), "status": "FULLY_SHIPPED", "currency": "MYR", "total_incl_tax": "1200.5000"},
+            {"document_no": "SO-SEED-00205", "customer_id": 1, "business_date": _ago(9), "status": "INVOICED", "currency": "MYR", "total_incl_tax": "980.0000"},
+            {"document_no": "SO-SEED-00204", "customer_id": 1, "business_date": _ago(20), "status": "INVOICED", "currency": "MYR", "total_incl_tax": "430.1000"},
+            {"document_no": "SO-SEED-00203", "customer_id": 1, "business_date": _ago(40), "status": "PAID", "currency": "MYR", "total_incl_tax": "77.0000"},
+            {"document_no": "SO-SEED-00202", "customer_id": 5, "business_date": _ago(35), "status": "PAID", "currency": "MYR", "total_incl_tax": "10.0000"},
+        ]
+        self.gets = []
+
+    def _up(self):
+        if self.down:
+            raise ApiClientError("erp api: failed: connection refused")
+
+    def get(self, path, params=None):
+        self._up()
+        self.gets.append(path)
+        if path == "/api/sales-orders":
+            return {"items": self.orders[: params["page_size"]]}
+        if path == "/api/customers":
+            return {"items": self.customers if params["page"] == 1 else []}
+        raise AssertionError(path)
+
+    def find_customers(self, term, *, limit=5):
+        self._up()
+        return [row for row in self.customers if phone.matches(row["phone"], term)][:limit]
+
+    def recent_orders(self, customer_id, *, limit=5):
+        self._up()
+        return [order for order in self.orders if order["customer_id"] == customer_id][:limit]
+
+    def search_skus(self, keyword, *, limit=5):
+        self._up()
+        items = [
+            {"id": 11, "code": "SKU-ELE-0001", "name": "Sony WF-C710N Wireless Earbuds", "unit_price_excl_tax": "299.0000", "unit_price_incl_tax": "328.9000", "currency": "MYR"},
+            {"id": 12, "code": "SKU-ELE-0002", "name": "Khind Stand Fan 16 Inch SF16D", "unit_price_excl_tax": "129.0000", "unit_price_incl_tax": "139.3200", "currency": "MYR"},
+        ]
+        return erp_client.SkuMatches(items=items, total=5)
+
+    def branch_inventory(self, sku_query, *, limit=5):
+        self._up()
+        return [
+            {"sku_id": 11, "sku_code": "SKU-ELE-0001", "sku_name": "Sony WF-C710N Wireless Earbuds", "warehouses": [
+                {"warehouse_id": 1, "warehouse_name": "KL", "available": "12.0000"},
+                {"warehouse_id": 2, "warehouse_name": "Penang", "available": "0.0000"},
+            ]},
+            {"sku_id": 12, "sku_code": "SKU-ELE-0002", "sku_name": "Khind Stand Fan 16 Inch SF16D", "warehouses": [
+                {"warehouse_id": 1, "warehouse_name": "KL", "available": "0.0000"},
+            ]},
+        ]
+
+
+@pytest.fixture
+def erp():
+    fake = FakeErp()
+    with patch.object(erp_client, "client", lambda: fake):
+        yield fake
+
+
+def test_buyers_are_the_accounts_with_a_recent_order_and_someone_to_speak_as(erp):
+    found = seed_retail.accounts(erp, now=NOW, days=seed_console.DAYS, wanted=9)
+    assert [a.company for a in found] == ["Sunrise Hypermart Sdn Bhd", "Megamart Retail Group Sdn Bhd"]
+    assert found[0].latest == date.fromisoformat(_ago(1))
+    assert found[0].contact == "Lim Ah Kow"
+    assert seed_retail.accounts(erp, now=NOW, days=seed_console.DAYS, wanted=1) == found[:1]
+
+
+def _retail_batch(erp, retail):
+    return seed_console.plan(NOW, random.Random(7), FakeFiler(), retail)
+
+
+def test_a_buyer_reads_out_the_orders_the_erp_holds(erp):
+    retail = seed_retail.accounts(erp, now=NOW, days=seed_console.DAYS, wanted=9)
+    batch = _retail_batch(erp, retail)
+    buyers = [c for c in batch if c.name in {"Lim Ah Kow", "Tan Wei Ming"}]
+    assert [c.bot_id for c in buyers] == ["retail", "retail"]
+
+    lim = buyers[0]
+    conversation = lim.conversations[-1]
+    found = _tool_rows(conversation, "erp_find_customer")[0].values
+    listed = _tool_rows(conversation, "erp_list_orders")[0].values
+    assert json.loads(found["output"])[0]["customer_id"] == 1
+    assert listed["input"] == {"customer_id": 1}
+    orders = json.loads(listed["output"])
+    assert [o["order_no"] for o in orders] == ["SO-SEED-00209", "SO-SEED-00205", "SO-SEED-00204", "SO-SEED-00203"]
+
+    reply = next(r for r in conversation.rows if r.kind == "message" and r.at > _tool_rows(conversation, "erp_list_orders")[0].at)
+    for order_no in ("SO-SEED-00209", "SO-SEED-00205", "SO-SEED-00204"):
+        assert order_no in reply.values["content"]
+    assert "RM 2,839.84" in reply.values["content"]
+    assert "Sunrise Hypermart Sdn Bhd" in conversation.rows[1].values["content"]
+
+
+def test_a_buyer_writes_after_their_newest_order(erp):
+    retail = seed_retail.accounts(erp, now=NOW, days=seed_console.DAYS, wanted=9)
+    for customer in _retail_batch(erp, retail):
+        for account in retail:
+            if customer.name == account.contact:
+                moments = [row.at for conv in customer.conversations for row in conv.rows]
+                assert moments == sorted(moments)
+                assert date.fromtimestamp(customer.conversations[-1].rows[0].at) >= account.latest
+                assert customer.conversations[-1].rows[-1].at < NOW - seed_console.QUIET_SECONDS + 15 * 60
+
+
+def test_a_buyer_is_saved_without_the_number_they_were_looked_up_by(erp, mysql):
+    retail = seed_retail.accounts(erp, now=NOW, days=seed_console.DAYS, wanted=9)
+    batch = _retail_batch(erp, retail)
+    buyers = [c for c in batch if c.name == "Lim Ah Kow"]
+    seed_console.reseed(buyers, connect=lambda dsn: FakeConnection())
+    assert user_store.get(buyers[0].key_id).phone is None
+
+
+def test_the_other_retail_customers_ask_about_the_live_catalogue(erp):
+    batch = _retail_batch(erp, seed_retail.accounts(erp, now=NOW, days=seed_console.DAYS, wanted=9))
+    retail = [c for c in batch if c.bot_id == "retail"]
+    tools = Counter(row.values["tool"] for c in retail for conv in c.conversations for row in conv.rows if row.kind == "tool")
+    assert tools["erp_find_customer"] == 2 and tools["erp_list_orders"] == 2
+    assert tools["erp_search_sku"] + tools["erp_get_inventory"] == 16  # the other 16 of 18
+    for customer in retail:
+        for conv in customer.conversations:
+            for row in conv.rows:
+                if row.kind == "tool" and row.values["tool"] == "erp_get_inventory":
+                    reply = next(r for r in conv.rows if r.kind == "message" and r.at > row.at)
+                    assert "Sony WF-C710N Wireless Earbuds* 12" in reply.values["content"]
+                    assert "KL 12" in reply.values["content"]
+
+
+def test_a_product_the_catalogue_lost_falls_back_to_a_policy_question(erp):
+    erp.search_skus = lambda keyword, limit=5: erp_client.SkuMatches(items=[], total=0)
+    erp.branch_inventory = lambda sku_query, limit=5: []
+    batch = _retail_batch(erp, [])
+    tools = {row.values["tool"] for c in batch if c.bot_id == "retail" for conv in c.conversations for row in conv.rows if row.kind == "tool"}
+    assert tools == set()
+
+
+def test_an_erp_that_stops_answering_mid_seed_stops_the_seed(erp):
+    retail = seed_retail.accounts(erp, now=NOW, days=seed_console.DAYS, wanted=9)
+    erp.down = True
+    with pytest.raises(RuntimeError, match="could not reach the ERP"):
+        _retail_batch(erp, retail)
+
+
+def test_an_unreachable_erp_clears_nothing(capsys):
+    urls = {
+        "mysql_url": "mysql://u:p@db:3306/chat",
+        "redis_url": "redis://r:6379/0",
+        "verticals_mysql_url": "mysql://u:p@db:3306/verticals",
+    }
+    down = FakeErp(down=True)
+    with patch.multiple(settings, **urls), patch.object(erp_client, "client", lambda: down), patch.object(
+        seed_documents, "clear"
+    ) as clear_documents, patch.object(seed_console, "reseed") as reseed:
+        assert seed_console.main([]) == 1
+    clear_documents.assert_not_called()
+    reseed.assert_not_called()
+    assert "Seed failed" in capsys.readouterr().out

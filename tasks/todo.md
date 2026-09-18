@@ -1872,7 +1872,27 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **没验**：线上没跑（合并部署后，今晚 03:30 的 cron 会第一次带单据跑；想提前看就手动跑一次）；浏览器里没看 `/admin` 和导演台的样子；房产成交后真 bot 还会调 `crm_create_lead`，seed 里暂时没有（39.4 做 CRM 时补上）
   **已知**：单据编号是自增 id，每晚清掉重灌，编号会一直往上涨（每晚 +9 左右），不影响显示
-- [ ] **任务 39.3：retail 读 ERP 种子单填进对话**（只读 REST）。⚠️ `app.tasks.cleanup` 会触发 ERP 重置、单据全部重生，跑完 cleanup 要补跑 seed
+- [x] **任务 39.3：retail 读 ERP 种子单填进对话**（只读 REST）。⚠️ `app.tasks.cleanup` 会触发 ERP 重置、单据全部重生，跑完 cleanup 要补跑 seed——**2026-09-18 完成**
+  文件：`backend/app/tasks/seed_retail.py`（新增）、`seed_console.py`、`seed_lines.py`、`tests/test_seed_console.py`
+
+  **做了什么**
+  - **retail 18 位里的 9 位 = ERP 自己的 B2B 客户的联系人来查订单**（每种语言 3 位）。`seed_retail.accounts()` 读 `/api/sales-orders`（最新 100 张）+ `/api/customers`，挑「最新一单在 28 天窗口内、**不是今天**、有联系人和电话、**不是 bot 开的 `WA-` 账号**」的，按最新单倒序取 9 个。seed 客户的名字就是 ERP 里的 `contact_person`（Wong Siew Lin、Cheah Boon Hock…）
+  - 对话：「我是 {公司} 的 {联系人}，查一下我们最近的订单」→ **真的** `erp_find_customer` → **真的** `erp_list_orders` → 回复列最近 3 张：单号、日期、状态（三语的状态词）、金额（`erp._money`，RM 2,839.84）
+    - 这两个工具按「来电号码」认人，所以调用那一刻把号码临时设成 ERP 里该公司的电话；**号码只在那一次调用里存在，存进 Redis 的资料照旧没有手机号**（导演台发不出任何东西）
+    - **对话日期 = 该客户最新一单之后 0-2 天**，不再随机：`erp_list_orders` 回的是「现在」的最新 5 张，随机日期会出现「两周前的对话念出上周的单」
+  - **另外 9 位 retail 普通客户问商品或库存**：真的 `erp_search_sku` / `erp_get_inventory`（earbuds / rice cooker / fan / kettle），回复由输出生成（前 3 款 + 含税价；库存逐款列各仓数量，0 的仓不列，全 0 写「暂时没货」）。目录里搜不到了就退回原来的政策问题，不中断 seed
+  - **任何 ERP 工具回「系统不可用」就 raise**：一张「ERP 连不上」的卡被当成正常演示存下来，会在导演台上挂一整天
+  - **`main` 顺序改了（也修了 39.2 留下的一个洞）**：**先读 ERP，再清单据**。原来是先清 verticals 单据再生成，ERP（或别的）中途挂了就会留下「昨晚的对话 + 已被删的单据」；现在 ERP 读不到时什么都不动，昨晚那批原样保留。输出多一项 `N ERP buyers`
+  - **没往 ERP 写任何东西**，「ERP 只走 REST」这条规则保住
+
+  **验证**
+  - 容器里全套 **1074 passed / 10 skipped**（本文件 46 → 54 条）。新测试：`accounts()` 的四条排除规则 + 数量上限；采购员的两张卡是真工具的输出、回复里是该账号最新 3 张单号和 `RM 2,839.84`；对话时间 ≥ 最新单、且在静默小时之前；存下的资料没有号码；商品问题的库存回复格式；目录搜不到时退回政策问题；ERP 中途挂掉 → seed raise；**ERP 一开始就读不到 → 单据没清、审计库没动、退出码 1**
+  - **变异检查**：采购员日期改回随机 / 清单据挪到读 ERP 之前 / 去掉「不可用就 raise」/ 不排除 `WA-` 账号——各自对应的测试变红
+  - **本地 MySQL + Redis + 真的 `erp.acuventech.com`（只读）**：exit 0，`9 ERP buyers`；9 段采购员对话里回复点名的每张单，逐张拿 ERP **此刻**的 `recent_orders` 对：**都属于那个客户、日期都不晚于对话，0 处不符**；9 次商品 / 库存调用 0 次「不可用」；9 位采购员的 Redis 资料带号码的 **0** 位
+  - 抽的一条库存回复：「目前可以卖的库存：• Panasonic Rice Cooker 1.8L SR-DF181 109 件（Branch - Johor Bahru 31, Main Warehouse - Kuala Lumpur 45, Branch - Penang 33）…」
+
+  **没验**：线上没跑（部署后今晚 03:30 首次带 ERP 跑，或手动补跑）；浏览器没看导演台
+  **已知**：ERP 夜里 03:00 重置后单据全换，所以 03:30 的 seed 正好对得上；**白天有人在 ERP 后台手动重置或跑 `app.tasks.cleanup`，retail 那 9 段会对不上，直到补跑 seed**。CRM 还没接（39.4）
 - [ ] **任务 39.4：CRM 联系人 + 线索的写入与按标记删除**。⚠️ 标记不能以 `[DEMO]` 开头——`crm_client.is_marked` 是锚定前缀匹配，`cleanup` 按它删联系人，撞上就会被 cleanup 顺手删掉（`[DEMO-SEED]` 不以 `[DEMO]` 开头，可用，但要写测试钉住）
 - [ ] **任务 39.5：Claude 生成 15 段精品 JSON**（用户审）
 - [x] **任务 39.6：VPS crontab 安装命令 + 手动补跑命令**——**2026-09-17 已装上**（用户让我直接上 VPS 装，原计划「用户执行」作废；提前于 39.2-39.5 做，用户拍板「先装定时任务」）

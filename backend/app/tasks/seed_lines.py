@@ -548,3 +548,92 @@ DEALS: dict[str, dict[str, dict[str, str]]] = {
         },
     },
 }
+
+
+# --- retail, over the real ERP (task 39.3) -------------------------------------
+#
+# Nothing here names a product, a price or an order: every one of those comes out
+# of the ERP's answer on the night the seed runs, because the ERP reseeds itself
+# at 03:00 and a figure written here would be wrong by morning.
+
+# What a customer asks about, in the ERP's own words for the search and in the
+# customer's for the question. Each matched the catalogue on 2026-09-18; one that
+# stops matching falls back to a policy question rather than stopping the seed.
+PRODUCTS = (
+    ("earbuds", {"zh": "耳机", "en": "earbuds", "ms": "earbuds"}),
+    ("rice cooker", {"zh": "电饭锅", "en": "rice cookers", "ms": "periuk nasi"}),
+    ("fan", {"zh": "风扇", "en": "fans", "ms": "kipas"}),
+    ("kettle", {"zh": "热水壶", "en": "kettles", "ms": "cerek elektrik"}),
+)
+
+ORDER_STATUS_WORDS = {
+    "zh": {
+        "DRAFT": "草稿，还没确认",
+        "CONFIRMED": "已确认，正在备货",
+        "PARTIAL_SHIPPED": "部分已发货",
+        "FULLY_SHIPPED": "已发货",
+        "INVOICED": "已发货并开票",
+        "PAID": "已付款",
+    },
+    "en": {
+        "DRAFT": "draft, not confirmed yet",
+        "CONFIRMED": "confirmed, stock set aside",
+        "PARTIAL_SHIPPED": "partly shipped",
+        "FULLY_SHIPPED": "shipped",
+        "INVOICED": "shipped and invoiced",
+        "PAID": "paid",
+    },
+    "ms": {
+        "DRAFT": "draf, belum disahkan",
+        "CONFIRMED": "disahkan, stok diasingkan",
+        "PARTIAL_SHIPPED": "sebahagian dihantar",
+        "FULLY_SHIPPED": "sudah dihantar",
+        "INVOICED": "sudah dihantar dan diinvois",
+        "PAID": "sudah dibayar",
+    },
+}
+
+RETAIL: dict[str, dict[str, str]] = {
+    "zh": {
+        "ask_orders": "你好，我是 {company} 的 {contact}，帮我查一下我们最近的订单",
+        "order_line": "• *{order_no}*（{date}）{status}，{total}",
+        "orders_reply": "{company} 最近的订单：\n{lines}\n需要发票或者其他资料可以跟我说。",
+        "ask_search": "{keyword}有哪些款？",
+        "product_line": "• {name}  {price}",
+        "search_reply": "我们目前有这些{keyword}：\n{lines}",
+        "search_more": "\n一共 {total} 款，告诉我牌子或者预算，我帮您缩小范围。",
+        "ask_stock": "{keyword}还有货吗？",
+        "warehouse": "{warehouse} {available}",
+        "stock_reply": "目前可以卖的库存：\n{lines}",
+        "stock_line": "• *{name}* {available} 件（{warehouses}）",
+        "no_stock_line": "• *{name}* 暂时没货",
+    },
+    "en": {
+        "ask_orders": "Hi, this is {contact} from {company}. Can you check our recent orders?",
+        "order_line": "• *{order_no}* ({date}) {status}, {total}",
+        "orders_reply": "Recent orders for {company}:\n{lines}\nLet me know if you need an invoice or anything else.",
+        "ask_search": "What {keyword} do you have?",
+        "product_line": "• {name}  {price}",
+        "search_reply": "Here are the {keyword} we carry:\n{lines}",
+        "search_more": "\nThat's {shown} of {total}. Tell me a brand or budget and I'll narrow it down.",
+        "ask_stock": "Are the {keyword} in stock?",
+        "warehouse": "{warehouse} {available}",
+        "stock_reply": "Stock available right now:\n{lines}",
+        "stock_line": "• *{name}* {available} ({warehouses})",
+        "no_stock_line": "• *{name}* out of stock",
+    },
+    "ms": {
+        "ask_orders": "Hai, saya {contact} dari {company}. Boleh semak pesanan terkini kami?",
+        "order_line": "• *{order_no}* ({date}) {status}, {total}",
+        "orders_reply": "Pesanan terkini {company}:\n{lines}\nBeritahu saya jika perlukan invois atau maklumat lain.",
+        "ask_search": "Ada {keyword} jenis apa?",
+        "product_line": "• {name}  {price}",
+        "search_reply": "Ini {keyword} yang kami ada:\n{lines}",
+        "search_more": "\nSemuanya {total} jenis. Beritahu jenama atau bajet, saya bantu pilih.",
+        "ask_stock": "{keyword} ada stok lagi?",
+        "warehouse": "{warehouse} {available}",
+        "stock_reply": "Stok yang boleh dijual sekarang:\n{lines}",
+        "stock_line": "• *{name}* {available} unit ({warehouses})",
+        "no_stock_line": "• *{name}* kehabisan stok",
+    },
+}

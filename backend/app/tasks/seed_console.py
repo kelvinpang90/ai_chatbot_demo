@@ -47,17 +47,19 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from datetime import time as day_time
 
 from app.bots.registry import get_bot
 from app.config import settings
 from app.console import cost
 from app.routers.whatsapp_webhook import GREETING_SUFFIX_EN
-from app.services import audit
+from app.services import audit, erp_client
 from app.services.clock import sql_timestamp
 from app.services.mysql_url import connect as _default_connect
 from app.services.mysql_url import dsn as _mysql_dsn
 from app.services.user_store import UserProfile, UserStore, user_store
-from app.tasks import seed_documents, seed_lines
+from app.tasks import seed_documents, seed_lines, seed_retail
+from app.tools import erp as erp_tools
 from app.tools import food as food_tools
 from app.tools import local
 from app.tools import realestate as realestate_tools
@@ -72,6 +74,9 @@ DAYS = 28
 ORDINARY_PER_COMBINATION = 6
 # Of those six, how many end their latest conversation in a document (task 39.2).
 DEALS_PER_COMBINATION = 3
+# Retail's "deals" are buyers from the ERP's own trade accounts asking after their
+# orders (task 39.3): one for each deal slot, in all three languages.
+RETAIL_BUYERS = DEALS_PER_COMBINATION * 3
 # Share of customers who also wrote once before, days earlier. A list in which
 # every customer has exactly one conversation reads as a list somebody generated.
 RETURNING_SHARE = 0.3
@@ -141,9 +146,19 @@ class Exchange:
     reply: Callable[[list[str]], str]
 
 
-def plan(now: float, rng: random.Random, filer: seed_documents.Filer | None = None) -> list[Customer]:
-    """The whole batch. Files documents through `filer` as it goes, if given one."""
+def plan(
+    now: float,
+    rng: random.Random,
+    filer: seed_documents.Filer | None = None,
+    retail: list[seed_retail.Account] | None = None,
+) -> list[Customer]:
+    """The whole batch. Files documents through `filer` as it goes, if given one.
+
+    `retail` is the ERP's own accounts the retail buyers are (task 39.3); without
+    it retail talks policy only, which is what a run with no ERP to read gets.
+    """
     customers = []
+    buyers = iter(retail or [])
     for bot_index, bot_id in enumerate(BOTS):
         bot = get_bot(bot_id)
         for language in seed_lines.LANGUAGES:
@@ -155,15 +170,26 @@ def plan(now: float, rng: random.Random, filer: seed_documents.Filer | None = No
                     language=language,
                     bot_id=bot_id,
                 )
-                latest = _moment(now, rng, days_ago=rng.randrange(DAYS))
+                account = next(buyers, None) if bot_id == "retail" and i < DEALS_PER_COMBINATION else None
+                if account is not None:
+                    # A buyer writes after their newest order, not on a day drawn
+                    # at random: the orders they are read are the ERP's as of now.
+                    customer.name = account.contact
+                    latest = _after(account.latest, now, rng)
+                else:
+                    latest = _moment(now, rng, days_ago=rng.randrange(DAYS))
                 if rng.random() < RETURNING_SHARE:
                     earlier = latest - rng.randint(2, 9) * 86400
                     if earlier > now - DAYS * 86400:
                         exchanges = _ordinary(bot, customer, rng, topics=1)
                         customer.conversations.append(_conversation(customer, earlier, rng, exchanges))
                 deal = _DEALS.get(bot_id)
-                if filer is not None and deal is not None and i < DEALS_PER_COMBINATION:
+                if account is not None:
+                    exchanges = _retail_orders(bot, customer, account)
+                elif filer is not None and deal is not None and i < DEALS_PER_COMBINATION:
                     exchanges = deal(bot, customer, rng, filer, latest)
+                elif bot_id == "retail" and retail is not None:
+                    exchanges = _retail_ordinary(bot, customer, rng)
                 else:
                     exchanges = _ordinary(bot, customer, rng, topics=rng.choice((1, 2)))
                 customer.conversations.append(_conversation(customer, latest, rng, exchanges))
@@ -254,10 +280,29 @@ def _conversation(customer: Customer, start: float, rng: random.Random, exchange
     return conversation
 
 
-def _tool_output(bot, name: str, tool_input: dict) -> str:
-    """What the real tool answers today, so the card is the one it would draw."""
-    with local.serving(bot, None):
-        return str(CATALOGUE[name].call(tool_input))
+def _after(day: date, now: float, rng: random.Random) -> float:
+    """A moment in opening hours a day or two after `day`, and before the quiet hour."""
+    later = day + timedelta(days=rng.randint(0, 2))
+    at = datetime.combine(
+        later, day_time(rng.randint(FIRST_HOUR, LAST_HOUR - 1), rng.randrange(60), rng.randrange(60))
+    ).timestamp()
+    return min(at, now - QUIET_SECONDS - rng.uniform(600, 3600))
+
+
+def _tool_output(bot, name: str, tool_input: dict, caller: UserProfile | None = None) -> str:
+    """What the real tool answers today, so the card is the one it would draw.
+
+    `caller` is who the tool believes it is talking to, for the ERP tools that
+    find the account from the number the conversation came from. It is held for
+    the one call and never saved: a seeded profile keeps no phone number.
+    """
+    with local.serving(bot, caller):
+        output = str(CATALOGUE[name].call(tool_input))
+    if output == erp_tools.UNAVAILABLE:
+        # A card saying the ERP is down, filed as a normal night's demo, would be
+        # the one thing the console showed wrong every day until the next run.
+        raise RuntimeError(f"{name} could not reach the ERP")
+    return output
 
 
 def _ordinary(bot, customer: Customer, rng: random.Random, *, topics: int) -> list[Exchange]:
@@ -475,6 +520,114 @@ def _realestate_deal(bot, customer: Customer, rng: random.Random, filer: seed_do
     ]
 
 
+# --- retail, over the real ERP (task 39.3) -------------------------------------
+
+
+def _retail_orders(bot, customer: Customer, account: seed_retail.Account) -> list[Exchange]:
+    """A trade account's buyer asking after their orders -- the real two tools, read-only."""
+    text = seed_lines.RETAIL[customer.language]
+    words = seed_lines.ORDER_STATUS_WORDS[customer.language]
+    caller = UserProfile(key_id=customer.key_id, phone=account.phone, display_name=customer.name)
+    found = _tool_output(bot, "erp_find_customer", {}, caller)
+    if not found.startswith("[") or not any(
+        row.get("customer_id") == account.customer_id for row in json.loads(found)
+    ):
+        raise RuntimeError(f"erp_find_customer did not find {account.company} by {account.phone}: {found[:120]}")
+    orders_input = {"customer_id": account.customer_id}
+    listed = _tool_output(bot, "erp_list_orders", orders_input, caller)
+    if not listed.startswith("["):
+        raise RuntimeError(f"erp_list_orders had nothing for {account.company}: {listed[:120]}")
+    lines = "\n".join(
+        text["order_line"].format(
+            order_no=order["order_no"],
+            date=order["ordered_on"],
+            status=words.get(order["status"], order["status"]),
+            total=erp_tools._money(order["currency"], order["total_incl_tax"]),
+        )
+        for order in json.loads(listed)[:3]
+    )
+    return [
+        Exchange(
+            text["ask_orders"].format(company=account.company, contact=account.contact),
+            [
+                Step("erp_find_customer", {}, lambda at: found),
+                Step("erp_list_orders", orders_input, lambda at: listed),
+            ],
+            lambda outputs: text["orders_reply"].format(company=account.company, lines=lines),
+        ),
+    ]
+
+
+def _retail_ordinary(bot, customer: Customer, rng: random.Random) -> list[Exchange]:
+    """A product or a stock question over the live catalogue, and sometimes a policy one."""
+    product = _retail_product(bot, customer, rng)
+    if product is None:
+        return _ordinary(bot, customer, rng, topics=rng.choice((1, 2)))
+    if rng.random() < 0.5:
+        return [product, *_ordinary(bot, customer, rng, topics=1)]
+    return [product]
+
+
+def _retail_product(bot, customer: Customer, rng: random.Random) -> Exchange | None:
+    """None when the catalogue no longer has the product asked about."""
+    text = seed_lines.RETAIL[customer.language]
+    keyword, local_words = rng.choice(seed_lines.PRODUCTS)
+    asked = local_words[customer.language]
+
+    if rng.random() < 0.5:
+        search_input = {"keyword": keyword}
+        found = _tool_output(bot, "erp_search_sku", search_input)
+        if found == erp_tools.NOT_FOUND:
+            return None
+        data = json.loads(found)
+        shown = data["products"][:3]
+        reply = text["search_reply"].format(
+            keyword=asked,
+            lines="\n".join(
+                text["product_line"].format(
+                    name=sku["name"], price=erp_tools._money(sku["currency"], sku["unit_price_incl_tax"])
+                )
+                for sku in shown
+            ),
+        )
+        if data["total_matches"] > len(shown):
+            reply += text["search_more"].format(shown=len(shown), total=data["total_matches"])
+        return Exchange(
+            text["ask_search"].format(keyword=asked),
+            [Step("erp_search_sku", search_input, lambda at: found)],
+            lambda outputs: reply,
+        )
+
+    stock_input = {"sku": keyword}
+    stock = _tool_output(bot, "erp_get_inventory", stock_input)
+    if stock == erp_tools.NOT_FOUND:
+        return None
+    lines = []
+    for row in json.loads(stock)[:3]:
+        if float(row["total_available"] or 0) > 0:
+            where = ", ".join(
+                text["warehouse"].format(warehouse=cell["warehouse"], available=_count(cell["available"]))
+                for cell in row["by_warehouse"]
+                if float(cell["available"] or 0) > 0
+            )
+            lines.append(
+                text["stock_line"].format(name=row["name"], available=_count(row["total_available"]), warehouses=where)
+            )
+        else:
+            lines.append(text["no_stock_line"].format(name=row["name"]))
+    return Exchange(
+        text["ask_stock"].format(keyword=asked),
+        [Step("erp_get_inventory", stock_input, lambda at: stock)],
+        lambda outputs: text["stock_reply"].format(lines="\n".join(lines)),
+    )
+
+
+def _count(value) -> str:
+    """ "12" rather than "12.0000": the ERP keeps stock to four decimal places."""
+    number = float(value or 0)
+    return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
 _DEALS = {
     "food": _food_deal,
     "hotel": _hotel_deal,
@@ -651,12 +804,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     filer = seed_documents.Filer()
+    now = time.time()
+    retail: list[seed_retail.Account] = []
     try:
+        # The ERP is read before anything is cleared, so a night it cannot be
+        # reached leaves last night's batch whole rather than half-replaced.
+        if not args.clear:
+            retail = seed_retail.accounts(erp_client.client(), now=now, days=DAYS, wanted=RETAIL_BUYERS)
         # Documents first, conversations second: a conversation names the number
         # its document was given. A failure between the two leaves documents with
         # no conversation, which the next run clears before filing again.
         seed_documents.clear(SEED_PREFIX)
-        customers = [] if args.clear else plan(time.time(), random.Random(), filer)
+        customers = [] if args.clear else plan(now, random.Random(), filer, retail)
         counts = reseed(customers)
     except Exception as failure:
         # The audit half is one transaction and rolls back whole; a failure after
@@ -670,7 +829,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Cleared:   {counts.cleared_rows} rows, {counts.cleared_profiles} profiles")
     print(
         f"Seeded:    {counts.customers} customers, {counts.messages} messages,"
-        f" {counts.tool_calls} tool calls, {counts.usage} model calls, {filer.filed} documents"
+        f" {counts.tool_calls} tool calls, {counts.usage} model calls, {filer.filed} documents,"
+        f" {len(retail)} ERP buyers"
     )
     return 0
 
