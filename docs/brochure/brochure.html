@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Acuven WhatsApp AI Brochure</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<!--
+  Customer-facing brochure. One source, two PDFs: open with ?lang=zh for Chinese.
+  English lives in the markup; Chinese in data-zh (same pattern as acuven_os).
+  Build with: python build.py
+-->
+<style>
+  :root {
+    --ink: #0f172a;
+    --ink2: #475569;
+    --ink3: #94a3b8;
+    --line: #e2e8f0;
+    --soft: #f1f5f9;
+    --dark: #0a0a0a;
+    --dark2: #161616;
+    --accent: #1e6bff;
+    --accent-h: #60a5fa;
+    --accent-soft: #eaf1ff;
+    --wa: #25d366;
+  }
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: 'Inter', 'Noto Sans SC', -apple-system, sans-serif;
+    color: var(--ink);
+    background: #d4d4d8;
+  }
+  html[lang="zh"] body { font-family: 'Inter', 'Noto Sans SC', sans-serif; }
+
+  .page {
+    width: 210mm; height: 297mm;
+    margin: 0 auto 8mm;
+    background: #fff;
+    position: relative;
+    overflow: hidden;
+    padding: 18mm 16mm 20mm;
+    page-break-after: always;
+    break-after: page;
+  }
+  .page:last-child { page-break-after: auto; break-after: auto; }
+  @media print { body { background: #fff; } .page { margin: 0; } }
+
+  /* ---------- shared bits ---------- */
+  .brand { font-weight: 800; letter-spacing: -.3px; }
+  .brand span { color: var(--accent); }
+  .eyebrow {
+    font-size: 9pt; font-weight: 700; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--accent);
+  }
+  h1 { font-size: 30pt; line-height: 1.12; font-weight: 900; letter-spacing: -1px; }
+  h2 { font-size: 22pt; line-height: 1.2; font-weight: 800; letter-spacing: -.5px; margin: 2mm 0 3mm; }
+  h3 { font-size: 11.5pt; font-weight: 700; margin-bottom: 1.2mm; }
+  p, li { font-size: 10pt; line-height: 1.55; color: var(--ink2); }
+  .lead { font-size: 11.5pt; color: var(--ink2); max-width: 150mm; }
+  html[lang="zh"] h1 { letter-spacing: 0; }
+  html[lang="zh"] h2 { letter-spacing: 0; }
+
+  .footer {
+    position: absolute; left: 16mm; right: 16mm; bottom: 9mm;
+    display: flex; justify-content: space-between;
+    font-size: 8pt; color: var(--ink3);
+    border-top: 1px solid var(--line); padding-top: 3mm;
+  }
+  .footer .brand { color: var(--ink2); font-size: 8.5pt; }
+
+  /* ---------- cover ---------- */
+  .cover { background: var(--dark); color: #fff; padding: 20mm 18mm; }
+  .cover .glow {
+    position: absolute; width: 170mm; height: 170mm; right: -60mm; top: -50mm;
+    background: radial-gradient(circle, rgba(30,107,255,.45) 0%, rgba(30,107,255,0) 65%);
+  }
+  .cover .glow2 {
+    position: absolute; width: 140mm; height: 140mm; left: -50mm; bottom: -40mm;
+    background: radial-gradient(circle, rgba(37,211,102,.18) 0%, rgba(37,211,102,0) 65%);
+  }
+  .cover > * { position: relative; }
+  .cover .top { display: flex; align-items: center; gap: 3mm; }
+  .cover .top img { width: 10mm; height: 10mm; }
+  .cover .top .brand { font-size: 15pt; }
+  .cover .pill {
+    display: inline-block; margin-top: 52mm;
+    border: 1px solid rgba(255,255,255,.18); border-radius: 99px;
+    padding: 1.5mm 4mm; font-size: 9pt; color: #cbd5e1;
+  }
+  .cover .pill b { color: var(--wa); }
+  .cover h1 { font-size: 40pt; margin-top: 6mm; color: #fff; }
+  .cover h1 em { font-style: normal; color: var(--accent-h); }
+  .cover .lead { color: #a3a3a3; margin-top: 7mm; font-size: 13pt; max-width: 160mm; }
+  .cover .industries { display: flex; flex-wrap: wrap; gap: 2.5mm; margin-top: 12mm; }
+  .cover .industries span {
+    background: var(--dark2); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 3mm; padding: 2mm 3.5mm; font-size: 10pt; color: #e5e5e5;
+  }
+  .cover .try {
+    position: absolute; left: 18mm; right: 18mm; bottom: 20mm;
+    display: flex; align-items: center; gap: 7mm;
+    background: var(--dark2); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 5mm; padding: 6mm;
+  }
+  .cover .try .qr { width: 32mm; height: 32mm; background: #fff; border-radius: 2.5mm; padding: 2mm; }
+  .cover .try h3 { color: #fff; font-size: 14pt; }
+  .cover .try p { color: #a3a3a3; font-size: 10.5pt; }
+  .cover .try .num { color: var(--wa); font-weight: 700; font-size: 13pt; margin-top: 2mm; }
+
+  /* ---------- problem / solution ---------- */
+  .pains { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; margin-top: 7mm; }
+  .pain { background: var(--soft); border-radius: 4mm; padding: 5mm; }
+  .pain .ico { font-size: 16pt; margin-bottom: 2mm; }
+  .flow {
+    margin-top: 11mm; display: flex; align-items: stretch; gap: 3mm;
+  }
+  .flow .node {
+    flex: 1; border: 1.5px solid var(--line); border-radius: 4mm; padding: 4mm; text-align: center;
+  }
+  .flow .node .ico { font-size: 18pt; }
+  .flow .node b { display: block; font-size: 10pt; margin-top: 1.5mm; }
+  .flow .node small { display: block; font-size: 8.5pt; color: var(--ink2); margin-top: 1mm; line-height: 1.4; }
+  .flow .node.ai { border-color: var(--accent); background: var(--accent-soft); }
+  .flow .arrow { align-self: center; color: var(--accent); font-weight: 900; font-size: 14pt; }
+  .promises { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; margin-top: 9mm; }
+  .promise { border-top: 3px solid var(--accent); padding-top: 3.5mm; }
+
+  /* ---------- capabilities ---------- */
+  .caps { display: grid; grid-template-columns: 1fr 1fr; gap: 4.5mm; margin-top: 8mm; }
+  .cap { display: flex; gap: 4mm; border: 1px solid var(--line); border-radius: 4mm; padding: 5mm; }
+  .cap .ico {
+    flex: none; width: 11mm; height: 11mm; border-radius: 3mm;
+    background: var(--accent-soft); display: grid; place-items: center; font-size: 14pt;
+  }
+  .langs { display: flex; gap: 1.5mm; margin-top: 1.5mm; }
+  .langs span { font-size: 8pt; background: var(--soft); border-radius: 1.5mm; padding: .5mm 2mm; color: var(--ink); }
+
+  /* ---------- industry pages ---------- */
+  .ind-head { display: flex; align-items: center; gap: 4mm; }
+  .ind-head .icon {
+    width: 14mm; height: 14mm; border-radius: 4mm; background: var(--accent-soft);
+    display: grid; place-items: center; font-size: 20pt;
+  }
+  .ind-body { display: grid; grid-template-columns: 1fr 64mm; gap: 8mm; margin-top: 6mm; }
+  .feats { list-style: none; }
+  .feats li {
+    position: relative; padding: 2.6mm 0 2.6mm 7mm; border-bottom: 1px solid var(--line);
+    font-size: 10.5pt; color: var(--ink);
+  }
+  .feats li:last-child { border-bottom: 0; }
+  .feats li::before {
+    content: ''; position: absolute; left: 0; top: 4.1mm;
+    width: 3.2mm; height: 3.2mm; border-radius: 50%; background: var(--accent);
+    box-shadow: inset 0 0 0 .9mm var(--accent-soft);
+  }
+  .feats li small { display: block; font-size: 9pt; color: var(--ink2); margin-top: .5mm; }
+  .badge {
+    display: inline-block; font-size: 8pt; font-weight: 700; letter-spacing: .3px;
+    color: var(--accent); background: var(--accent-soft); border-radius: 1.5mm;
+    padding: .6mm 2mm; margin-right: 1.5mm; margin-top: 3mm;
+  }
+  .tryit {
+    margin-top: 5mm; background: var(--soft); border-radius: 3.5mm; padding: 3.5mm 4.5mm;
+    font-size: 9.5pt; color: var(--ink2);
+  }
+  .tryit b { color: var(--ink); }
+  .tryit code { font-family: inherit; font-weight: 700; color: #128c4a; }
+
+  /* phone frame for WhatsApp screenshots */
+  .phone {
+    width: 64mm; height: 128mm; border-radius: 8mm; background: #111;
+    padding: 2.4mm; box-shadow: 0 3mm 8mm rgba(15,23,42,.18);
+  }
+  .phone .screen {
+    width: 100%; height: 100%; border-radius: 6mm; overflow: hidden; background: #efe7de;
+  }
+  .phone img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+
+  /* back-office screenshot */
+  .bo { margin-top: 7mm; }
+  .bo .cap-line { font-size: 9pt; font-weight: 700; color: var(--ink2); margin-bottom: 2mm; letter-spacing: .3px; }
+  .bo .frame {
+    border: 1px solid var(--line); border-radius: 3mm; overflow: hidden;
+    box-shadow: 0 2mm 6mm rgba(15,23,42,.08);
+  }
+  .bo .bar { height: 5mm; background: var(--soft); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 1.2mm; padding-left: 2.5mm; }
+  .bo .bar i { width: 1.8mm; height: 1.8mm; border-radius: 50%; background: #cbd5e1; }
+  .bo .shot { height: 72mm; }
+  .bo img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
+
+  /* placeholder until a screenshot is dropped in */
+  .ph {
+    width: 100%; height: 100%; display: grid; place-items: center; text-align: center;
+    border: 2px dashed #94a3b8; color: #64748b; font-size: 9pt; padding: 4mm; background: #f8fafc;
+  }
+  .phone .ph { border-radius: 6mm; }
+
+  /* ---------- pricing ---------- */
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin-top: 6mm; }
+  .step { background: var(--soft); border-radius: 3.5mm; padding: 4mm; }
+  .step .n {
+    width: 7mm; height: 7mm; border-radius: 50%; background: var(--accent); color: #fff;
+    display: grid; place-items: center; font-weight: 800; font-size: 9.5pt; margin-bottom: 2mm;
+  }
+  .step b { font-size: 10pt; display: block; }
+  .step small { font-size: 8.5pt; color: var(--ink2); line-height: 1.45; display: block; margin-top: 1mm; }
+  .prices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; margin-top: 6mm; }
+  .price { border: 1.5px solid var(--line); border-radius: 4mm; padding: 5mm; }
+  .price.main { border-color: var(--accent); background: var(--accent-soft); }
+  .price .label { font-size: 9pt; font-weight: 700; color: var(--ink2); }
+  .price .amt { font-size: 21pt; font-weight: 900; letter-spacing: -.5px; margin-top: 2mm; }
+  .price .amt small { font-size: 9.5pt; font-weight: 600; color: var(--ink2); letter-spacing: 0; }
+  .price .from { font-size: 8.5pt; color: var(--ink2); font-weight: 600; }
+  .price p { font-size: 9pt; margin-top: 2mm; }
+  .contact {
+    margin-top: 8mm; background: var(--dark); color: #fff; border-radius: 5mm;
+    padding: 7mm; display: grid; grid-template-columns: 1fr auto auto; gap: 7mm; align-items: center;
+  }
+  .contact h3 { color: #fff; font-size: 15pt; }
+  .contact p { color: #a3a3a3; }
+  .contact .rows { margin-top: 4mm; display: grid; gap: 1.8mm; }
+  .contact .rows div { font-size: 10.5pt; color: #e5e5e5; }
+  .contact .rows b { display: inline-block; width: 22mm; color: #737373; font-weight: 500; font-size: 9pt; }
+  .contact .q { text-align: center; }
+  .contact .q .qr { width: 30mm; height: 30mm; background: #fff; border-radius: 2.5mm; padding: 1.8mm; }
+  .contact .q small { display: block; font-size: 8.5pt; color: #a3a3a3; margin-top: 2mm; }
+  /* ---------- about ---------- */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4mm; margin-top: 8mm; }
+  .stats div { background: var(--dark); border-radius: 4mm; padding: 5mm; }
+  .stats b { display: block; font-size: 22pt; font-weight: 900; color: var(--accent-h); letter-spacing: -.5px; }
+  .stats span { font-size: 9pt; color: #a3a3a3; }
+  .builds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3.5mm; margin-top: 4mm; }
+  .builds div { border: 1px solid var(--line); border-radius: 3.5mm; padding: 4mm; }
+  .builds span { font-size: 14pt; }
+  .builds b { display: block; font-size: 10pt; margin-top: 1mm; }
+  .builds small { display: block; font-size: 8.5pt; color: var(--ink2); margin-top: .8mm; line-height: 1.45; }
+  .served { display: flex; flex-wrap: wrap; gap: 2.5mm; margin-top: 4mm; }
+  .served span { background: var(--soft); border-radius: 2.5mm; padding: 1.8mm 3.2mm; font-size: 9.5pt; }
+  .note { font-size: 8pt; color: var(--ink3); margin-top: 5mm; line-height: 1.5; }
+</style>
+<script>
+  // ?lang=zh swaps every [data-zh] element's content before first paint of images.
+  (function () {
+    var lang = new URLSearchParams(location.search).get('lang') === 'zh' ? 'zh' : 'en';
+    document.documentElement.lang = lang;
+    document.addEventListener('DOMContentLoaded', function () {
+      if (lang === 'zh') {
+        document.querySelectorAll('[data-zh]').forEach(function (el) { el.innerHTML = el.dataset.zh; });
+        document.title = 'Acuven WhatsApp AI 产品介绍';
+      }
+      // Screenshots: shots/<name>-<lang>.png, falling back to the other language, then a placeholder.
+      document.querySelectorAll('[data-shot]').forEach(function (box) {
+        var name = box.dataset.shot;
+        var tries = box.dataset.shared
+          ? [name + '.png']
+          : [name + '-' + lang + '.png', name + '-' + (lang === 'zh' ? 'en' : 'zh') + '.png'];
+        var img = new Image();
+        var next = function () {
+          var src = tries.shift();
+          if (!src) {
+            box.innerHTML = '<div class="ph">' + box.dataset.label + '<br>shots/' + name +
+              (box.dataset.shared ? '' : '-' + lang) + '.png</div>';
+            return;
+          }
+          img.onerror = next;
+          img.onload = function () { box.innerHTML = ''; box.appendChild(img); };
+          img.src = 'shots/' + src;
+        };
+        next();
+      });
+    });
+  })();
+</script>
+</head>
+<body>
+
+<!-- ============ 1. COVER ============ -->
+<section class="page cover">
+  <div class="glow"></div><div class="glow2"></div>
+  <div class="top">
+    <img src="assets/mark.svg" alt="">
+    <div class="brand">Acuven <span>Technology</span></div>
+  </div>
+
+  <div class="pill" data-zh="<b>●</b> WhatsApp AI 客服 + ERP / CRM 一站式方案"><b>●</b> WhatsApp AI Customer Service + ERP / CRM</div>
+  <h1 data-zh="让你的生意<br>在 WhatsApp 上<br><em>24 小时接单</em>">Your business,<br>answering on WhatsApp<br><em>around the clock.</em></h1>
+  <p class="lead" data-zh="一个 AI 客服，能查库存、接订单、订房、约看房，并把每一笔都写进你的 ERP 和 CRM。客户不用下载任何 App，你也不用守着手机。">An AI customer service agent that checks stock, takes orders, books rooms and property viewings, and writes every one of them into your ERP and CRM. Your customers don't download anything, and you stop living on your phone.</p>
+
+  <div class="industries">
+    <span data-zh="🛍️ 零售电商">🛍️ Retail</span>
+    <span data-zh="🍜 餐饮外卖">🍜 Food delivery</span>
+    <span data-zh="🏨 酒店旅游">🏨 Hotel &amp; travel</span>
+    <span data-zh="🏡 房产中介">🏡 Real estate</span>
+    <span data-zh="💻 SaaS 客服">💻 SaaS support</span>
+  </div>
+
+  <div class="try">
+    <img class="qr" src="assets/qr-demo.svg" alt="">
+    <div>
+      <h3 data-zh="现在就扫码，在 WhatsApp 上试一试">Scan and try it on WhatsApp now</h3>
+      <p data-zh="发送 <b style='color:#fff'>menu</b>，选一个行业，像客户一样跟它聊。">Send <b style="color:#fff">menu</b>, pick an industry, and chat with it the way your customers would.</p>
+      <div class="num">+60 17-394 8123</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 2. PROBLEM / SOLUTION ============ -->
+<section class="page">
+  <div class="eyebrow" data-zh="为什么需要">Why it matters</div>
+  <h2 data-zh="客户都在 WhatsApp 上，<br>但你只有一双手">Your customers are all on WhatsApp.<br>You only have two hands.</h2>
+
+  <div class="pains">
+    <div class="pain">
+      <div class="ico">🔁</div>
+      <h3 data-zh="同样的问题，一天回几十遍">The same questions, dozens of times a day</h3>
+      <p data-zh="「还有货吗？」「多少钱？」「几点开？」回答不难，但占掉了你一整天。">"In stock?" "How much?" "What time do you open?" Easy to answer, but they eat your whole day.</p>
+    </div>
+    <div class="pain">
+      <div class="ico">🌙</div>
+      <h3 data-zh="下班后没人回，客户转头去别家">After hours, nobody replies</h3>
+      <p data-zh="晚上 11 点想下单的客户，等不到明早，他会去问下一家。">A customer ready to buy at 11pm won't wait until morning. They'll message the next shop.</p>
+    </div>
+    <div class="pain">
+      <div class="ico">✍️</div>
+      <h3 data-zh="订单从聊天记录手抄进系统">Orders copied by hand from chats</h3>
+      <p data-zh="数量抄错、地址漏写、发票忘开，每一笔都靠人记。">Wrong quantity, missing address, invoice forgotten. Every order depends on someone remembering.</p>
+    </div>
+    <div class="pain">
+      <div class="ico">📱</div>
+      <h3 data-zh="客户资料散在几部手机里">Customer details scattered across phones</h3>
+      <p data-zh="谁买过什么、谁问过什么，员工一走就全没了。">Who bought what and who asked about what: it leaves when your staff do.</p>
+    </div>
+  </div>
+
+  <div class="eyebrow" style="margin-top:11mm" data-zh="我们的方案">What we build</div>
+  <h2 style="font-size:17pt" data-zh="一个接在你 WhatsApp 号上的 AI 客服，直连你的系统">One AI agent on your WhatsApp number, connected to your systems</h2>
+
+  <div class="flow">
+    <div class="node"><div class="ico">💬</div><b data-zh="客户">Your customer</b><small data-zh="用平时的 WhatsApp，<br>打字、发照片、发语音">on their usual WhatsApp:<br>text, photos, voice notes</small></div>
+    <div class="arrow">→</div>
+    <div class="node ai"><div class="ico">🤖</div><b data-zh="AI 客服">AI agent</b><small data-zh="听懂问题，<br>去系统里查、去系统里办">understands, looks things up,<br>gets things done</small></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="ico">🗂️</div><b>ERP · CRM</b><small data-zh="库存、订单、发票、<br>预约、客户资料">stock, orders, invoices,<br>bookings, customer records</small></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="ico">🧑‍💼</div><b data-zh="你和你的团队">You and your team</b><small data-zh="在后台看到每一笔，<br>随时接手对话">see every order,<br>step into any chat</small></div>
+  </div>
+
+  <div class="promises">
+    <div class="promise">
+      <h3 data-zh="答案来自你的真实数据">Answers from your real data</h3>
+      <p data-zh="价格、库存、房态都是当场去系统里查的。查不到时它会直说，不会乱编。">Prices, stock and room availability are looked up live. When a system can't be reached, it says so instead of guessing.</p>
+    </div>
+    <div class="promise">
+      <h3 data-zh="不只是聊天，是真的办事">It does the work, not just the talking</h3>
+      <p data-zh="对话结束时，手上有真实的单号、发票、预约和工单。">Conversations end with real order numbers, invoices, bookings and tickets.</p>
+    </div>
+    <div class="promise">
+      <h3 data-zh="主导权一直在你手上">You stay in control</h3>
+      <p data-zh="任何一段对话，你的员工都能随时接手；处理完再交还给 AI。">Your staff can take over any conversation at any moment, then hand it back.</p>
+    </div>
+  </div>
+
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 2</span></div>
+</section>
+
+<!-- ============ 3. CAPABILITIES ============ -->
+<section class="page">
+  <div class="eyebrow" data-zh="每个行业都有">In every industry</div>
+  <h2 data-zh="一个客服，该会的都会">Everything a good front desk does</h2>
+  <p class="lead" data-zh="不管你做哪一行，下面这些能力都是标配。">Whatever your business, these come as standard.</p>
+
+  <div class="caps">
+    <div class="cap"><div class="ico">⏰</div><div>
+      <h3 data-zh="24 小时在线，就在 WhatsApp 上">24/7, right on WhatsApp</h3>
+      <p data-zh="用客户每天都在用的 WhatsApp，不用下载 App、不用注册。">On the app your customers already use every day. Nothing to download, nothing to sign up for.</p>
+    </div></div>
+    <div class="cap"><div class="ico">🗣️</div><div>
+      <h3 data-zh="客户说什么语言，就用什么语言回">Replies in the customer's language</h3>
+      <p data-zh="中英马混着说也听得懂。">Mixing languages in one message is fine too.</p>
+      <div class="langs"><span>English</span><span>中文</span><span>Bahasa Melayu</span></div>
+    </div></div>
+    <div class="cap"><div class="ico">📷</div><div>
+      <h3 data-zh="看得懂照片">Understands photos</h3>
+      <p data-zh="客户拍一张商品、价格牌或坏掉的东西，它认得出是什么。">A customer snaps a product, a price tag or a broken item, and it knows what it's looking at.</p>
+    </div></div>
+    <div class="cap"><div class="ico">🎙️</div><div>
+      <h3 data-zh="听得懂语音">Understands voice notes</h3>
+      <p data-zh="不想打字的客户直接发语音，一样照常处理。">Customers who'd rather talk than type just send a voice note.</p>
+    </div></div>
+    <div class="cap"><div class="ico">📄</div><div>
+      <h3 data-zh="读得懂文件">Reads documents</h3>
+      <p data-zh="客户发来一份 PDF，它能就内容回答，并标出出自第几页。">Send it a PDF and it answers questions about it, telling you which page the answer came from.</p>
+    </div></div>
+    <div class="cap"><div class="ico">🤝</div><div>
+      <h3 data-zh="记得回头客">Remembers returning customers</h3>
+      <p data-zh="上次买过什么、问过什么、送到哪里，客户不用再说一遍。">What they bought, what they asked, where to deliver. Customers don't have to repeat themselves.</p>
+    </div></div>
+    <div class="cap"><div class="ico">🙋</div><div>
+      <h3 data-zh="随时转给真人">Hands over to a person</h3>
+      <p data-zh="遇到特别要求或客户想找人，AI 自动让开，由你的员工接手。">For special requests, or when the customer asks for a person, the AI steps aside and your staff take over.</p>
+    </div></div>
+    <div class="cap"><div class="ico">👆</div><div>
+      <h3 data-zh="点一下就能选">Tap instead of type</h3>
+      <p data-zh="用 WhatsApp 的按钮和列表选商品、选选项，客户少打字。">WhatsApp buttons and pick-lists for products and options, so customers type less.</p>
+    </div></div>
+    <div class="cap"><div class="ico">📊</div><div>
+      <h3 data-zh="每一笔都在后台">Every order in your back office</h3>
+      <p data-zh="订单、预约、看房、工单，都自动出现在后台，一目了然。">Orders, bookings, viewings and tickets land in your back office automatically.</p>
+    </div></div>
+    <div class="cap"><div class="ico">🔔</div><div>
+      <h3 data-zh="主动通知客户">Keeps customers posted</h3>
+      <p data-zh="下单确认、餐做好了，不等客户来问就先告诉他。">Order confirmed, food ready: the customer hears about it before they have to ask.</p>
+    </div></div>
+  </div>
+
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 3</span></div>
+</section>
+
+<!-- ============ 4. RETAIL ============ -->
+<section class="page">
+  <div class="ind-head">
+    <div class="icon">🛍️</div>
+    <div>
+      <div class="eyebrow" data-zh="零售电商">Retail</div>
+      <h2 style="margin:1mm 0 0" data-zh="查库存、下单、开发票，<br>都在对话里完成">Stock, orders and invoices,<br>all inside the chat</h2>
+    </div>
+  </div>
+  <div class="ind-body">
+    <div>
+      <ul class="feats">
+        <li data-zh="实时查各分店库存<small>「这款还有吗？」直接报出每家分店还剩多少。</small>">Checks live stock across your branches<small>"Still have this one?" gets the count at each outlet.</small></li>
+        <li data-zh="订单直接进 ERP<small>客户确认后就生成真实的销售单，不用手抄。</small>">Places real orders straight into your ERP<small>Once the customer confirms, a real sales order is created. No retyping.</small></li>
+        <li data-zh="开发票，PDF 直接发到 WhatsApp<small>客户当场收到正式发票。</small>">Issues the invoice and sends the PDF in the chat<small>The customer has a proper invoice in hand on the spot.</small></li>
+        <li data-zh="拍照就能办退货<small>客户拍一张坏掉的商品，它找出是哪张单、开出退款单。</small>">Handles returns from a photo<small>It recognises the item, finds the order and raises the refund note.</small></li>
+        <li data-zh="每个买家自动进 CRM<small>下次再来，它记得这位客户问过什么、买过什么。</small>">Every buyer lands in your CRM<small>Next time they message, it remembers what they asked and bought.</small></li>
+        <li data-zh="下单后自动发确认<small>不等客户来问，确认消息先到。</small>">Sends the order confirmation by itself<small>The customer hears from you before they wonder.</small></li>
+      </ul>
+      <span class="badge" data-zh="接入 ERP">ERP connected</span><span class="badge" data-zh="接入 CRM">CRM connected</span>
+      <div class="tryit" data-zh="<b>试一试：</b>给 demo 号发 <code>menu</code>，选「电商零售」，问「这个 earbuds 还有 stock 吗？」"><b>Try it:</b> send <code>menu</code> to the demo number, pick Retail, and ask "Do you have the Sony earbuds in stock?"</div>
+    </div>
+    <div class="phone"><div class="screen" data-shot="retail" data-label="WhatsApp · Retail"></div></div>
+  </div>
+  <div class="bo">
+    <div class="cap-line" data-zh="后台：客户在 WhatsApp 下的单，直接出现在 ERP 的销售单里">BACK OFFICE · The WhatsApp order, already in your ERP's sales orders</div>
+    <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-retail" data-shared="1" data-label="ERP · Sales orders"></div></div>
+  </div>
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 4</span></div>
+</section>
+
+<!-- ============ 5. FOOD ============ -->
+<section class="page">
+  <div class="ind-head">
+    <div class="icon">🍜</div>
+    <div>
+      <div class="eyebrow" data-zh="餐饮外卖">Food delivery</div>
+      <h2 style="margin:1mm 0 0" data-zh="点餐、算账、通知，<br>一个不漏">Orders, totals and updates,<br>nothing missed</h2>
+    </div>
+  </div>
+  <div class="ind-body">
+    <div>
+      <ul class="feats">
+        <li data-zh="听得懂本地菜名<small>椰浆饭、拉茶、nasi lemak、teh tarik，怎么说都认得。</small>">Knows local dish names<small>Nasi lemak, teh tarik, 椰浆饭, 拉茶: however the customer says it.</small></li>
+        <li data-zh="自动算好总价<small>连运费一起算清楚，客户确认了才下单。</small>">Adds up the bill for you<small>Delivery fee included, and nothing is placed until the customer confirms.</small></li>
+        <li data-zh="记住送餐地址<small>老客户下次点餐不用再报地址。</small>">Remembers the delivery address<small>Regulars don't have to type it again next time.</small></li>
+        <li data-zh="餐做好了主动通知<small>「餐好了，骑手约 10 分钟到」，客户不用来催。</small>">Tells customers when the food is ready<small>"Ready, rider about 10 minutes away." No chasing.</small></li>
+        <li data-zh="特别要求转给店员<small>「放门口」「加辣椒酱」，交给真人处理。</small>">Passes special requests to your staff<small>"Leave it at the door", "extra sambal": a person handles it.</small></li>
+      </ul>
+      <span class="badge" data-zh="订单后台">Order board</span>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「餐饮外卖」，说「两份椰浆饭一杯拉茶」"><b>Try it:</b> send <code>menu</code>, pick Food Delivery, and say "Two nasi lemak and one teh tarik"</div>
+    </div>
+    <div class="phone"><div class="screen" data-shot="food" data-label="WhatsApp · Food"></div></div>
+  </div>
+  <div class="bo">
+    <div class="cap-line" data-zh="后台：每张单从「已接单」走到「已送达」，一眼看清">BACK OFFICE · Every order, from received to delivered</div>
+    <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-food" data-shared="1" data-label="Back office · Food orders"></div></div>
+  </div>
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 5</span></div>
+</section>
+
+<!-- ============ 6. HOTEL ============ -->
+<section class="page">
+  <div class="ind-head">
+    <div class="icon">🏨</div>
+    <div>
+      <div class="eyebrow" data-zh="酒店旅游">Hotel &amp; travel</div>
+      <h2 style="margin:1mm 0 0" data-zh="查房、订房、改期，<br>半夜也能订">Rooms searched, booked and changed,<br>even at 2am</h2>
+    </div>
+  </div>
+  <div class="ind-body">
+    <div>
+      <ul class="feats">
+        <li data-zh="多间分店一起查房<small>按人数和日期，列出每种房型和价格。</small>">Searches rooms across your properties<small>By dates and guests, with every room type and its price.</small></li>
+        <li data-zh="听得懂「这个周末」<small>「下个星期五」「esok」都能换算成具体日期，并跟客户确认。</small>">Understands "this weekend"<small>"Next Friday" or "esok" becomes exact dates, confirmed with the guest.</small></li>
+        <li data-zh="订房、改日期、换房型<small>改了就重新算价，客户看得清清楚楚。</small>">Books, and changes dates, rooms or guests<small>The price is recalculated every time, in plain sight.</small></li>
+        <li data-zh="不会重复订房<small>客户手快多按一次，也不会订出两间。</small>">Stops accidental double bookings<small>A guest who confirms twice still gets one room.</small></li>
+        <li data-zh="特别安排转给前台<small>接机、加床这类要求交给你的员工。</small>">Passes special arrangements to your front desk<small>Airport pick-ups, extra beds: your staff take it from there.</small></li>
+      </ul>
+      <span class="badge" data-zh="预订后台">Booking board</span>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「酒店旅游」，说「我想订槟城的房间，两个人，这个周末」"><b>Try it:</b> send <code>menu</code>, pick Hotel &amp; Travel, and say "A room in Penang for two, this weekend"</div>
+    </div>
+    <div class="phone"><div class="screen" data-shot="hotel" data-label="WhatsApp · Hotel"></div></div>
+  </div>
+  <div class="bo">
+    <div class="cap-line" data-zh="后台：每一笔预订的房型、日期、人数和金额">BACK OFFICE · Every booking with room, dates, guests and amount</div>
+    <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-hotel" data-shared="1" data-label="Back office · Hotel bookings"></div></div>
+  </div>
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 6</span></div>
+</section>
+
+<!-- ============ 7. REAL ESTATE ============ -->
+<section class="page">
+  <div class="ind-head">
+    <div class="icon">🏡</div>
+    <div>
+      <div class="eyebrow" data-zh="房产中介">Real estate</div>
+      <h2 style="margin:1mm 0 0" data-zh="把每一条询问，<br>变成一次看房预约">Turn every enquiry<br>into a booked viewing</h2>
+    </div>
+  </div>
+  <div class="ind-body">
+    <div>
+      <ul class="feats">
+        <li data-zh="按区域、房数、预算找房<small>「蒲种三房，60 万以内」直接列出合适的房源。</small>">Finds listings by area, size and budget<small>"3-bedroom in Puchong under RM 600k" gets matching listings.</small></li>
+        <li data-zh="估算每月供款<small>给出参考月供，帮客户先心里有数。</small>">Estimates the monthly instalment<small>An indicative figure so buyers know where they stand.</small></li>
+        <li data-zh="在对话里约好看房<small>姓名、房源、时间，一问一答就定下来。</small>">Books viewings in the chat<small>Name, property and time, settled in a few messages.</small></li>
+        <li data-zh="每个看房客户自动进 CRM<small>你的销售团队在 CRM 看板上直接跟进。</small>">Every viewing becomes a lead in your CRM<small>Your agents pick it up on the CRM pipeline.</small></li>
+      </ul>
+      <span class="badge" data-zh="看房后台">Viewing board</span><span class="badge" data-zh="接入 CRM">CRM connected</span>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「房产咨询」，说「蒲种三房，60 万以内」"><b>Try it:</b> send <code>menu</code>, pick Real Estate, and say "3-bedroom in Puchong under RM 600k"</div>
+    </div>
+    <div class="phone"><div class="screen" data-shot="realestate" data-label="WhatsApp · Real estate"></div></div>
+  </div>
+  <div class="bo">
+    <div class="cap-line" data-zh="后台：约好的看房，同时出现在 CRM 的销售看板上">BACK OFFICE · The booked viewing, already on your CRM pipeline</div>
+    <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-realestate" data-shared="1" data-label="CRM · Pipeline"></div></div>
+  </div>
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 7</span></div>
+</section>
+
+<!-- ============ 8. SAAS ============ -->
+<section class="page">
+  <div class="ind-head">
+    <div class="icon">💻</div>
+    <div>
+      <div class="eyebrow" data-zh="SaaS 客服">SaaS support</div>
+      <h2 style="margin:1mm 0 0" data-zh="先把问题解决，<br>解决不了再开工单">Fix it first,<br>open a ticket only when needed</h2>
+    </div>
+  </div>
+  <div class="ind-body">
+    <div>
+      <ul class="feats">
+        <li data-zh="按常见问题一步步排查<small>登录不了、收不到邮件，先带客户自己试着解决。</small>">Walks customers through known fixes<small>Can't log in, no emails arriving: step by step, before anything else.</small></li>
+        <li data-zh="解决不了就开工单<small>自动标好优先级，交给你的技术团队。</small>">Opens a ticket when it can't fix it<small>With a priority set, ready for your support team.</small></li>
+        <li data-zh="不会重复开单<small>客户说两次「帮我开单」，还是同一张工单。</small>">No duplicate tickets<small>A customer who asks twice still gets the same ticket.</small></li>
+        <li data-zh="回答套餐和价格问题<small>客户问哪个配套适合他，当场就能答。</small>">Answers plan and pricing questions<small>"Which plan suits me?" answered on the spot.</small></li>
+        <li data-zh="随时查工单进度<small>客户问「我的工单怎样了」，直接报状态。</small>">Checks ticket status any time<small>"What's happening with my ticket?" gets a straight answer.</small></li>
+      </ul>
+      <span class="badge" data-zh="工单后台">Ticket board</span>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「技术支持」，说「我登录不了」"><b>Try it:</b> send <code>menu</code>, pick SaaS Support, and say "I can't log in"</div>
+    </div>
+    <div class="phone"><div class="screen" data-shot="saas" data-label="WhatsApp · SaaS"></div></div>
+  </div>
+  <div class="bo">
+    <div class="cap-line" data-zh="后台：每张工单的问题、优先级和状态">BACK OFFICE · Every ticket with its issue, priority and status</div>
+    <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-saas" data-shared="1" data-label="Back office · Support tickets"></div></div>
+  </div>
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 8</span></div>
+</section>
+
+<!-- ============ 9. ABOUT ACUVEN ============ -->
+<!-- Copy and figures taken from acuventech.com (acuven_os/index.html). -->
+<section class="page">
+  <div class="eyebrow" data-zh="关于我们">About us</div>
+  <h2 data-zh="Acuven Technology<br>为马来西亚企业定制业务系统">Acuven Technology<br>builds the systems behind your business</h2>
+  <p class="lead" data-zh="我们是一支位于马来西亚的团队，打造企业级 ERP、CRM 与 AI 驱动系统，消除人工操作，让您的业务规模化增长。我们不仅写代码，更构建能解决真实业务问题、带来可量化成果的系统。每个项目都从零开始定制，不套模板。">We are a Malaysia-based team building enterprise-grade ERP, CRM and AI-powered systems that eliminate manual work and help your business scale. We don't just write code: we build systems that solve real business problems and deliver measurable results. Every project is custom-built from scratch, no templates.</p>
+
+  <div class="stats">
+    <div><b>30+</b><span data-zh="交付项目">Projects delivered</span></div>
+    <div><b>15+</b><span data-zh="年开发经验">Years of experience</span></div>
+    <div><b>20+</b><span data-zh="满意客户">Happy clients</span></div>
+    <div><b>100%</b><span data-zh="按时交付率">On-time delivery</span></div>
+  </div>
+
+  <div class="eyebrow" style="margin-top:10mm" data-zh="我们能做什么">What we build</div>
+  <div class="builds">
+    <div><span>📊</span><b data-zh="CRM 客户管理">CRM systems</b><small data-zh="集中客户资料、追踪线索、自动跟进">Customer records, leads and follow-ups in one place</small></div>
+    <div><span>🏭</span><b data-zh="ERP 与库存">ERP &amp; inventory</b><small data-zh="库存、订单、供应商，一套系统统管">Stock, orders and suppliers in one system</small></div>
+    <div><span>🤖</span><b data-zh="AI 自动化">AI automation</b><small data-zh="AI 客服、报表自动生成、智能数据提取">AI customer service, automated reports, data extraction</small></div>
+    <div><span>💳</span><b data-zh="POS 与开票">POS &amp; billing</b><small data-zh="收银、发票、电子支付一体化">Checkout, invoices and e-payments together</small></div>
+    <div><span>📈</span><b data-zh="定制数据看板">Custom dashboards</b><small data-zh="运营状况与关键指标一目了然">Your operations and KPIs at a glance</small></div>
+    <div><span>🌐</span><b data-zh="企业官网">Business websites</b><small data-zh="专业、快速，持续带来客户线索">Fast, professional sites that bring in leads</small></div>
+  </div>
+
+  <div class="eyebrow" style="margin-top:9mm" data-zh="服务过的行业">Industries we serve</div>
+  <div class="served">
+    <span data-zh="🛒 零售与电商">🛒 Retail &amp; e-commerce</span>
+    <span data-zh="🚚 物流与供应链">🚚 Logistics &amp; supply chain</span>
+    <span data-zh="🏭 制造业">🏭 Manufacturing</span>
+    <span data-zh="🏥 医疗与诊所">🏥 Healthcare &amp; clinics</span>
+    <span data-zh="🎓 教育">🎓 Education</span>
+    <span data-zh="🚗 汽车行业">🚗 Automotive</span>
+    <span data-zh="🏢 地产与物业">🏢 Property &amp; real estate</span>
+    <span data-zh="🍴 餐饮">🍴 F&amp;B &amp; restaurants</span>
+  </div>
+
+  <div class="promises" style="margin-top:9mm">
+    <div class="promise">
+      <h3 data-zh="先聊清楚，再动手">We listen before we build</h3>
+      <p data-zh="免费咨询，深入了解您的业务、痛点与目标，然后才开始开发。">A free consultation to understand your business, pain points and goals before any development starts.</p>
+    </div>
+    <div class="promise">
+      <h3 data-zh="过程透明，没有意外">No surprises</h3>
+      <p data-zh="按里程碑推进并定期同步进度，绝无隐藏费用。">Milestones and regular progress updates, with no hidden costs.</p>
+    </div>
+    <div class="promise">
+      <h3 data-zh="上线不是终点">We stay after launch</h3>
+      <p data-zh="长期维护、Bug 修复与功能迭代，让系统持续稳定运行。">Ongoing maintenance, fixes and updates keep your system running.</p>
+    </div>
+  </div>
+
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 9</span></div>
+</section>
+
+<!-- ============ 10. PRICING / CONTACT ============ -->
+<section class="page">
+  <div class="eyebrow" data-zh="怎么开始">Getting started</div>
+  <h2 data-zh="从试用到上线，四步">From first try to live, in four steps</h2>
+
+  <div class="steps">
+    <div class="step"><div class="n">1</div><b data-zh="先试 demo">Try the demo</b><small data-zh="扫码，像客户一样跟它聊几句。">Scan the code and chat with it like a customer would.</small></div>
+    <div class="step"><div class="n">2</div><b data-zh="告诉我们你的生意">Tell us about your business</b><small data-zh="卖什么、怎么接单、现在用什么系统。">What you sell, how orders flow, what systems you use today.</small></div>
+    <div class="step"><div class="n">3</div><b data-zh="我们搭建和接入">We build and connect</b><small data-zh="接上你的 WhatsApp 号、商品资料和系统。">Your WhatsApp number, your products, your systems.</small></div>
+    <div class="step"><div class="n">4</div><b data-zh="上线">Go live</b><small data-zh="客户照常发 WhatsApp，AI 开始接单。">Customers message you as usual, and the AI starts taking orders.</small></div>
+  </div>
+
+  <div class="eyebrow" style="margin-top:10mm" data-zh="价格">Pricing</div>
+  <h2 style="font-size:17pt" data-zh="WhatsApp AI 客服 + ERP / CRM，一套搞定">WhatsApp AI customer service + ERP / CRM, one package</h2>
+  <div class="prices">
+    <div class="price main">
+      <div class="label" data-zh="一次性开发费">One-time development</div>
+      <div class="from" data-zh="&nbsp;">from</div>
+      <div class="amt" data-zh="RM 3,999 <small>起</small>">RM 3,999</div>
+      <p data-zh="按你的生意搭建：AI 客服、ERP、CRM 和后台。">Built around your business: the AI agent, ERP, CRM and back office.</p>
+    </div>
+    <div class="price">
+      <div class="label" data-zh="每年续费">Annual renewal</div>
+      <div class="from" data-zh="&nbsp;">from</div>
+      <div class="amt" data-zh="RM 699 <small>/ 年起</small>">RM 699 <small>/ year</small></div>
+      <p data-zh="让系统一年又一年稳定运行。">Keeps everything running, year after year.</p>
+    </div>
+    <div class="price">
+      <div class="label" data-zh="AI 使用费">AI usage</div>
+      <div class="from">&nbsp;</div>
+      <div class="amt" style="font-size:16pt" data-zh="按用量付费">Pay as you use</div>
+      <p data-zh="用多少付多少，没有对话就没有费用。">You pay for the conversations you actually have. No chats, no charge.</p>
+    </div>
+  </div>
+
+  <div class="contact">
+    <div>
+      <h3 data-zh="聊聊你的生意">Let's talk about your business</h3>
+      <p data-zh="实际报价按你的需求而定。">Your quote depends on what you need.</p>
+      <div class="rows">
+        <div><b>WhatsApp</b>+60 11-3618 2335</div>
+        <div><b data-zh="邮箱">Email</b>admin@acuventech.com</div>
+        <div><b data-zh="网站">Website</b>acuventech.com</div>
+      </div>
+    </div>
+    <div class="q"><img class="qr" src="assets/qr-demo.svg" alt=""><small data-zh="扫码试 demo">Try the demo</small></div>
+    <div class="q"><img class="qr" src="assets/qr-contact.svg" alt=""><small data-zh="扫码联系我们">Talk to us</small></div>
+  </div>
+
+  <p class="note" data-zh="小册子中的商家、商品、订单和房源均为演示数据。价格为起步价，最终报价以双方确认为准。">Businesses, products, orders and listings shown in this brochure are demo data. Prices are starting prices; your final quote is agreed with you.</p>
+
+  <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 10</span></div>
+</section>
+
+</body>
+</html>
