@@ -1,6 +1,6 @@
 """Build the customer brochure: QR codes, then one PDF per language.
 
-    pip install qrcode
+    pip install qrcode pillow numpy
     python build.py
 
 Needs Google Chrome installed and internet access (fonts come from Google Fonts).
@@ -10,11 +10,14 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import qrcode
 import qrcode.image.svg
+from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE / "assets"
+SHOTS = HERE / "shots"
 
 # wa.me links: the demo line opens with "menu" typed in; the contact line is the sales WhatsApp.
 QR_CODES = {
@@ -35,6 +38,32 @@ def make_qr_codes() -> None:
     for name, url in QR_CODES.items():
         img = qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage, border=1)
         img.save(ASSETS / name)
+
+
+def crop_chat_shots() -> None:
+    """Trim the empty wallpaper either side of a WhatsApp Desktop chat.
+
+    A wide desktop window leaves the bubbles in the middle half, which prints
+    tiny. Keep only the columns that white (incoming) or green (outgoing)
+    bubbles reach, plus a margin. Back office shots (bo-*) are left alone.
+    """
+    out_dir = SHOTS / "_cropped"
+    out_dir.mkdir(exist_ok=True)
+    for src in SHOTS.iterdir():
+        if src.suffix.lower() not in (".png", ".jpg", ".jpeg") or src.name.startswith("bo-"):
+            continue
+        im = Image.open(src).convert("RGB")
+        px = np.asarray(im).astype(int)
+        body = px[int(px.shape[0] * 0.06):]  # skip the chat header bar, also white
+        r, g, b = body[..., 0], body[..., 1], body[..., 2]
+        white = (r > 250) & (g > 250) & (b > 250)
+        green = (abs(r - 217) < 12) & (abs(g - 253) < 8) & (abs(b - 211) < 12)
+        cols = np.flatnonzero(((white | green).sum(axis=0)) > 20)
+        if cols.size:
+            pad = 24
+            left, right = max(cols[0] - pad, 0), min(cols[-1] + pad, px.shape[1])
+            im = im.crop((left, 0, right, px.shape[0]))
+        im.save(out_dir / src.name, quality=92)
 
 
 def find_chrome() -> str:
@@ -67,6 +96,7 @@ def render(chrome: str, lang: str) -> Path:
 
 if __name__ == "__main__":
     make_qr_codes()
+    crop_chat_shots()
     chrome = find_chrome()
     for lang in ("en", "zh"):
         print("wrote", render(chrome, lang))

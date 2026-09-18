@@ -144,51 +144,47 @@
     width: 14mm; height: 14mm; border-radius: 4mm; background: var(--accent-soft);
     display: grid; place-items: center; font-size: 20pt;
   }
-  .ind-body { display: grid; grid-template-columns: 1fr 64mm; gap: 8mm; margin-top: 6mm; }
+  .ind-body { display: grid; grid-template-columns: 1fr 1fr; gap: 7mm; margin-top: 5mm; }
   .feats { list-style: none; }
   .feats li {
-    position: relative; padding: 2.6mm 0 2.6mm 7mm; border-bottom: 1px solid var(--line);
-    font-size: 10.5pt; color: var(--ink);
+    position: relative; padding: 1.9mm 0 1.9mm 6mm; border-bottom: 1px solid var(--line);
+    font-size: 10pt; color: var(--ink);
   }
   .feats li:last-child { border-bottom: 0; }
   .feats li::before {
-    content: ''; position: absolute; left: 0; top: 4.1mm;
+    content: ''; position: absolute; left: 0; top: 3.3mm;
     width: 3.2mm; height: 3.2mm; border-radius: 50%; background: var(--accent);
     box-shadow: inset 0 0 0 .9mm var(--accent-soft);
   }
-  .feats li small { display: block; font-size: 9pt; color: var(--ink2); margin-top: .5mm; }
+  .feats li small { display: block; font-size: 8.5pt; color: var(--ink2); margin-top: .5mm; }
   .badge {
     display: inline-block; font-size: 8pt; font-weight: 700; letter-spacing: .3px;
     color: var(--accent); background: var(--accent-soft); border-radius: 1.5mm;
     padding: .6mm 2mm; margin-right: 1.5mm; margin-top: 3mm;
   }
   .tryit {
-    margin-top: 5mm; background: var(--soft); border-radius: 3.5mm; padding: 3.5mm 4.5mm;
+    margin-top: 4mm; background: var(--soft); border-radius: 3.5mm; padding: 3.5mm 4.5mm;
     font-size: 9.5pt; color: var(--ink2);
   }
   .tryit b { color: var(--ink); }
   .tryit code { font-family: inherit; font-weight: 700; color: #128c4a; }
 
-  /* phone frame for WhatsApp screenshots */
-  .phone {
-    width: 64mm; height: 128mm; border-radius: 8mm; background: #111;
-    padding: 2.4mm; box-shadow: 0 3mm 8mm rgba(15,23,42,.18);
-  }
-  .phone .screen {
-    width: 100%; height: 100%; border-radius: 6mm; overflow: hidden; background: #efe7de;
-  }
-  .phone img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+  /* WhatsApp screenshot, full width under the heading */
+  .wa { margin-top: 5mm; }
+  .wa .frame { border: 1px solid var(--line); border-radius: 3mm; overflow: hidden; box-shadow: 0 2mm 6mm rgba(15,23,42,.10); }
+  .wa .shot { height: 112mm; background: #efe7de; }
+  .wa img { width: 100%; height: 100%; object-fit: cover; object-position: center bottom; display: block; }
+  .cap-line { font-size: 9pt; font-weight: 700; color: var(--ink2); margin-bottom: 2mm; letter-spacing: .3px; }
 
   /* back-office screenshot */
-  .bo { margin-top: 7mm; }
-  .bo .cap-line { font-size: 9pt; font-weight: 700; color: var(--ink2); margin-bottom: 2mm; letter-spacing: .3px; }
+  .bo { margin-top: 1mm; }
   .bo .frame {
     border: 1px solid var(--line); border-radius: 3mm; overflow: hidden;
     box-shadow: 0 2mm 6mm rgba(15,23,42,.08);
   }
   .bo .bar { height: 5mm; background: var(--soft); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 1.2mm; padding-left: 2.5mm; }
   .bo .bar i { width: 1.8mm; height: 1.8mm; border-radius: 50%; background: #cbd5e1; }
-  .bo .shot { height: 72mm; }
+  .bo .shot { height: 52mm; }
   .bo img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
 
   /* placeholder until a screenshot is dropped in */
@@ -196,7 +192,6 @@
     width: 100%; height: 100%; display: grid; place-items: center; text-align: center;
     border: 2px dashed #94a3b8; color: #64748b; font-size: 9pt; padding: 4mm; background: #f8fafc;
   }
-  .phone .ph { border-radius: 6mm; }
 
   /* ---------- pricing ---------- */
   .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin-top: 6mm; }
@@ -254,9 +249,10 @@
       // Screenshots: shots/<name>-<lang>.png, falling back to the other language, then a placeholder.
       document.querySelectorAll('[data-shot]').forEach(function (box) {
         var name = box.dataset.shot;
-        var tries = box.dataset.shared
-          ? [name + '.png']
-          : [name + '-' + lang + '.png', name + '-' + (lang === 'zh' ? 'en' : 'zh') + '.png'];
+        var langs = lang === 'zh' ? ['zh', 'cn', 'en'] : ['en', 'zh', 'cn'];
+        var stems = box.dataset.shared ? [name] : langs.map(function (l) { return name + '-' + l; });
+        var tries = [];
+        stems.forEach(function (st) { ['png', 'jpeg', 'jpg'].forEach(function (e) { tries.push(st + '.' + e); }); });
         var img = new Image();
         var next = function () {
           var src = tries.shift();
@@ -267,7 +263,8 @@
           }
           img.onerror = next;
           img.onload = function () { box.innerHTML = ''; box.appendChild(img); };
-          img.src = 'shots/' + src;
+          // Chat shots are read from the copies build.py trims; back office shots as dropped in.
+          img.src = (box.dataset.shared ? 'shots/' : 'shots/_cropped/') + src;
         };
         next();
       });
@@ -428,6 +425,10 @@
       <h2 style="margin:1mm 0 0" data-zh="查库存、下单、开发票，<br>都在对话里完成">Stock, orders and invoices,<br>all inside the chat</h2>
     </div>
   </div>
+  <div class="wa">
+    <div class="cap-line" data-zh="客户看到的：WhatsApp 对话">WHAT YOUR CUSTOMER SEES · WhatsApp</div>
+    <div class="frame"><div class="shot" data-shot="retail" data-label="WhatsApp · Retail"></div></div>
+  </div>
   <div class="ind-body">
     <div>
       <ul class="feats">
@@ -439,13 +440,14 @@
         <li data-zh="下单后自动发确认<small>不等客户来问，确认消息先到。</small>">Sends the order confirmation by itself<small>The customer hears from you before they wonder.</small></li>
       </ul>
       <span class="badge" data-zh="接入 ERP">ERP connected</span><span class="badge" data-zh="接入 CRM">CRM connected</span>
-      <div class="tryit" data-zh="<b>试一试：</b>给 demo 号发 <code>menu</code>，选「电商零售」，问「这个 earbuds 还有 stock 吗？」"><b>Try it:</b> send <code>menu</code> to the demo number, pick Retail, and ask "Do you have the Sony earbuds in stock?"</div>
     </div>
-    <div class="phone"><div class="screen" data-shot="retail" data-label="WhatsApp · Retail"></div></div>
-  </div>
-  <div class="bo">
+    <div>
+      <div class="bo">
     <div class="cap-line" data-zh="后台：客户在 WhatsApp 下的单，直接出现在 ERP 的销售单里">BACK OFFICE · The WhatsApp order, already in your ERP's sales orders</div>
     <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-retail" data-shared="1" data-label="ERP · Sales orders"></div></div>
+      </div>
+      <div class="tryit" data-zh="<b>试一试：</b>给 demo 号发 <code>menu</code>，选「电商零售」，问「这个 earbuds 还有 stock 吗？」"><b>Try it:</b> send <code>menu</code> to the demo number, pick Retail, and ask "Do you have the Sony earbuds in stock?"</div>
+    </div>
   </div>
   <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 4</span></div>
 </section>
@@ -459,6 +461,10 @@
       <h2 style="margin:1mm 0 0" data-zh="点餐、算账、通知，<br>一个不漏">Orders, totals and updates,<br>nothing missed</h2>
     </div>
   </div>
+  <div class="wa">
+    <div class="cap-line" data-zh="客户看到的：WhatsApp 对话">WHAT YOUR CUSTOMER SEES · WhatsApp</div>
+    <div class="frame"><div class="shot" data-shot="food" data-label="WhatsApp · Food"></div></div>
+  </div>
   <div class="ind-body">
     <div>
       <ul class="feats">
@@ -469,13 +475,14 @@
         <li data-zh="特别要求转给店员<small>「放门口」「加辣椒酱」，交给真人处理。</small>">Passes special requests to your staff<small>"Leave it at the door", "extra sambal": a person handles it.</small></li>
       </ul>
       <span class="badge" data-zh="订单后台">Order board</span>
-      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「餐饮外卖」，说「两份椰浆饭一杯拉茶」"><b>Try it:</b> send <code>menu</code>, pick Food Delivery, and say "Two nasi lemak and one teh tarik"</div>
     </div>
-    <div class="phone"><div class="screen" data-shot="food" data-label="WhatsApp · Food"></div></div>
-  </div>
-  <div class="bo">
+    <div>
+      <div class="bo">
     <div class="cap-line" data-zh="后台：每张单从「已接单」走到「已送达」，一眼看清">BACK OFFICE · Every order, from received to delivered</div>
     <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-food" data-shared="1" data-label="Back office · Food orders"></div></div>
+      </div>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「餐饮外卖」，说「两份椰浆饭一杯拉茶」"><b>Try it:</b> send <code>menu</code>, pick Food Delivery, and say "Two nasi lemak and one teh tarik"</div>
+    </div>
   </div>
   <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 5</span></div>
 </section>
@@ -489,6 +496,10 @@
       <h2 style="margin:1mm 0 0" data-zh="查房、订房、改期，<br>半夜也能订">Rooms searched, booked and changed,<br>even at 2am</h2>
     </div>
   </div>
+  <div class="wa">
+    <div class="cap-line" data-zh="客户看到的：WhatsApp 对话">WHAT YOUR CUSTOMER SEES · WhatsApp</div>
+    <div class="frame"><div class="shot" data-shot="hotel" data-label="WhatsApp · Hotel"></div></div>
+  </div>
   <div class="ind-body">
     <div>
       <ul class="feats">
@@ -499,13 +510,14 @@
         <li data-zh="特别安排转给前台<small>接机、加床这类要求交给你的员工。</small>">Passes special arrangements to your front desk<small>Airport pick-ups, extra beds: your staff take it from there.</small></li>
       </ul>
       <span class="badge" data-zh="预订后台">Booking board</span>
-      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「酒店旅游」，说「我想订槟城的房间，两个人，这个周末」"><b>Try it:</b> send <code>menu</code>, pick Hotel &amp; Travel, and say "A room in Penang for two, this weekend"</div>
     </div>
-    <div class="phone"><div class="screen" data-shot="hotel" data-label="WhatsApp · Hotel"></div></div>
-  </div>
-  <div class="bo">
+    <div>
+      <div class="bo">
     <div class="cap-line" data-zh="后台：每一笔预订的房型、日期、人数和金额">BACK OFFICE · Every booking with room, dates, guests and amount</div>
     <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-hotel" data-shared="1" data-label="Back office · Hotel bookings"></div></div>
+      </div>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「酒店旅游」，说「我想订槟城的房间，两个人，这个周末」"><b>Try it:</b> send <code>menu</code>, pick Hotel &amp; Travel, and say "A room in Penang for two, this weekend"</div>
+    </div>
   </div>
   <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 6</span></div>
 </section>
@@ -519,6 +531,10 @@
       <h2 style="margin:1mm 0 0" data-zh="把每一条询问，<br>变成一次看房预约">Turn every enquiry<br>into a booked viewing</h2>
     </div>
   </div>
+  <div class="wa">
+    <div class="cap-line" data-zh="客户看到的：WhatsApp 对话">WHAT YOUR CUSTOMER SEES · WhatsApp</div>
+    <div class="frame"><div class="shot" data-shot="realestate" data-label="WhatsApp · Real estate"></div></div>
+  </div>
   <div class="ind-body">
     <div>
       <ul class="feats">
@@ -528,13 +544,14 @@
         <li data-zh="每个看房客户自动进 CRM<small>你的销售团队在 CRM 看板上直接跟进。</small>">Every viewing becomes a lead in your CRM<small>Your agents pick it up on the CRM pipeline.</small></li>
       </ul>
       <span class="badge" data-zh="看房后台">Viewing board</span><span class="badge" data-zh="接入 CRM">CRM connected</span>
-      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「房产咨询」，说「蒲种三房，60 万以内」"><b>Try it:</b> send <code>menu</code>, pick Real Estate, and say "3-bedroom in Puchong under RM 600k"</div>
     </div>
-    <div class="phone"><div class="screen" data-shot="realestate" data-label="WhatsApp · Real estate"></div></div>
-  </div>
-  <div class="bo">
+    <div>
+      <div class="bo">
     <div class="cap-line" data-zh="后台：约好的看房，同时出现在 CRM 的销售看板上">BACK OFFICE · The booked viewing, already on your CRM pipeline</div>
     <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-realestate" data-shared="1" data-label="CRM · Pipeline"></div></div>
+      </div>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「房产咨询」，说「蒲种三房，60 万以内」"><b>Try it:</b> send <code>menu</code>, pick Real Estate, and say "3-bedroom in Puchong under RM 600k"</div>
+    </div>
   </div>
   <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 7</span></div>
 </section>
@@ -548,6 +565,10 @@
       <h2 style="margin:1mm 0 0" data-zh="先把问题解决，<br>解决不了再开工单">Fix it first,<br>open a ticket only when needed</h2>
     </div>
   </div>
+  <div class="wa">
+    <div class="cap-line" data-zh="客户看到的：WhatsApp 对话">WHAT YOUR CUSTOMER SEES · WhatsApp</div>
+    <div class="frame"><div class="shot" data-shot="saas" data-label="WhatsApp · SaaS"></div></div>
+  </div>
   <div class="ind-body">
     <div>
       <ul class="feats">
@@ -558,13 +579,14 @@
         <li data-zh="随时查工单进度<small>客户问「我的工单怎样了」，直接报状态。</small>">Checks ticket status any time<small>"What's happening with my ticket?" gets a straight answer.</small></li>
       </ul>
       <span class="badge" data-zh="工单后台">Ticket board</span>
-      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「技术支持」，说「我登录不了」"><b>Try it:</b> send <code>menu</code>, pick SaaS Support, and say "I can't log in"</div>
     </div>
-    <div class="phone"><div class="screen" data-shot="saas" data-label="WhatsApp · SaaS"></div></div>
-  </div>
-  <div class="bo">
+    <div>
+      <div class="bo">
     <div class="cap-line" data-zh="后台：每张工单的问题、优先级和状态">BACK OFFICE · Every ticket with its issue, priority and status</div>
     <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-saas" data-shared="1" data-label="Back office · Support tickets"></div></div>
+      </div>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「技术支持」，说「我登录不了」"><b>Try it:</b> send <code>menu</code>, pick SaaS Support, and say "I can't log in"</div>
+    </div>
   </div>
   <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 8</span></div>
 </section>
