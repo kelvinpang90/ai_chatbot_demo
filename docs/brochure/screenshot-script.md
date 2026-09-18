@@ -63,3 +63,24 @@
 | `好，帮我开单` | `OK, open a ticket` |
 
 **要截到的**：分步排查 → 工单号 `TCK-…`。
+
+---
+
+## 后台截图（5 张，电脑浏览器）
+
+**等上面五段 WhatsApp 对话跑完再截**，这样后台里正好是刚才那几张单，跟手机截图对得上。
+
+- 浏览器窗口开到**全屏**（宽 1440 左右最好），缩放 100%
+- 只截网页内容区，不要带浏览器地址栏和任务栏
+- 中英两份 PDF **共用**这 5 张，不用截两次；后台有中英切换的，切成**英文**再截
+- 版面是横长条（约 2.4 : 1），我会从**左上角**往下裁，重要内容放在页面上半部分
+
+| 文件名 | 打开哪里 | 要看得到 |
+|---|---|---|
+| `bo-retail.png` | `https://erp.acuventech.com` → Sales Orders | 刚下的 `SO-…` 在列表第一行 |
+| `bo-food.png` | `https://chatbot.acuventech.com/admin#food` | 刚下的 `FD-…` 和它的状态 |
+| `bo-hotel.png` | `https://chatbot.acuventech.com/admin#hotel` | 刚订的 `BK-…` |
+| `bo-realestate.png` | `https://crm.acuventech.com/dashboard` → Pipeline | 刚约看房的那张客户卡片 |
+| `bo-saas.png` | `https://chatbot.acuventech.com/admin#saas` | 刚开的 `TCK-…` 和优先级 |
+
+截好后跟手机截图一起发给我，或放进 `docs/brochure/shots/`。
