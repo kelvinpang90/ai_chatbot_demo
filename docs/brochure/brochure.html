@@ -184,8 +184,9 @@
   }
   .bo .bar { height: 5mm; background: var(--soft); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 1.2mm; padding-left: 2.5mm; }
   .bo .bar i { width: 1.8mm; height: 1.8mm; border-radius: 50%; background: #cbd5e1; }
-  .bo .shot { height: 52mm; }
-  .bo img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
+  .bo .shot { height: 52mm; overflow: hidden; }
+  /* Show the top-left two thirds of the page, so the newest row is legible in print. */
+  .bo img { width: 150%; height: auto; display: block; }
 
   /* placeholder until a screenshot is dropped in */
   .ph {
@@ -538,7 +539,7 @@
   <div class="ind-body">
     <div>
       <ul class="feats">
-        <li data-zh="按区域、房数、预算找房<small>「蒲种三房，60 万以内」直接列出合适的房源。</small>">Finds listings by area, size and budget<small>"3-bedroom in Puchong under RM 600k" gets matching listings.</small></li>
+        <li data-zh="按区域、房数、预算找房<small>「Cheras 三房，50 万以内」直接列出合适的房源。</small>">Finds listings by area, size and budget<small>"3-bedroom in Cheras under RM 500k" gets matching listings.</small></li>
         <li data-zh="估算每月供款<small>给出参考月供，帮客户先心里有数。</small>">Estimates the monthly instalment<small>An indicative figure so buyers know where they stand.</small></li>
         <li data-zh="在对话里约好看房<small>姓名、房源、时间，一问一答就定下来。</small>">Books viewings in the chat<small>Name, property and time, settled in a few messages.</small></li>
         <li data-zh="每个看房客户自动进 CRM<small>你的销售团队在 CRM 看板上直接跟进。</small>">Every viewing becomes a lead in your CRM<small>Your agents pick it up on the CRM pipeline.</small></li>
@@ -550,7 +551,7 @@
     <div class="cap-line" data-zh="后台：约好的看房，同时出现在 CRM 的销售看板上">BACK OFFICE · The booked viewing, already on your CRM pipeline</div>
     <div class="frame"><div class="bar"><i></i><i></i><i></i></div><div class="shot" data-shot="bo-realestate" data-shared="1" data-label="CRM · Pipeline"></div></div>
       </div>
-      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「房产咨询」，说「蒲种三房，60 万以内」"><b>Try it:</b> send <code>menu</code>, pick Real Estate, and say "3-bedroom in Puchong under RM 600k"</div>
+      <div class="tryit" data-zh="<b>试一试：</b>发 <code>menu</code>，选「房产咨询」，说「Cheras 三房，50 万以内」"><b>Try it:</b> send <code>menu</code>, pick Real Estate, and say "3-bedroom in Cheras under RM 500k"</div>
     </div>
   </div>
   <div class="footer"><span class="brand">Acuven <span>Technology</span></span><span>acuventech.com · 7</span></div>

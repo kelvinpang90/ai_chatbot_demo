@@ -48,11 +48,11 @@
 
 | 中文 | English |
 |---|---|
-| `蒲种三房，60 万以内` | `3-bedroom in Puchong under RM 600k` |
+| `Cheras 三房，50 万以内` | `3-bedroom in Cheras under RM 500k` |
 | `我想约看房` | `I'd like to book a viewing` |
 | `陈家明，第一间，下周六下午 3 点` | `Jason Tan, the first one, next Saturday 3pm` |
 
-**要截到的**：两个房源 → 看房确认（日期、时间、房源）。
+**要截到的**：房源（PROP-206）→ 看房确认（日期、时间、房源）。
 
 ## 5. SaaS 客服（菜单选「技术支持 SaaS Support」）
 
