@@ -1,10 +1,11 @@
-"""Build the customer brochure: QR codes, then one PDF per language.
+"""Build the customer brochure and the company profile: QR codes, then one PDF per language.
 
     pip install qrcode pillow numpy
     python build.py
 
 Needs Google Chrome installed and internet access (fonts come from Google Fonts).
-Output: acuven-whatsapp-ai-en.pdf, acuven-whatsapp-ai-zh.pdf next to this file.
+Output next to this file: acuven-whatsapp-ai-{en,zh}.pdf (brochure.html) and
+acuven-company-profile-{en,zh}.pdf (company.html).
 """
 import shutil
 import subprocess
@@ -23,6 +24,12 @@ SHOTS = HERE / "shots"
 QR_CODES = {
     "qr-demo.svg": "https://wa.me/60173948123?text=menu",
     "qr-contact.svg": "https://wa.me/601136182335",
+}
+
+# Source page -> PDF name stem.
+DOCUMENTS = {
+    "brochure.html": "acuven-whatsapp-ai",
+    "company.html": "acuven-company-profile",
 }
 
 CHROME_CANDIDATES = [
@@ -73,9 +80,9 @@ def find_chrome() -> str:
     raise SystemExit("Chrome not found; edit CHROME_CANDIDATES in build.py")
 
 
-def render(chrome: str, lang: str) -> Path:
-    out = HERE / f"acuven-whatsapp-ai-{lang}.pdf"
-    url = (HERE / "brochure.html").as_uri() + f"?lang={lang}"
+def render(chrome: str, page: str, stem: str, lang: str) -> Path:
+    out = HERE / f"{stem}-{lang}.pdf"
+    url = (HERE / page).as_uri() + f"?lang={lang}"
     subprocess.run(
         [
             chrome,
@@ -98,5 +105,6 @@ if __name__ == "__main__":
     make_qr_codes()
     crop_chat_shots()
     chrome = find_chrome()
-    for lang in ("en", "zh"):
-        print("wrote", render(chrome, lang))
+    for page, stem in DOCUMENTS.items():
+        for lang in ("en", "zh"):
+            print("wrote", render(chrome, page, stem, lang))
