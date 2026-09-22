@@ -76,9 +76,24 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - ⚠️ **顺带纠正一条旧记录**：09-13 记的是「解锁条件二选一」，但 Meta 自己在 Flows 空状态页上的原文是 **「improve message quality *and* complete business verification」——是 and**。不过这次两个都满足了仍被拦，所以真正的门槛是第三个我们看不到的东西，或者这个面板本身是坏的
   - **下一步建议走 Graph API 发布**，它会回一个具体错误码，而 UI 这个空面板什么都不说（token 在 VPS 的 .env 里，命令在那边读、不外传）：
     ```
-    ssh -i "C:/Users/PC/.ssh/kelvin.pem" ubuntu@103.40.204.95 'TOKEN=$(sed -n "s/^WHATSAPP_ACCESS_TOKEN=//p" /opt/ai_chatbot/backend/.env | tr -d ""); curl -s -X POST "https://graph.facebook.com/v20.0/1066318999658447/publish" -H "Authorization: Bearer $TOKEN"'
+    ssh -i "C:/Users/PC/.ssh/kelvin.pem" ubuntu@103.40.204.95 'TOKEN=$(sed -n "s/^WHATSAPP_ACCESS_TOKEN=//p" /opt/ai_chatbot/backend/.env | tr -d "
+"); curl -s -X POST "https://graph.facebook.com/v20.0/1066318999658447/publish" -H "Authorization: Bearer $TOKEN"'
     ```
     发布成功回 `{"success":true}`；失败会点名原因（缺 `whatsapp_business_management` 权限、还是账号层门槛）
+
+  **同日跑了，答案是「门槛没解除」——verification 过了也没用**
+
+  ```json
+  {"error":{"message":"Blocked by Integrity","type":"OAuthException","code":139000,
+   "error_subcode":4233020,"is_transient":false,
+   "error_user_title":"Flow publishing failed","error_user_msg":"Integrity requirements not met."}}
+  ```
+
+  - **和 2026-09-13 是同一道门，九天里什么都没变**，`is_transient: false`。token 是够的（够的话才会走到 integrity 这一步，权限不足会回权限错误）
+  - **所以「等 business verification 过」这条路已经试掉了，别再等它**。`Verified` 是 Sep 15 生效的，到 09-22 仍然拦着
+  - 查过、都不是卡点的：号码 Quality **High** / Connected；WhatsApp Manager 的 **7 条 Alerts 里没有任何违规或限制通知**
+  - ⚠️ **唯一可疑但没证实的**：WABA **没有绑定付款方式**（Alerts 第一条 "Missing valid payment method"），本月 302 条全是 free-tier 客服消息、business-initiated **0/250**。会不会是它撑着这道门——**不知道，这是猜测不是结论**。要试的话绑一张卡再跑一次上面那条 curl，最便宜的验证
+  - **影响不变**：剧本 4a 继续走聊天降级（任务 24 已建好，会自动接住拒收）。代码侧没有任何事要做——`WHATSAPP_FLOW_ID` 等门开了再加，现在加了也只是让它每次都吃一个拒收
   - **降级那条路不用拆**：ID 配上之后表单走原生，发不出去仍会自动接住退回聊天（任务 24 建的），两条路并存
 - [x] ~~**C. 语音转录选型拍板**~~——**2026-09-06 已定：走外部 API（OpenAI `/v1/audio/transcriptions`，默认 `whisper-1`）**，正是这一条当初建议的路子：先接外部 API 把戏跑通，转录做成抽象层，换实现只是换一个类。任务 36 已落地并真机验收。自托管 faster-whisper 没有被否掉，只是没有理由现在做——真要换，见任务 15 条目下记的那处残留（换类可以，换环境变量还不行）。以下是原文：
   ~~外部 API（准、快、多一个供应商）vs 自托管 faster-whisper（无外部依赖、CPU 上每条慢 3-5 秒、吃 VPS 内存）。阻塞任务 15。~~
