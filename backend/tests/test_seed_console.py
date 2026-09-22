@@ -1,4 +1,4 @@
-"""The console seed (tasks 39.1, 39.2, 39.4): what it files, and what it must never touch.
+"""The console seed (tasks 39.1, 39.2, 39.4, 39.5): what it files, and what it must never touch.
 
 The batch is built in memory and checked as data; the writing half is run
 against a fake connection that records every statement. That the SQL itself
@@ -6,9 +6,11 @@ runs against MySQL 8 is the live run recorded under task 39.1 in tasks/todo.md.
 """
 import json
 import random
+import re
 import time
 from collections import Counter
 from datetime import date, timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -20,8 +22,10 @@ from app.routers import console
 from app.services import crm_client, erp_client, phone
 from app.services.api_client import ApiClientError
 from app.services.user_store import UserProfile, identity, user_store
-from app.tasks import cleanup, seed_console, seed_crm, seed_documents, seed_lines, seed_retail
+from app.services import handover
+from app.tasks import cleanup, seed_console, seed_crm, seed_documents, seed_lines, seed_retail, seed_showcase
 from app.tools import crm as crm_tools
+from app.tools import human as human_tools
 from app.tools import local
 from app.verticals.food import models as food_models
 from app.verticals.hotel import models as hotel_models
@@ -294,9 +298,15 @@ def test_three_documents_per_industry_and_language(filed):
 
 
 def test_retail_files_nothing_yet(batch):
+    """Retail's own cards come from the ERP and the CRM, and this batch has neither.
+
+    The one card left is the showcase handing the conversation to a person
+    (task 39.5), which files nothing either -- see the handover test below.
+    """
     for customer in batch:
         if customer.bot_id == "retail":
-            assert not [row for conv in customer.conversations for row in conv.rows if row.kind == "tool"]
+            drawn = {row.values["tool"] for conv in customer.conversations for row in conv.rows if row.kind == "tool"}
+            assert drawn <= {"request_human_help"}
 
 
 @pytest.mark.parametrize(
@@ -374,9 +384,15 @@ def test_a_ticketed_issue_is_not_a_known_one(issue):
 
 
 def test_no_filer_means_no_documents():
+    """A whitelist rather than a count: every tool left is one that writes nothing.
+
+    `food_update_cart` prices a cart and `request_human_help` is never actually
+    called, both from the showcases (task 39.5). Anything else appearing here is
+    a seed filing a record every night for a conversation nobody had.
+    """
     batch = seed_console.plan(NOW, random.Random(7))
     tools = {row.values["tool"] for c in batch for conv in c.conversations for row in conv.rows if row.kind == "tool"}
-    assert tools <= {"hotel_search_rooms", "saas_search_known_issues"}
+    assert tools <= {"hotel_search_rooms", "saas_search_known_issues", "food_update_cart", "request_human_help"}
 
 
 class RecordingStore:
@@ -546,7 +562,9 @@ def test_the_other_retail_customers_ask_about_the_live_catalogue(erp):
     retail = [c for c in batch if c.bot_id == "retail"]
     tools = Counter(row.values["tool"] for c in retail for conv in c.conversations for row in conv.rows if row.kind == "tool")
     assert tools["erp_find_customer"] == 2 and tools["erp_list_orders"] == 2
-    assert tools["erp_search_sku"] + tools["erp_get_inventory"] == 16  # the other 16 of 18
+    # 18 retail customers less the 2 buyers this fake ERP has accounts for, less
+    # the 3 showcases (one per language, task 39.5), which ask no ERP question.
+    assert tools["erp_search_sku"] + tools["erp_get_inventory"] == 13
     for customer in retail:
         for conv in customer.conversations:
             for row in conv.rows:
@@ -561,7 +579,9 @@ def test_a_product_the_catalogue_lost_falls_back_to_a_policy_question(erp):
     erp.branch_inventory = lambda sku_query, limit=5: []
     batch = _retail_batch(erp, [])
     tools = {row.values["tool"] for c in batch if c.bot_id == "retail" for conv in c.conversations for row in conv.rows if row.kind == "tool"}
-    assert tools == set()
+    # The showcase asks the catalogue nothing, so its handover card stands whatever
+    # the ERP has lost.
+    assert tools == {"request_human_help"}
 
 
 def test_an_erp_that_stops_answering_mid_seed_stops_the_seed(erp):
@@ -854,3 +874,255 @@ def test_an_unreachable_erp_clears_no_crm_rows(crm):
     ), patch.object(seed_documents, "clear"), patch.object(seed_console, "reseed"):
         assert seed_console.main([]) == 1
     assert len(crm.contacts) == 2
+
+
+# --- the fifteen written by hand (task 39.5) ------------------------------------
+
+
+SHOWCASES = seed_showcase.load()
+
+# "RM 1,650,000", "RM 12.90", "RM 45" -- the claims a customer could hold us to.
+_RM = re.compile(r"RM\s*([\d,]+(?:\.\d+)?)")
+# Every number in a body of text, for the pile a reply is allowed to draw on.
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _amounts(pattern, text: str) -> set:
+    return {Decimal(found.replace(",", "")) for found in pattern.findall(text)}
+
+
+def _showcase_customers(batch):
+    """The batch's showcase customers, with their place in the batch and their file.
+
+    Found by the line they open with rather than by counting, so a showcase that
+    moved slot is still found -- which is the point of the slot test below.
+    """
+    by_first_line = {s.turns[0].ask: s for s in SHOWCASES.values()}
+    found = []
+    for index, customer in enumerate(batch):
+        first = next(row for row in customer.conversations[-1].rows if row.values.get("role") == "user")
+        showcase = by_first_line.get(first.values["content"])
+        if showcase is not None:
+            found.append((index, customer, showcase))
+    return found
+
+
+def test_one_showcase_for_every_industry_in_every_language():
+    assert set(SHOWCASES) == {(bot, lang) for bot in seed_console.BOTS for lang in seed_lines.LANGUAGES}
+    assert len(SHOWCASES) == 15
+    for (bot_id, language), showcase in SHOWCASES.items():
+        assert showcase.bot_id == bot_id and showcase.language == language
+        assert len(showcase.turns) >= 3, (bot_id, language)
+
+
+def test_no_showcase_calls_a_tool_that_writes_anything():
+    """A seeded conversation runs every night. A tool that books, orders, opens a
+    ticket or files an enquiry would leave a record a night, for a conversation
+    nobody had -- and those records are tasks 39.2 and 39.4's to file and to clear.
+    """
+    allowed = seed_showcase.READ_ONLY_TOOLS | {seed_showcase.HANDOVER}
+    for (bot_id, language), showcase in SHOWCASES.items():
+        bot = get_bot(bot_id)
+        for turn in showcase.turns:
+            if turn.tool:
+                assert turn.tool in allowed, (bot_id, language, turn.tool)
+                # And one this bot actually carries, or the card could never exist.
+                assert turn.tool in bot.tools, (bot_id, language, turn.tool)
+
+
+@pytest.mark.parametrize("key", sorted(SHOWCASES))
+def test_every_written_reply_still_matches_what_its_tool_answers(key):
+    """The lines are written; the tool outputs are not. `expects` is what the
+    written reply took from the output, checked against the tool as it is today.
+    """
+    showcase = SHOWCASES[key]
+    bot = get_bot(showcase.bot_id)
+    for turn in showcase.turns:
+        if not turn.tool or turn.tool == seed_showcase.HANDOVER:
+            continue
+        output = seed_console._tool_output(bot, turn.tool, turn.tool_input)
+        for wanted in turn.expects:
+            assert wanted in output, (key, turn.tool, wanted, output[:300])
+
+
+@pytest.mark.parametrize("key", sorted(SHOWCASES))
+def test_every_rm_figure_in_a_reply_is_one_the_bot_could_have_said(key):
+    """Money is the one thing on this screen a customer could catch us on.
+
+    A figure in a written reply has to come from the bot's own context data, from
+    what a tool returned, or from what the customer themselves just said. The ones
+    the bot genuinely works out -- a ten percent deposit, a monthly repayment --
+    are listed on the turn in `derived`, so that list is the whole of what is
+    unchecked rather than something you would have to go looking for.
+    """
+    showcase = SHOWCASES[key]
+    bot = get_bot(showcase.bot_id)
+    grounded = _amounts(_NUMBER, json.dumps(bot.context_data, ensure_ascii=False))
+    for turn in showcase.turns:
+        grounded |= _amounts(_NUMBER, turn.ask)
+        grounded |= _amounts(_NUMBER, json.dumps(turn.tool_input, ensure_ascii=False))
+        if turn.tool and turn.tool != seed_showcase.HANDOVER:
+            grounded |= _amounts(_NUMBER, seed_console._tool_output(bot, turn.tool, turn.tool_input))
+    for turn in showcase.turns:
+        worked_out = _amounts(_RM, " ".join(turn.derived))
+        for figure in _amounts(_RM, turn.reply):
+            assert figure in grounded or figure in worked_out, (key, figure, turn.ask)
+
+
+def test_the_handover_card_is_the_tools_own_words_and_nothing_is_handed_over():
+    """`request_human_help` is named and not called.
+
+    Calling it would take a customer off the bot and draw a span on the live feed,
+    and batch 07 seeds neither. So the card carries the constant the live tool
+    returns -- the console shows what it would have shown -- and the flag it would
+    have set is not set on anybody.
+    """
+    with patch.object(handover, "begin") as began:
+        batch = seed_console.plan(NOW, random.Random(3))
+    assert began.call_count == 0
+    cards = [
+        row
+        for customer in batch
+        for conversation in customer.conversations
+        for row in _tool_rows(conversation, "request_human_help")
+    ]
+    assert cards, "the file no longer shows the bot stopping and calling a person"
+    for row in cards:
+        assert row.values["output"] == human_tools.HANDED_OVER
+        assert row.values["input"]["reason"].strip()
+    for customer in batch:
+        assert not seed_console._profile(customer).handover_since
+
+
+def test_the_showcases_take_the_last_slot_and_wrote_in_the_last_week(batch):
+    """Fifteen of them, in the slot nothing else claims, near the top of the list.
+
+    The slot matters because the ones before it are spoken for -- the documents,
+    the ERP buyers, the CRM enquiries -- and a showcase landing on one of those
+    quietly takes a document or a lead off the board. The dates matter because
+    the console opens newest first and these are the ones meant to be clicked.
+
+    Neither assertion is allowed to read the constant it is checking, or tuning
+    the constant would move the test along with it.
+    """
+    found = _showcase_customers(batch)
+    assert len(found) == 15
+    assert {(c.bot_id, c.language) for _, c, _ in found} == set(SHOWCASES)
+
+    slots = {index % seed_console.ORDINARY_PER_COMBINATION for index, _, _ in found}
+    assert slots == {seed_console.ORDINARY_PER_COMBINATION - 1}
+    assert min(slots) >= seed_console.DEALS_PER_COMBINATION + seed_console.RETAIL_LEADS_PER_COMBINATION
+
+    week = 7 * 86400
+    for _, customer, _ in found:
+        started = customer.conversations[-1].rows[0].at
+        assert NOW - week <= started <= NOW - seed_console.QUIET_SECONDS
+
+
+def test_a_showcase_ends_on_its_own_last_line_not_the_template_thank_you(batch):
+    """The generic sign-off the ninety end on would talk over a written ending --
+    and in two of them the bot has just handed over and is supposed to stop.
+    """
+    thanks = {topic.reply for language in seed_lines.LANGUAGES for topic in seed_lines.THANKS[language]}
+    for _, customer, showcase in _showcase_customers(batch):
+        rows = customer.conversations[-1].rows
+        said = [row.values["content"] for row in rows if row.values.get("role") == "assistant"]
+        asked = [row.values["content"] for row in rows if row.values.get("role") == "user"]
+        assert said[-1] == showcase.turns[-1].reply
+        assert said[-1] not in thanks
+        assert asked == [turn.ask for turn in showcase.turns]
+
+
+def test_a_tool_that_has_stopped_saying_what_the_reply_says_stops_the_run():
+    """The mutation this is here for: a reply quoting a rate the resort dropped
+    would sit on the console all day. Better a seed that fails loudly at 03:30.
+    """
+    bot = get_bot("hotel")
+    turn = next(t for t in SHOWCASES[("hotel", "en")].turns if t.tool == "hotel_search_rooms")
+    moved_on = seed_showcase.Turn(
+        ask=turn.ask, reply=turn.reply, tool=turn.tool, tool_input=turn.tool_input,
+        expects=("Overwater Bungalow",),
+    )
+    with pytest.raises(RuntimeError, match="no longer answers"):
+        seed_console._showcase_turn(bot, moved_on)
+
+
+def test_a_missing_showcase_is_a_failure_rather_than_a_template(batch):
+    customer = next(c for c in batch if c.bot_id == "saas")
+    with pytest.raises(RuntimeError, match="no showcase conversation written"):
+        seed_console._showcase(get_bot("saas"), customer, {})
+
+
+# --- the file's own rules -------------------------------------------------------
+
+
+def _written(tmp_path, **overrides):
+    turn = {"ask": "Rooms in Penang?", "reply": "Superior City Room, RM 260 a night."}
+    record = {
+        "bot": "hotel",
+        "language": "en",
+        "note": "a note",
+        "turns": [dict(turn), dict(turn), dict(turn)],
+    }
+    record.update(overrides)
+    path = tmp_path / "showcase.json"
+    path.write_text(json.dumps({"conversations": [record]}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    "overrides, complaint",
+    [
+        ({"bot": "bakery"}, "no bot called"),
+        ({"language": "ta"}, "is not one of"),
+        ({"note": "  "}, "no note"),
+        ({"turns": [{"ask": "hi", "reply": "hello"}]}, "at least three turns"),
+    ],
+)
+def test_a_showcase_that_would_show_something_wrong_is_refused(tmp_path, overrides, complaint):
+    with pytest.raises(seed_showcase.ShowcaseError, match=complaint):
+        seed_showcase.load(_written(tmp_path, **overrides))
+
+
+@pytest.mark.parametrize(
+    "turn, complaint",
+    [
+        # A tool this bot does not carry: a card it could never have drawn.
+        ({"tool": "erp_search_sku", "tool_input": {}, "expects": ["x"]}, "has no tool called"),
+        # A tool that writes: a booking filed every night for a conversation nobody had.
+        ({"tool": "hotel_create_booking", "tool_input": {}, "expects": ["x"]}, "not one a showcase may call"),
+        # Nothing checking that the reply still matches the output it quotes.
+        ({"tool": "hotel_search_rooms", "tool_input": {"location": "Penang"}}, "or nothing checks"),
+        ({"expects": ["RM 260"]}, "belong to a turn that calls a tool"),
+        ({"derived": ["RM 999"]}, "listed as worked out but is not in the reply"),
+        ({"mood": "cheerful"}, "is not something this file understands"),
+    ],
+)
+def test_a_turn_that_would_show_something_wrong_is_refused(tmp_path, turn, complaint):
+    turns = [{"ask": "Rooms in Penang?", "reply": "Superior City Room, RM 260 a night.", **turn}] * 3
+    with pytest.raises(seed_showcase.ShowcaseError, match=complaint):
+        seed_showcase.load(_written(tmp_path, turns=turns))
+
+
+def test_the_bot_may_not_speak_after_it_has_handed_over(tmp_path):
+    """`request_human_help` tells the bot to stop. A turn after it is the bot
+    talking over the colleague who has just taken the conversation.
+    """
+    hands_over = {
+        "ask": "Get me a person",
+        "reply": "Passing you over now.",
+        "tool": "request_human_help",
+        "tool_input": {"reason": "asked for a person"},
+    }
+    after = {"ask": "thanks", "reply": "you're welcome"}
+    with pytest.raises(seed_showcase.ShowcaseError, match="has to be the last turn"):
+        seed_showcase.load(_written(tmp_path, bot="retail", turns=[after, hands_over, after]))
+
+
+def test_two_showcases_for_one_industry_and_language_is_refused(tmp_path):
+    one = {"ask": "Rooms in Penang?", "reply": "Superior City Room, RM 260 a night."}
+    record = {"bot": "hotel", "language": "en", "note": "n", "turns": [one, one, one]}
+    path = tmp_path / "showcase.json"
+    path.write_text(json.dumps({"conversations": [record, record]}, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(seed_showcase.ShowcaseError, match="one conversation per industry per language"):
+        seed_showcase.load(path)

@@ -14,6 +14,10 @@ viewing, and those are filed in the back office too (`seed_documents.py`), so a
 number the console shows is a row `/admin` shows. The ones that end in an
 enquiry leave a card on the CRM's pipeline the same way (`seed_crm.py`).
 
+Fifteen of the ninety -- one per industry per language -- are written out rather
+than assembled, so that a list built to have weight also has something worth
+opening (`seed_showcase.py`).
+
 What is seeded is decided in tasks/todo.md, batch 07, and so is what is not: the
 live feed, a takeover, the tools switch and the failure drill are all left alone.
 Each of those is one flag for the whole backend, and a seeded value that is not
@@ -59,9 +63,10 @@ from app.services.clock import sql_timestamp
 from app.services.mysql_url import connect as _default_connect
 from app.services.mysql_url import dsn as _mysql_dsn
 from app.services.user_store import UserProfile, UserStore, user_store
-from app.tasks import seed_crm, seed_documents, seed_lines, seed_retail
+from app.tasks import seed_crm, seed_documents, seed_lines, seed_retail, seed_showcase
 from app.tools import erp as erp_tools
 from app.tools import food as food_tools
+from app.tools import human as human_tools
 from app.tools import local
 from app.tools import realestate as realestate_tools
 from app.tools.registry import CATALOGUE
@@ -83,6 +88,14 @@ RETAIL_BUYERS = DEALS_PER_COMBINATION * 3
 # question and leave, which is both the commoner thing and what the console has
 # been showing since task 39.3.
 RETAIL_LEADS_PER_COMBINATION = 2
+# The last slot of each combination is the conversation written by hand rather
+# than assembled (task 39.5): five industries times three languages, fifteen of
+# them. It is the last slot because the ones before it are spoken for -- the
+# documents, the ERP buyers, the enquiries -- and this one is the leftover.
+SHOWCASE_SLOT = ORDINARY_PER_COMBINATION - 1
+# And dated inside the last week rather than across the month. The list opens
+# newest first, and these are the ones somebody is meant to open.
+SHOWCASE_DAYS = 7
 # Share of customers who also wrote once before, days earlier. A list in which
 # every customer has exactly one conversation reads as a list somebody generated.
 RETURNING_SHARE = 0.3
@@ -167,6 +180,7 @@ def plan(
     """
     customers = []
     buyers = iter(retail or [])
+    showcases = seed_showcase.load()
     for bot_index, bot_id in enumerate(BOTS):
         bot = get_bot(bot_id)
         for language in seed_lines.LANGUAGES:
@@ -179,13 +193,14 @@ def plan(
                     bot_id=bot_id,
                 )
                 account = next(buyers, None) if bot_id == "retail" and i < DEALS_PER_COMBINATION else None
+                showcase = i == SHOWCASE_SLOT
                 if account is not None:
                     # A buyer writes after their newest order, not on a day drawn
                     # at random: the orders they are read are the ERP's as of now.
                     customer.name = account.contact
                     latest = _after(account.latest, now, rng)
                 else:
-                    latest = _moment(now, rng, days_ago=rng.randrange(DAYS))
+                    latest = _moment(now, rng, days_ago=rng.randrange(SHOWCASE_DAYS if showcase else DAYS))
                 if rng.random() < RETURNING_SHARE:
                     earlier = latest - rng.randint(2, 9) * 86400
                     if earlier > now - DAYS * 86400:
@@ -194,6 +209,8 @@ def plan(
                 deal = _DEALS.get(bot_id)
                 if account is not None:
                     exchanges = _retail_orders(bot, customer, account)
+                elif showcase:
+                    exchanges = _showcase(bot, customer, showcases)
                 elif filer is not None and deal is not None and i < DEALS_PER_COMBINATION:
                     exchanges = deal(bot, customer, rng, filer, leads, latest)
                 elif bot_id == "retail" and retail is not None:
@@ -211,7 +228,9 @@ def plan(
                         exchanges = _retail_ordinary(bot, customer, rng)
                 else:
                     exchanges = _ordinary(bot, customer, rng, topics=rng.choice((1, 2)))
-                customer.conversations.append(_conversation(customer, latest, rng, exchanges))
+                # A showcase writes its own last line; the generic thank-you the
+                # template conversations close on would talk over it.
+                customer.conversations.append(_conversation(customer, latest, rng, exchanges, closing=not showcase))
                 customers.append(customer)
     return customers
 
@@ -229,7 +248,9 @@ def _moment(now: float, rng: random.Random, *, days_ago: int) -> float:
     return at if at < now - QUIET_SECONDS else at - 86400
 
 
-def _conversation(customer: Customer, start: float, rng: random.Random, exchanges: list[Exchange]) -> Conversation:
+def _conversation(
+    customer: Customer, start: float, rng: random.Random, exchanges: list[Exchange], *, closing: bool = True
+) -> Conversation:
     bot = get_bot(customer.bot_id)
     model = bot.model or settings.anthropic_model
     conversation = Conversation(conversation_id=audit.new_conversation_id(), bot_id=customer.bot_id)
@@ -263,9 +284,9 @@ def _conversation(customer: Customer, start: float, rng: random.Random, exchange
 
     at = start
     rows.append(Row("message", at, {"role": "assistant", "content": f"{bot.disclaimer.en}\n\n{GREETING_SUFFIX_EN}"}))
-    closing = _from_topic(bot, rng.choice(seed_lines.THANKS[customer.language]))
+    thanks = [_from_topic(bot, rng.choice(seed_lines.THANKS[customer.language]))] if closing else []
     history = 0
-    for exchange in [*exchanges, closing]:
+    for exchange in [*exchanges, *thanks]:
         at += rng.uniform(15, 120)
         rows.append(Row("message", at, {"role": "user", "content": exchange.ask}))
         history += len(exchange.ask) // 2 + 20
@@ -756,6 +777,54 @@ _DEALS = {
     "saas": _saas_deal,
     "realestate": _realestate_deal,
 }
+
+
+# --- the fifteen written by hand (task 39.5) ----------------------------------
+
+
+def _showcase(bot, customer: Customer, showcases: dict) -> list[Exchange]:
+    """The conversation written for this industry in this language.
+
+    See `seed_showcase.py` for what is written there and what is not. The short
+    of it: the lines are written, the tool outputs are not, and a tool that has
+    stopped answering the way the written reply says it does stops the run.
+    """
+    key = (customer.bot_id, customer.language)
+    if key not in showcases:
+        raise RuntimeError(
+            f"no showcase conversation written for {key}: {seed_showcase.SHOWCASE_FILE.name}"
+            " needs one for every industry in every language"
+        )
+    return [_showcase_turn(bot, turn) for turn in showcases[key].turns]
+
+
+def _showcase_turn(bot, turn: seed_showcase.Turn) -> Exchange:
+    if not turn.tool:
+        return Exchange(turn.ask, [], lambda outputs: turn.reply)
+    if turn.tool == seed_showcase.HANDOVER:
+        # The one tool a showcase names without calling it. Calling it would set
+        # the takeover flag on a customer and draw a span on the live feed, and
+        # batch 07 leaves both of those alone. The card is the constant the live
+        # tool hands back, so what the console shows is what it would have shown;
+        # the flag it would have set is simply not set.
+        output = human_tools.HANDED_OVER
+    else:
+        output = _tool_output(bot, turn.tool, turn.tool_input)
+        missing = [wanted for wanted in turn.expects if wanted not in output]
+        if missing:
+            # The written reply quotes this output. A tool that has stopped
+            # returning what it quotes leaves a reply that is simply untrue,
+            # sitting on the console all day -- the same reason an unreachable
+            # ERP stops the run rather than filing a card that says so.
+            raise RuntimeError(
+                f"{turn.tool} no longer answers with {', '.join(repr(m) for m in missing)}, so the"
+                f" written {bot.id} reply would quote something that is not there: {output[:200]}"
+            )
+    return Exchange(
+        turn.ask,
+        [Step(turn.tool, turn.tool_input, lambda at: output)],
+        lambda outputs: turn.reply,
+    )
 
 
 # --- writing it ---------------------------------------------------------------

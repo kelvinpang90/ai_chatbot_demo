@@ -1,0 +1,493 @@
+{
+  "_README": [
+    "The fifteen conversations worth opening (task 39.5). One per industry per language.",
+    "Loaded and checked by app/tasks/seed_showcase.py; see that module for the rules.",
+    "",
+    "A turn is what the customer said and what the bot said back. Where a turn names a",
+    "tool, the output on the console card is NOT written here -- the seed calls the real",
+    "tool and files what it answers today. `expects` lists the strings the reply leans on,",
+    "and the seed refuses to file the batch if the tool stops returning them.",
+    "",
+    "Every RM figure in a reply has to come from the bot's own context data, from a tool",
+    "output, or from what the customer themselves said. The few the bot legitimately works",
+    "out -- a deposit, a monthly repayment, breakfast for four -- are listed in `derived`,",
+    "which is the whole list of numbers nobody checked against the back office.",
+    "",
+    "There is no greeting and no sign-off to write: the seed opens every conversation with",
+    "the bot's own disclaimer, and a showcase writes its own last line rather than taking",
+    "the generic thank-you the template conversations end on."
+  ],
+  "conversations": [
+    {
+      "bot": "retail",
+      "language": "zh",
+      "note": "B2B prospect: month-end terms, shipping, COD, returns -- leaves without buying, which is what most of them do.",
+      "turns": [
+        {
+          "ask": "你好，我们公司想拿一批货，可以开月结吗？",
+          "reply": "可以的，*商家账户（trade account）是 30 天月结*。所有报价都已经含 SST，账单上的数字就是报价的数字，不会到时候再加一笔。\n\n您这边要的是什么型号、大概多少数量？我帮您查一下现货和价钱。"
+        },
+        {
+          "ask": "先不急，我想问下送到槟城要几天？",
+          "reply": "西马境内标准配送是 *2-4 个工作日*，槟城在这个范围内。东马（沙巴、砂拉越）要 *4-7 个工作日*。"
+        },
+        {
+          "ask": "如果我们先试单，可以货到付款吗",
+          "reply": "货到付款只开放给 *巴生谷范围内、金额 RM 500 以下* 的订单，槟城这边暂时不行。\n\n试单的话，先线上付款，或者直接用月结账户走 30 天，两种都可以。"
+        },
+        {
+          "ask": "万一型号不合用呢？",
+          "reply": "收货后 *7 天内*，商品没用过、原包装还在，就可以退，退款 *5-7 个工作日* 处理完。\n\n不过与其退来退去，您把要的规格发我，我先帮您对一遍再下单比较省事。"
+        },
+        {
+          "ask": "好，我跟老板商量一下再回你",
+          "reply": "没问题。我们客服时间是 *周一到周六 9am-6pm*，不过这个 WhatsApp 您随时留言都行，我看到就回。\n\n要报价单的话跟我说一声，型号和数量给我，我整理好发给您。"
+        }
+      ]
+    },
+    {
+      "bot": "retail",
+      "language": "en",
+      "note": "The guardrail conversation: an order placed on somebody else's number. The bot says what it cannot see, refuses to look it up by company name, and hands over. This is the one that answers 'and when it cannot cope?'.",
+      "turns": [
+        {
+          "ask": "Hi, our office ordered 3 kettles from you last month. One of them arrived dented and we only just unboxed it.",
+          "reply": "Sorry about that one. Two things I should be straight about before we go further:\n\n• Returns run *7 days from delivery*, unused and in the original packaging, with refunds processed *5-7 business days* after that. A month on, a damaged unit is a conversation rather than a form.\n• I can only see what sits under the number you are messaging from.\n\nWas the order placed from this number?"
+        },
+        {
+          "ask": "No, our purchasing exec placed it on hers. Can you just pull it up by our company name?",
+          "reply": "I can't, and I'd rather tell you that than guess. Orders are matched to the number they were placed from — a company name given in the chat won't find anybody, and the last thing you need is me opening the wrong order.\n\nTwo ways forward: your colleague messages us from the number she ordered on and I can pull it up in seconds, or I hand you to someone who can look it up from their side now."
+        },
+        {
+          "ask": "She's on leave this week. Just get me a person please.",
+          "tool": "request_human_help",
+          "tool_input": {
+            "reason": "Office ordered 3 kettles about a month ago on a colleague's number; one arrived dented, unboxed only now. Wants it found by company name, which I can't match from this number, and the colleague is on leave. Past the 7-day return window, so this is a damage claim someone has to decide on."
+          },
+          "reply": "Of course — I'm passing you to a colleague who can open the order from their side. They'll take it from here."
+        }
+      ]
+    },
+    {
+      "bot": "retail",
+      "language": "ms",
+      "note": "East Malaysia delivery, COD refused honestly, return window, support hours. All policy, no tool -- the plain case.",
+      "turns": [
+        {
+          "ask": "Hi, kalau hantar ke Kota Kinabalu berapa lama ya?",
+          "reply": "Untuk Sabah dan Sarawak, penghantaran standard ambil *4-7 hari bekerja*. Kalau di Semenanjung, *2-4 hari bekerja*."
+        },
+        {
+          "ask": "Boleh COD tak? Saya tak berapa selesa bayar dulu sebab tak pernah beli sini",
+          "reply": "Faham. Tapi COD kami hanya untuk *kawasan Klang Valley dan pesanan bawah RM 500*, jadi untuk KK memang kena bayar dahulu.\n\nYang mungkin melegakan sikit: barang boleh dipulangkan dalam *7 hari* selepas terima, asalkan belum diguna dan kotak asal masih ada."
+        },
+        {
+          "ask": "Kalau pulangkan, duit balik bila?",
+          "reply": "Bayaran balik diproses dalam *5-7 hari bekerja* selepas barang sampai semula ke kami dan disemak."
+        },
+        {
+          "ask": "Ok. Korang buka sampai pukul berapa? Saya nak call dulu sebelum order",
+          "reply": "Talian kami dijawab *9 pagi hingga 6 petang, Isnin hingga Sabtu*.\n\nTapi kalau lagi senang, terus tanya kat sini — saya boleh semak stok dan harga, dan kalau perlu orang, saya sambungkan waktu pejabat."
+        },
+        {
+          "ask": "Baik, nanti saya fikir dulu",
+          "reply": "Tiada masalah 😊 Bila dah ada model dan kuantiti, mesej je nombor ni — saya semak stok cawangan mana ada dan bagi harga terus."
+        }
+      ]
+    },
+    {
+      "bot": "food",
+      "language": "zh",
+      "note": "Undecided customer, cart built, mind changed and repriced, then an allergy that the kitchen has to agree to -- handed to a person rather than answered.",
+      "turns": [
+        {
+          "ask": "你们有什么招牌的？两个人吃",
+          "reply": "两位的话，点得最多的是：\n• *Nasi Lemak Special* RM 12.90 — 椰浆饭配炸鸡、蛋、江鱼仔、花生\n• *Curry Laksa* RM 13.90 — 咖喱叻沙，鸡肉和豆卜\n• *Char Kway Teow* RM 13.50 — 炒粿条，虾、血蛤、蛋\n\n饮料配 *Teh Tarik* RM 4.50 或 *Iced Milo* RM 5.00 就差不多了。"
+        },
+        {
+          "ask": "那给我一份椰浆饭、一份叻沙，加两杯拉茶",
+          "tool": "food_update_cart",
+          "tool_input": {
+            "items": [
+              {"item_id": "F01", "quantity": 1},
+              {"item_id": "F07", "quantity": 1},
+              {"item_id": "F08", "quantity": 2}
+            ]
+          },
+          "expects": ["Nasi Lemak Special", "Curry Laksa", "Teh Tarik", "RM 35.80", "RM 40.80"],
+          "reply": "好的，购物车：\n• 1 x Nasi Lemak Special — RM 12.90\n• 1 x Curry Laksa — RM 13.90\n• 2 x Teh Tarik — RM 9.00\n\n小计 RM 35.80，运费 RM 5.00，*合计 RM 40.80*。\n\n地址给我一下，我就帮您送厨房。"
+        },
+        {
+          "ask": "等等，叻沙换成炒粿条",
+          "tool": "food_update_cart",
+          "tool_input": {
+            "items": [
+              {"item_id": "F01", "quantity": 1},
+              {"item_id": "F04", "quantity": 1},
+              {"item_id": "F08", "quantity": 2}
+            ]
+          },
+          "expects": ["Char Kway Teow", "RM 35.40", "RM 40.40"],
+          "reply": "换好了：\n• 1 x Nasi Lemak Special — RM 12.90\n• 1 x Char Kway Teow — RM 13.50\n• 2 x Teh Tarik — RM 9.00\n\n小计 RM 35.40，运费 RM 5.00，*合计 RM 40.40*。"
+        },
+        {
+          "ask": "多久能到？",
+          "reply": "一般 *15 分钟左右*：厨房几分钟，骑手路上大概 10 分钟。\n\n我们送 *8 公里范围内*，运费统一 *RM 5*。"
+        },
+        {
+          "ask": "粿条可以不要血蛤吗？我太太对贝类过敏",
+          "tool": "request_human_help",
+          "tool_input": {
+            "reason": "Cart is 1 Nasi Lemak Special, 1 Char Kway Teow, 2 Teh Tarik, RM 40.40 with delivery, not placed yet. Wants the Char Kway Teow without cockles -- wife has a shellfish allergy. That is the kitchen's call, and an allergy is not one to guess at."
+          },
+          "reply": "过敏这件事我不敢自己拍板，得厨房确认才算数。我帮您转给同事，他会跟您确认粿条能不能去掉血蛤，再帮您落单。"
+        }
+      ]
+    },
+    {
+      "bot": "food",
+      "language": "en",
+      "note": "Office catering: the RM 300 / 24-hour rule, a twenty-head cart priced by the tool, delivery radius, and a customer who leaves without confirming.",
+      "turns": [
+        {
+          "ask": "Hi! Do you do office lunches? We're about 20 people, next Tuesday.",
+          "reply": "We do. For anything above *RM 300* we just need *24 hours notice*, so next Tuesday is comfortable.\n\nTwenty people is usually a spread — *Nasi Lemak Special* RM 12.90, *Chicken Rendang Rice* RM 14.50, *Mee Goreng Mamak* RM 10.90, plus *Teh Tarik* RM 4.50 to go round. Tell me roughly the split and I'll price it properly."
+        },
+        {
+          "ask": "Let's say 10 nasi lemak, 6 rendang rice and 4 mee goreng, plus 20 teh tarik.",
+          "tool": "food_update_cart",
+          "tool_input": {
+            "items": [
+              {"item_id": "F01", "quantity": 10},
+              {"item_id": "F02", "quantity": 6},
+              {"item_id": "F03", "quantity": 4},
+              {"item_id": "F08", "quantity": 20}
+            ]
+          },
+          "expects": ["RM 129.00", "RM 87.00", "RM 43.60", "RM 90.00", "RM 349.60", "RM 354.60"],
+          "reply": "Priced up:\n• 10 x Nasi Lemak Special — RM 129.00\n• 6 x Chicken Rendang Rice — RM 87.00\n• 4 x Mee Goreng Mamak — RM 43.60\n• 20 x Teh Tarik — RM 90.00\n\nSubtotal RM 349.60, delivery RM 5.00, *total RM 354.60*.\n\nThat's over RM 300, so confirm today and Tuesday is well inside the notice period."
+        },
+        {
+          "ask": "We're in Bangsar South. Are we in your delivery area?",
+          "reply": "We deliver within *8 km of our Kuala Lumpur outlet*, flat *RM 5* whatever the distance inside that.\n\nSend me the full office address with the confirmation and I'll make sure it goes through before the kitchen starts."
+        },
+        {
+          "ask": "Will 20 teh tarik still be hot? Or should we do something else for drinks.",
+          "reply": "Teh Tarik travels fine for the *10 minutes or so* the ride takes, though it won't be piping.\n\nIf you'd rather play safe, *Iced Milo* RM 5.00 is the cold option and it's 50 sen more each — on 20 cups that's RM 10 difference.",
+          "derived": ["RM 10"]
+        },
+        {
+          "ask": "Let me check the headcount and come back tomorrow morning.",
+          "reply": "No rush — tomorrow morning still clears the *24 hours* for a Tuesday delivery.\n\nI'll leave the cart as it stands, so all I need from you is the final numbers and the address."
+        }
+      ]
+    },
+    {
+      "bot": "food",
+      "language": "ms",
+      "note": "Asks for a dish the restaurant does not make -- the bot says so and offers the nearest thing on the menu instead of inventing it.",
+      "turns": [
+        {
+          "ask": "Ada nasi kandar tak?",
+          "reply": "Maaf, nasi kandar tiada dalam menu kami.\n\nYang paling hampir: *Chicken Rendang Rice* RM 14.50 — rendang ayam masak perlahan dengan nasi putih. Atau *Nasi Lemak Special* RM 12.90 kalau nak yang klasik."
+        },
+        {
+          "ask": "Ok rendang tu. Dua bekas, tambah roti canai satu",
+          "tool": "food_update_cart",
+          "tool_input": {
+            "items": [
+              {"item_id": "F02", "quantity": 2},
+              {"item_id": "F05", "quantity": 1}
+            ]
+          },
+          "expects": ["Chicken Rendang Rice", "Roti Canai", "RM 29.00", "RM 35.00", "RM 40.00"],
+          "reply": "Dah masuk troli:\n• 2 x Chicken Rendang Rice — RM 29.00\n• 1 x Roti Canai (2pcs) — RM 6.00\n\nSubtotal RM 35.00, penghantaran RM 5.00, *jumlah RM 40.00*.\n\nBoleh bagi alamat? Saya terus hantar ke dapur."
+        },
+        {
+          "ask": "Roti canai tu ada kuah dhal kan?",
+          "reply": "Ya — *Roti Canai (2pcs)* datang dengan kuah dhal. 👍"
+        },
+        {
+          "ask": "Berapa lama nak sampai kalau order sekarang?",
+          "reply": "Lebih kurang *15 minit*: dapur ambil beberapa minit, tunggangan dalam 10 minit."
+        },
+        {
+          "ask": "Ok, tunggu kejap. Nak tanya boss dulu kot dia nak tambah.",
+          "reply": "Baik, troli saya simpan dulu.\n\nKalau boss nak tambah apa-apa, sebut je — saya kira semula termasuk penghantaran dulu sebelum hantar ke dapur."
+        }
+      ]
+    },
+    {
+      "bot": "hotel",
+      "language": "zh",
+      "note": "Family of four: the search returns exactly the two rooms that hold them, then breakfast, transfer and check-in from the FAQ. Leaves to agree dates with the wife, which is what the tool needs before it can book.",
+      "turns": [
+        {
+          "ask": "我们一家四口想去兰卡威，有什么房型？两大两小",
+          "tool": "hotel_search_rooms",
+          "tool_input": {"location": "Langkawi", "guests": 4},
+          "expects": ["Family Suite", "480", "Beachfront Villa", "950"],
+          "reply": "兰卡威能住满 4 位的有两间：\n• *Family Suite* RM 480/晚 — 两间卧房，含儿童俱乐部\n• *Beachfront Villa* RM 950/晚 — 私人泳池，直通沙滩\n\n带小孩的话 Family Suite 性价比高，Villa 胜在私密和泳池。"
+        },
+        {
+          "ask": "Family Suite 有包早餐吗？",
+          "reply": "Family Suite 不含早餐。早餐是 *Sea View Suite 以上的房型* 才包含，其他房型可以加购，*每人每天 RM 45*。\n\n四位加一天就是 RM 180，您可以自己算算值不值。",
+          "derived": ["RM 180"]
+        },
+        {
+          "ask": "机场接送有吗？带小孩打车麻烦",
+          "reply": "有的，*兰卡威机场（LGK）和槟城机场（PEN）* 都有接送，*RM 80 单程*。订房的时候跟我说一声，我一起备注上去。"
+        },
+        {
+          "ask": "几点可以 check in？我们中午就到了",
+          "reply": "入住是 *下午 3 点起*，退房 *中午 12 点前*。\n\n中午到没关系，行李可以先寄放在前台，提早入住看当天房况安排。"
+        },
+        {
+          "ask": "好，我跟太太商量下日期再来订",
+          "reply": "没问题 😊\n\n定好之后把 *确切的入住和退房日期* 发我（几号到几号），我当场报总价，确认了就直接帮您订下来。"
+        }
+      ]
+    },
+    {
+      "bot": "hotel",
+      "language": "en",
+      "note": "Two searches in one conversation -- a price ceiling in Langkawi, then Penang for the second leg. Shows the tool being used twice with different arguments rather than once as decoration.",
+      "turns": [
+        {
+          "ask": "Hi, two of us for Langkawi. Trying to stay under RM 350 a night — what's there?",
+          "tool": "hotel_search_rooms",
+          "tool_input": {"location": "Langkawi", "guests": 2, "max_price_rm": 350},
+          "expects": ["Standard Twin Room", "220", "Deluxe Garden Room", "320"],
+          "reply": "Under RM 350 in Langkawi, for two:\n• *Standard Twin Room* RM 220/night — twin beds, free WiFi\n• *Deluxe Garden Room* RM 320/night — garden view, king bed, free WiFi\n\nBoth sleep two. The Deluxe is the one with the king bed if that matters."
+        },
+        {
+          "ask": "Is breakfast in either of those?",
+          "reply": "Neither, I'm afraid — breakfast is included from the *Sea View Suite* upwards.\n\nOn either of those two you can add it for *RM 45 per person per day*, so RM 90 a day for the pair of you.",
+          "derived": ["RM 90"]
+        },
+        {
+          "ask": "Noted. What about Penang? We might do two nights there afterwards.",
+          "tool": "hotel_search_rooms",
+          "tool_input": {"location": "Penang", "guests": 2},
+          "expects": ["Superior City Room", "260", "Heritage Suite", "420", "Penthouse", "890"],
+          "reply": "Penang, for two:\n• *Superior City Room* RM 260/night — city view, queen bed\n• *Heritage Suite* RM 420/night — Georgetown heritage decor, *breakfast included*\n• *Penthouse* RM 890/night — rooftop terrace, panoramic view\n\nThe Heritage Suite is the one that has breakfast built in."
+        },
+        {
+          "ask": "And getting in from the airports?",
+          "reply": "Transfers run from *Langkawi (LGK)* and *Penang (PEN)*, *RM 80 per way* at either property. Same rate both ends."
+        },
+        {
+          "ask": "Great. I'll come back once the flights are booked.",
+          "reply": "Please do. I'll need the *exact check-in and check-out dates* to hold anything — once you have them I can confirm the nights and the total on the spot."
+        }
+      ]
+    },
+    {
+      "bot": "hotel",
+      "language": "ms",
+      "note": "Honeymoon enquiry, the full Langkawi list, then the two FAQ questions. Ends the way a real one does: dates not fixed yet.",
+      "turns": [
+        {
+          "ask": "Hai, saya nak bilik untuk honeymoon di Langkawi. Dua orang je.",
+          "tool": "hotel_search_rooms",
+          "tool_input": {"location": "Langkawi", "guests": 2},
+          "expects": ["Standard Twin Room", "220", "Deluxe Garden Room", "320", "Sea View Suite", "580", "Beachfront Villa", "950"],
+          "reply": "Tahniah! 🎉 Untuk dua orang di Langkawi:\n• *Standard Twin Room* RM 220 semalam\n• *Deluxe Garden Room* RM 320 semalam — pemandangan taman, katil king\n• *Family Suite* RM 480 semalam\n• *Sea View Suite* RM 580 semalam — balkoni, pemandangan laut, sarapan termasuk\n• *Beachfront Villa* RM 950 semalam — kolam persendirian, terus ke pantai\n\nUntuk honeymoon, yang paling kerap dipilih *Deluxe Garden Room* (katil king) atau *Sea View Suite*."
+        },
+        {
+          "ask": "Sea View Suite tu sarapan dah termasuk ke?",
+          "reply": "Ya, sarapan termasuk untuk *Sea View Suite ke atas*.\n\nBilik lain boleh tambah sarapan *RM 45 seorang sehari*."
+        },
+        {
+          "ask": "Check-in pukul berapa? Flight kami sampai pagi.",
+          "reply": "Check-in *dari 3:00 petang*, check-out *sebelum 12:00 tengah hari*.\n\nSampai pagi tak jadi masalah — beg boleh simpan di kaunter dulu. Check-in awal bergantung pada kekosongan hari tu."
+        },
+        {
+          "ask": "Ada transfer dari airport Langkawi?",
+          "reply": "Ada — dari *Langkawi International Airport (LGK)*, *RM 80 sehala*.\n\nBeritahu masa tempahan, saya masukkan sekali dengan bilik."
+        },
+        {
+          "ask": "Ok. Tarikh kami belum fix lagi, nanti saya bagi.",
+          "reply": "Baik. Bila dah ada *tarikh masuk dan tarikh keluar* yang tepat, hantar kat sini — saya kira bilangan malam dan jumlah keseluruhan terus, dan tempah kalau okay."
+        }
+      ]
+    },
+    {
+      "bot": "realestate",
+      "language": "zh",
+      "note": "Budget shortlist, deposit, an indicative mortgage the bot is allowed to work out -- and then the beat worth the whole file: asked to confirm a viewing already booked, it says plainly it cannot see one.",
+      "turns": [
+        {
+          "ask": "你好，预算 60 万左右，想在吉隆坡买个自住的，有什么推荐？",
+          "reply": "60 万上下我们手上有三间：\n• *PROP-206* — Cheras 公寓，900 sqft，3 房，*RM 450,000*\n• *PROP-204* — KLCC studio，550 sqft，1 房，*RM 480,000*\n• *PROP-202* — Bangsar South 公寓，950 sqft，2 房，*RM 620,000*\n\n自住又要房间数，PROP-206 最划算；看重地段就看 PROP-204 或 PROP-202。"
+        },
+        {
+          "ask": "PROP-202 首付大概要多少？",
+          "reply": "一般是房价的 *10%* 左右，PROP-202 就是 *RM 62,000*。\n\n实际看银行批的贷款成数，另外律师费和印花税要另外预留，这部分让经纪给您一个比较准的数。",
+          "derived": ["RM 62,000"]
+        },
+        {
+          "ask": "贷款的话每个月大概供多少？",
+          "reply": "我粗略算给您，*仅供参考，不是银行的批准*：\n\nRM 620,000 借九成 = *RM 558,000*，35 年、年利率 4%，月供大约 *RM 2,470*。\n\n利率和年限差一点，数字就差很多，最后以银行的 offer letter 为准。",
+          "derived": ["RM 558,000", "RM 2,470"]
+        },
+        {
+          "ask": "我上个星期已经约了看 PROP-202，可以帮我确认几点吗？",
+          "reply": "这个我这边看不到——我没有预约系统可以查已经约好的看房，硬要我说一个时间就是编的。\n\n两个办法：我请负责的经纪打给您确认，或者您跟我说一个新的日期和时段，我重新帮您登记一次。"
+        },
+        {
+          "ask": "那麻烦经纪打给我就好。对了，我太太是新加坡人，外国人可以买吗？",
+          "reply": "可以的——外国人在大部分州属可以买 *RM 1,000,000 以上* 的房产，各州细则不一样。\n\n不过 PROP-202 是 RM 620,000，在这个门槛以下，所以产权放谁名下要先弄清楚。这个我不敢替您拍板，经纪会跟您一起确认。"
+        }
+      ]
+    },
+    {
+      "bot": "realestate",
+      "language": "en",
+      "note": "A foreign buyer at the top of the list. The FAQ's RM 1,000,000 threshold is applied to a listing that fails it -- the bot rules its own listing out rather than sell it.",
+      "turns": [
+        {
+          "ask": "Hi, I'm based in Singapore and looking to buy in KL. What do you have at the upper end?",
+          "reply": "Two at the top of the list right now:\n• *PROP-205* — Semi-D in Subang Jaya, 2,600 sqft, 5 bedrooms, *RM 1,650,000*\n• *PROP-208* — Bungalow in Damansara Heights, 4,200 sqft, 6 bedrooms, *RM 3,200,000*\n\nWorth saying up front: as a foreign buyer you can generally buy *above RM 1,000,000* in most states, subject to state rules — both of these clear that."
+        },
+        {
+          "ask": "Good to know. What about PROP-203, the PJ terrace? I saw it listed.",
+          "reply": "*PROP-203* is a terrace house in Petaling Jaya, 1,800 sqft, 4 bedrooms, *RM 980,000*, and it is available.\n\nBut it sits *below the RM 1,000,000* line, so as a foreign buyer it is generally not open to you. The rules are state-specific — your lawyer should confirm that rather than take my word for it."
+        },
+        {
+          "ask": "Understood. On PROP-205, what deposit would I be looking at?",
+          "reply": "Typically *10%* of the price — on RM 1,650,000 that is *RM 165,000*.\n\nThe real figure depends on the loan margin your bank approves, and that can be different for a non-resident buyer, so treat 10% as the floor rather than the number.",
+          "derived": ["RM 165,000"]
+        },
+        {
+          "ask": "And roughly what would the monthly repayment look like?",
+          "reply": "Indicative only, *not a bank commitment*:\n\nRM 1,650,000 at 80% financing is *RM 1,320,000*, over 30 years at 4.2% — roughly *RM 6,455 a month*.\n\nMove the margin, the rate or the tenure and that shifts a long way. The offer letter is the number that counts.",
+          "derived": ["RM 1,320,000", "RM 6,455"]
+        },
+        {
+          "ask": "That's helpful. I'm in KL the week after next — can I see both?",
+          "reply": "Yes. Send me your name, which property and a date for each — one line each is plenty — and I'll get them registered and the agent will call to confirm the times."
+        }
+      ]
+    },
+    {
+      "bot": "realestate",
+      "language": "ms",
+      "note": "Asks about PROP-207, which is Under offer. The bot reads the status off the listing instead of treating everything on the list as for sale.",
+      "turns": [
+        {
+          "ask": "Salam, saya cari kondo 3 bilik, budget sekitar RM 500k. Ada tak?",
+          "reply": "Ada — *PROP-206*, kondominium di Cheras, *900 sqft*, *3 bilik*, *RM 450,000*, status *Available*. Itu sahaja unit 3-bilik dalam julat harga tu sekarang.\n\nKalau boleh naik sikit: *PROP-202* di Bangsar South, 950 sqft, 2 bilik, *RM 620,000* — tapi dua bilik je."
+        },
+        {
+          "ask": "Yang Ampang tu macam mana? PROP-207 kalau tak silap, lagi murah.",
+          "reply": "*PROP-207* — apartment di Ampang, 800 sqft, 2 bilik, *RM 380,000*. Betul, lagi murah.\n\nTapi statusnya *Under offer*: ada pembeli lain yang dah buat tawaran, jadi saya tak boleh janji ia masih terbuka. Ejen boleh semak status terkini dengan pemilik kalau anda nak."
+        },
+        {
+          "ask": "Ok, fokus PROP-206 je la. Deposit berapa?",
+          "reply": "Biasanya *10%* daripada harga — untuk RM 450,000, lebih kurang *RM 45,000*.\n\nAngka sebenar bergantung pada margin pinjaman yang bank luluskan.",
+          "derived": ["RM 45,000"]
+        },
+        {
+          "ask": "Ansuran bulanan lebih kurang berapa?",
+          "reply": "Anggaran kasar sahaja, *bukan kelulusan bank*:\n\nRM 450,000 dengan pinjaman 90% = *RM 405,000*, tempoh 35 tahun, kadar 4% setahun — lebih kurang *RM 1,793 sebulan*.\n\nSurat tawaran bank yang muktamad.",
+          "derived": ["RM 405,000", "RM 1,793"]
+        },
+        {
+          "ask": "Baik. Saya nak tengok PROP-206 hujung minggu ni boleh?",
+          "reply": "Boleh. Bagi saya *nama penuh, tarikh dan waktu yang sesuai* — contoh: Sabtu petang — nanti saya daftarkan dan ejen akan telefon untuk sahkan masa."
+        }
+      ]
+    },
+    {
+      "bot": "saas",
+      "language": "zh",
+      "note": "The known issue that is actually a known issue: Slack's token expiring at 90 days. Fix given from the tool, it works, then a plan question -- and a billing question the bot admits it cannot see.",
+      "turns": [
+        {
+          "ask": "我们的 Slack 通知突然不进来了，昨天还好好的",
+          "tool": "saas_search_known_issues",
+          "tool_input": {"query": "Slack notifications not syncing"},
+          "expects": ["Reconnect", "90 days", "Settings > Notifications", "notification permissions"],
+          "reply": "查到了，这是一个已知问题：*Slack 集成的授权令牌每 90 天过期一次*，一过期就停止同步，前一天还正常完全对得上。\n\n修复：\n1. 进 *Settings > Integrations > Slack*\n2. 点 *Reconnect*\n\n这一步会刷新令牌，一般马上就恢复。"
+        },
+        {
+          "ask": "好了！那站内的通知也会一起回来吗",
+          "reply": "走 Slack 那条链路的会一起回来。\n\n如果站内通知也不见，那是另一个已知问题，两个地方要检查：*Settings > Notifications* 里有没有开启，以及浏览器有没有允许我们域名的通知权限。"
+        },
+        {
+          "ask": "明白。另外我们现在 12 个人，Team 方案够用吗？",
+          "reply": "够，*Team* 是 *RM 49/月*、*20 个席位*，项目数不限，含集成和分析，12 个人还有空间。\n\n如果之后要 SSO 或者更细的权限控制，那就要 *Business*：*RM 149/月*、*100 个席位*。"
+        },
+        {
+          "ask": "SSO 我们明年才会上。中途升级的话，这个月的钱怎么算？",
+          "reply": "方案随时可以升，这一点没问题。\n\n但按比例怎么退怎么补，我这边查不到——账单不是我能看的东西，我不想给您一个听起来很确定的错数字。要的话我开一张工单，让账务同事给您一个准确的答复。"
+        },
+        {
+          "ask": "先不用，到时候真的要升再说",
+          "reply": "好的。真要升的时候在这里说一声，我帮您开单，账务会直接联系您。👍"
+        }
+      ]
+    },
+    {
+      "bot": "saas",
+      "language": "en",
+      "note": "Dashboard slowdown: the known fix, the customer actually does it, it works, then seats. No ticket, because nothing needed one -- which is the honest common case.",
+      "turns": [
+        {
+          "ask": "Our dashboard has got really sluggish this week — 10+ seconds to load.",
+          "tool": "saas_search_known_issues",
+          "tool_input": {"query": "dashboard loading slowly"},
+          "expects": ["1000+ tasks", "archiving completed projects", "performance mode"],
+          "reply": "That's a known one, and it has a shape: it turns up on workspaces carrying *1,000+ tasks*.\n\nTwo things, in order:\n1. *Archive completed projects* — that's the quick win.\n2. If it's still heavy after that, we can enable *performance mode (beta)* on your workspace.\n\nRoughly how many tasks are you carrying?"
+        },
+        {
+          "ask": "About 3,400 open tasks across 40 projects. Honestly half those projects finished months ago.",
+          "reply": "Then you're exactly the workspace that fix is written for.\n\nArchive the finished ones first and see where it lands — if it's still slow after that, say so and we'll look at turning performance mode on for you."
+        },
+        {
+          "ask": "Ok, archived 18 projects. It's noticeably better, maybe 3 seconds now.",
+          "reply": "Good — that's the fix doing its job rather than a coincidence.\n\nIf it creeps back as the project count grows, the same move applies, and performance mode is still there if you want it on top."
+        },
+        {
+          "ask": "While I have you — we're on Team and hiring 6 more people. Where does that leave us?",
+          "reply": "*Team* is *RM 49/month* for *20 seats*.\n\nIf those 6 take you past 20, the next step up is *Business* at *RM 149/month* for *100 seats*, which also brings SSO and advanced permissions. Under 20, nothing has to change."
+        },
+        {
+          "ask": "We'll be at 19. Cutting it fine but fine.",
+          "reply": "19 of 20 — you're covered.\n\nMessage here when the 20th hire is signed and we'll get the upgrade sorted before it blocks anyone's first day."
+        }
+      ]
+    },
+    {
+      "bot": "saas",
+      "language": "ms",
+      "note": "Login failure that turns out to be SSO on the customer's own side. The bot follows the known fix to the part it cannot do itself -- the workspace admin -- instead of opening a ticket for something nobody here can fix.",
+      "turns": [
+        {
+          "ask": "Saya tak boleh login, keluar 'invalid credentials' padahal password memang betul.",
+          "tool": "saas_search_known_issues",
+          "tool_input": {"query": "cannot log in invalid credentials error"},
+          "expects": ["Forgot Password", "SSO", "workspace admin"],
+          "reply": "Ini antara isu yang kami kenal. Dua langkah:\n1. Reset kata laluan melalui pautan *'Forgot Password'*.\n2. Kalau syarikat anda guna *SSO*, minta *admin workspace* sahkan akaun anda masih aktif.\n\nCuba yang pertama dulu — selalunya itu sahaja."
+        },
+        {
+          "ask": "Kami memang guna SSO. Jadi kena tanya admin la ya?",
+          "reply": "Ya. Dengan SSO, kata laluan di pihak kami bukan yang menentukan — akses datang dari sistem syarikat anda.\n\nMinta admin workspace semak akaun anda masih aktif di sana. Kalau dah aktif dan masih tak boleh masuk, baru masalahnya di pihak kami."
+        },
+        {
+          "ask": "Ok admin dah aktifkan semula. Dah boleh masuk. Terima kasih!",
+          "reply": "Bagus! 🎉\n\nKalau jadi lagi lepas ni, beritahu saya — kali kedua bermakna ada sesuatu yang lain, dan saya buka tiket supaya pasukan teknikal siasat betul-betul."
+        },
+        {
+          "ask": "Noted. Satu lagi — kami pelan Business sekarang, 100 seat. Kalau nak lebih macam mana?",
+          "reply": "Melebihi *100 seat* bermakna *Enterprise* — kontrak khusus, sokongan berdedikasi dan SLA, harga ikut perjanjian.\n\nAngka tu saya tak ada di sini. Kalau nak, saya buka tiket supaya pasukan jualan hubungi anda dengan harga sebenar."
+        },
+        {
+          "ask": "Belum lagi. Nanti bila dah dekat saya mesej.",
+          "reply": "Baik 👍 Bila dah dekat had tu, mesej kat sini — saya terus buka tiket untuk pasukan jualan."
+        }
+      ]
+    }
+  ]
+}
