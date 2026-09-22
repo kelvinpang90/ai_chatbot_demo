@@ -64,6 +64,21 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
        ⚠️ **`-f docker-compose.prod.yml` 不能省**（2026-09-13 的教训），`/opt/ai_chatbot/.env` 里有 `BACKEND_IMAGE` / `FRONTEND_IMAGE`，compose 自己会读
        ⚠️ **`{ ... }` 那对花括号也不能省**：写成 `cd X && grep … || echo … >> backend/.env` 的话，`cd` 万一失败，`||` 照样会触发，那一行就追加到**家目录下的** `backend/.env` 去了。整条都必须挂在 `cd` 成功之后
     3. 真机演剧本 4a，看表单弹不弹得出来
+
+  **2026-09-22 我在浏览器里实地走了一遍，第 1 步走不通——两个条件都满足了，Publish 还是被拦，而且它不说为什么**
+
+  - **路径**（记下来，因为默认停在错的地方）：`business.facebook.com` → 左栏 **Account tools › Flows** → **右上角 WABA 必须切到 `Acuven Technology Demo`**（默认是 `Test WABA (retired 2026-08-30)`，那上面 Flows 列表是空的、还挂着一条「要完成 verification」的横幅，很容易误判成 Flow 丢了）→ 点 **Book a viewing** → 右上角 **⚠ Publish**
+  - **Flow 本身是好的**：`Book a viewing` / `1066318999658447` / Draft / Updated 13 Sep 2026；Builder 报 **0 errors**；屏幕 id `BOOK_VIEWING` 和四个字段 `customer_name` / `listing_id` / `viewing_date` / `preferred_time` 与 `tools/realestate.py` 的 `SCREEN` / `FIELD_*` **逐字一致**
+  - **点 Publish 的结果**：弹出一个标题为 **「Before you can publish this flow:」的面板，底下的条件列表是空的**，状态仍是 Draft。点了两次，一样
+  - **两个前置条件都查了，都过了**：
+    - Business verification：Security Centre 显示 **`Verified`，Originally verified on Sep 15, 2026**（Acuven Technology Sdn Bhd）
+    - 消息质量：`+60 17-394 8123` **Connected**，Quality rating **High**
+  - ⚠️ **顺带纠正一条旧记录**：09-13 记的是「解锁条件二选一」，但 Meta 自己在 Flows 空状态页上的原文是 **「improve message quality *and* complete business verification」——是 and**。不过这次两个都满足了仍被拦，所以真正的门槛是第三个我们看不到的东西，或者这个面板本身是坏的
+  - **下一步建议走 Graph API 发布**，它会回一个具体错误码，而 UI 这个空面板什么都不说（token 在 VPS 的 .env 里，命令在那边读、不外传）：
+    ```
+    ssh -i "C:/Users/PC/.ssh/kelvin.pem" ubuntu@103.40.204.95 'TOKEN=$(sed -n "s/^WHATSAPP_ACCESS_TOKEN=//p" /opt/ai_chatbot/backend/.env | tr -d ""); curl -s -X POST "https://graph.facebook.com/v20.0/1066318999658447/publish" -H "Authorization: Bearer $TOKEN"'
+    ```
+    发布成功回 `{"success":true}`；失败会点名原因（缺 `whatsapp_business_management` 权限、还是账号层门槛）
   - **降级那条路不用拆**：ID 配上之后表单走原生，发不出去仍会自动接住退回聊天（任务 24 建的），两条路并存
 - [x] ~~**C. 语音转录选型拍板**~~——**2026-09-06 已定：走外部 API（OpenAI `/v1/audio/transcriptions`，默认 `whisper-1`）**，正是这一条当初建议的路子：先接外部 API 把戏跑通，转录做成抽象层，换实现只是换一个类。任务 36 已落地并真机验收。自托管 faster-whisper 没有被否掉，只是没有理由现在做——真要换，见任务 15 条目下记的那处残留（换类可以，换环境变量还不行）。以下是原文：
   ~~外部 API（准、快、多一个供应商）vs 自托管 faster-whisper（无外部依赖、CPU 上每条慢 3-5 秒、吃 VPS 内存）。阻塞任务 15。~~
