@@ -96,6 +96,18 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **到此为止，Meta 自己列出的解锁条件全都满足了，门还锁着**。已试过、确认无效的：① business verification（Sep 15 起 `Verified`）② 绑定付款方式。已确认不是问题的：号码质量 High、无任何违规通知
   - **剩下的唯一变量是「30 天内足够多的高质量对话」**，这个点不出来，只能靠真机真用。⚠️ **每晚的 seed 帮不上忙**——它写的是我们自己的审计库，不是真的 WhatsApp 对话；只有真正发到 / 发自 `+60 17-394 8123` 的消息才算数（本月 302 条全是客户先发起的 free-tier 客服消息，business-initiated 0/250）
   - **建议别再自己猜了**：一个「条件列表是空的」的账号层封锁，正是 Meta 客服该回答的问题。付款页右下角就有 **Get support** 入口
+
+  **2026-09-22 去 Meta 官网查了 `4233020`，查到的结论比猜的值钱**
+
+  - **`4233020` 官方没有文档**。[Flows 错误码表](https://developers.facebook.com/docs/whatsapp/flows/reference/error-codes/)只列顶层码，139000 底下的 subcode 一个都没写
+  - **139000 的官方条目和官方解法**（原文）：「Blocked By Integrity — An integrity issue was identified with your account, which prevents you from creating or publishing your Flow. **To get this issue resolved for your account, contact Support.**」——**官方给的唯一解法就是找客服**，不是改配置、不是等
+  - **一个有用的排除**：如果问题出在配置（没连 Meta App、没传签名公钥、endpoint 不可达、没订阅 Flows webhook、JSON 校验错），错误码会是 **139002** 而不是 139000。我们拿到的是 139000，**所以这确实是账号层的 integrity，不是我们哪里没配好**
+  - **官方 prerequisite 3 的原文是两条并列**（[Get started](https://developers.facebook.com/docs/whatsapp/flows/gettingstarted/)）：`Verify your business` + `Maintain a high message quality`。两条都要，印证了前面「是 and 不是二选一」
+  - **[官方社区有一条和我们一模一样的帖子](https://developers.facebook.com/community/threads/1664738854648216/)**（标题就是 "Error 139000 subcode 4233020 on verified business"），Meta 员工回了：
+    - 「There is a **UI bug**, per your screenshot, which we will look to fix.」——**那个「Before you can publish this flow:」面板是空的，是 Meta 自己的 bug，不是我们看漏了**。这一条可以彻底放心了
+    - 「achieving **high message quality** will enable you to publish and send Flows」
+  - ⚠️ **但那条帖子里 9 月 12 日有人追问，至今没人回**：他的号码质量是 **High/GREEN**、business 已验证、模板消息正常，Flows 照样被拦，他问「High/GREEN 到底算不算满足？是不是另有一套 Flows 的资格检查？要多少独立收件人／多长时间？messaging limit 要不要先从 250 涨到 2000？」——**和我们的处境一字不差**。所以「质量达标就能发」这句话，在 High/GREEN 这个档位上是存疑的
+  - **结论**：官方路径就是**提 support ticket**。同一条帖子里原楼主说开了三张工单、全是 AI 自动回复没解决，所以期望值放低；但这是文档明写的唯一解法，我们这边没有可做的动作了
   - **影响不变**：剧本 4a 继续走聊天降级（任务 24 已建好，会自动接住拒收）。代码侧没有任何事要做——`WHATSAPP_FLOW_ID` 等门开了再加，现在加了也只是让它每次都吃一个拒收
   - **降级那条路不用拆**：ID 配上之后表单走原生，发不出去仍会自动接住退回聊天（任务 24 建的），两条路并存
 - [x] ~~**C. 语音转录选型拍板**~~——**2026-09-06 已定：走外部 API（OpenAI `/v1/audio/transcriptions`，默认 `whisper-1`）**，正是这一条当初建议的路子：先接外部 API 把戏跑通，转录做成抽象层，换实现只是换一个类。任务 36 已落地并真机验收。自托管 faster-whisper 没有被否掉，只是没有理由现在做——真要换，见任务 15 条目下记的那处残留（换类可以，换环境变量还不行）。以下是原文：
