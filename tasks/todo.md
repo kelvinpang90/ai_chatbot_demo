@@ -59,9 +59,10 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     1. Flow Builder 里把 Flow `1066318999658447` **Publish**
     2. VPS 上加 ID 并重建容器——一条命令：
        ```
-       ssh -i "C:/Users/PC/.ssh/kelvin.pem" ubuntu@103.40.204.95 'cd /opt/ai_chatbot && grep -q "^WHATSAPP_FLOW_ID=" backend/.env || echo "WHATSAPP_FLOW_ID=1066318999658447" >> backend/.env; docker compose -f docker-compose.prod.yml up -d --force-recreate backend'
+       ssh -i "C:/Users/PC/.ssh/kelvin.pem" ubuntu@103.40.204.95 'cd /opt/ai_chatbot && { grep -q "^WHATSAPP_FLOW_ID=" backend/.env || echo "WHATSAPP_FLOW_ID=1066318999658447" >> backend/.env; } && docker compose -f docker-compose.prod.yml up -d --force-recreate backend'
        ```
        ⚠️ **`-f docker-compose.prod.yml` 不能省**（2026-09-13 的教训），`/opt/ai_chatbot/.env` 里有 `BACKEND_IMAGE` / `FRONTEND_IMAGE`，compose 自己会读
+       ⚠️ **`{ ... }` 那对花括号也不能省**：写成 `cd X && grep … || echo … >> backend/.env` 的话，`cd` 万一失败，`||` 照样会触发，那一行就追加到**家目录下的** `backend/.env` 去了。整条都必须挂在 `cd` 成功之后
     3. 真机演剧本 4a，看表单弹不弹得出来
   - **降级那条路不用拆**：ID 配上之后表单走原生，发不出去仍会自动接住退回聊天（任务 24 建的），两条路并存
 - [x] ~~**C. 语音转录选型拍板**~~——**2026-09-06 已定：走外部 API（OpenAI `/v1/audio/transcriptions`，默认 `whisper-1`）**，正是这一条当初建议的路子：先接外部 API 把戏跑通，转录做成抽象层，换实现只是换一个类。任务 36 已落地并真机验收。自托管 faster-whisper 没有被否掉，只是没有理由现在做——真要换，见任务 15 条目下记的那处残留（换类可以，换环境变量还不行）。以下是原文：
