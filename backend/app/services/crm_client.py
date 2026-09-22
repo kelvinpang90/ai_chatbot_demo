@@ -30,23 +30,32 @@ MAX_AMOUNT = 10**13
 # "clear out last week's leads" and "delete the customers the demo is made of".
 DEMO_MARK = "[DEMO]"
 
+# What the console seed writes instead (task 39.4). The two marks are deletion
+# rules for two jobs that run against the same board, and neither may be a
+# prefix of the other: `app.tasks.cleanup` runs between demos and deletes every
+# `[DEMO]` row, which -- if the seed shared the mark -- would take the seeded
+# pipeline with it, leaving last night's conversations naming cards that are no
+# longer there. `]` is what keeps them apart: "[DEMO-SEED]" does not start with
+# "[DEMO]".
+SEED_MARK = "[DEMO-SEED]"
 
-def marked(text: str) -> str:
+
+def marked(text: str, mark: str = DEMO_MARK) -> str:
     """`text` with the mark in front, so the cleanup can recognise it later.
 
     In front rather than behind because both fields it goes in are truncated
     from the right -- a mark at the end is the part a long enquiry loses.
     """
-    return f"{DEMO_MARK} {text}"
+    return f"{mark} {text}"
 
 
-def is_marked(text: str | None) -> bool:
+def is_marked(text: str | None, mark: str = DEMO_MARK) -> bool:
     """Did this bot write this row?
 
     Deliberately anchored: a customer who types "[DEMO]" in the middle of an
     enquiry must not get a seed contact deleted on their behalf.
     """
-    return str(text or "").startswith(DEMO_MARK)
+    return str(text or "").startswith(mark)
 
 
 class CrmClient(JsonApiClient):

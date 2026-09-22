@@ -1,4 +1,4 @@
-"""The console seed (tasks 39.1, 39.2): what it files, and what it must never touch.
+"""The console seed (tasks 39.1, 39.2, 39.4): what it files, and what it must never touch.
 
 The batch is built in memory and checked as data; the writing half is run
 against a fake connection that records every statement. That the SQL itself
@@ -13,13 +13,15 @@ from unittest.mock import patch
 
 import pytest
 
+from app.bots.registry import get_bot
 from app.config import settings
 from app.console import cost
 from app.routers import console
-from app.services import erp_client, phone
+from app.services import crm_client, erp_client, phone
 from app.services.api_client import ApiClientError
 from app.services.user_store import UserProfile, identity, user_store
-from app.tasks import seed_console, seed_documents, seed_lines, seed_retail
+from app.tasks import cleanup, seed_console, seed_crm, seed_documents, seed_lines, seed_retail
+from app.tools import crm as crm_tools
 from app.tools import local
 from app.verticals.food import models as food_models
 from app.verticals.hotel import models as hotel_models
@@ -583,3 +585,272 @@ def test_an_unreachable_erp_clears_nothing(capsys):
     clear_documents.assert_not_called()
     reseed.assert_not_called()
     assert "Seed failed" in capsys.readouterr().out
+
+
+# --- the CRM pipeline (task 39.4) -----------------------------------------------
+
+
+class FakeCrm:
+    """crm_os's routes the seed writes through, and the one behaviour that shapes
+    the code: `POST /api/contacts` makes a card of its own out of the initial
+    fields, which is why the seed has to ask for the deals afterwards to find it.
+    """
+
+    def __init__(self):
+        self.contacts = []
+        self.deals = []
+        self.activities = []
+        self.down = False
+        self.no_card = False
+        self.n = 0
+
+    def _id(self, prefix):
+        self.n += 1
+        return f"{prefix}-{self.n}"
+
+    def _up(self):
+        if self.down:
+            raise ApiClientError("crm api: failed: connection refused")
+
+    def create_contact(self, *, name, phone, title, amount, notes):
+        self._up()
+        contact = {"id": self._id("contact"), "name": name, "phone": phone, "notes": notes}
+        self.contacts.append(contact)
+        if not self.no_card:
+            self.deals.append(
+                {
+                    "id": self._id("deal"),
+                    "contact_id": contact["id"],
+                    "title": title,
+                    "amount": amount,
+                    "status": "lead",
+                }
+            )
+        return contact
+
+    def deals_for_contact(self, contact_id):
+        self._up()
+        return [deal for deal in self.deals if deal["contact_id"] == contact_id]
+
+    def log_activity(self, *, deal_id, content, activity_type="WhatsApp"):
+        self._up()
+        self.activities.append({"deal_id": deal_id, "content": content})
+        return {"id": self._id("activity")}
+
+    def all_contacts(self):
+        self._up()
+        return list(self.contacts)
+
+    def all_deals(self):
+        self._up()
+        return list(self.deals)
+
+    def delete_contact(self, contact_id):
+        self._up()
+        self.contacts = [c for c in self.contacts if c["id"] != contact_id]
+        # crm_os cascades to the cards; a seeded card only ever hangs off a seeded contact.
+        self.deals = [d for d in self.deals if d["contact_id"] != contact_id]
+
+    def delete_deal(self, deal_id):
+        self._up()
+        self.deals = [d for d in self.deals if d["id"] != deal_id]
+
+
+@pytest.fixture
+def crm():
+    return FakeCrm()
+
+
+def _crm_batch(erp, crm, retail=None):
+    accounts = seed_retail.accounts(erp, now=NOW, days=seed_console.DAYS, wanted=9) if retail is None else retail
+    return seed_console.plan(NOW, random.Random(7), FakeFiler(), accounts, seed_crm.Leads(crm))
+
+
+def _lead_rows(batch):
+    return [
+        (customer, conversation, row)
+        for customer in batch
+        for conversation in customer.conversations
+        for row in conversation.rows
+        if row.kind == "tool" and row.values["tool"] == "crm_create_lead"
+    ]
+
+
+def test_every_viewing_and_two_retail_customers_a_language_leave_an_enquiry(erp, crm):
+    batch = _crm_batch(erp, crm)
+    assert Counter(c.bot_id for c, _, _ in _lead_rows(batch)) == {"realestate": 9, "retail": 6}
+    assert len(crm.contacts) == 15 and len(crm.deals) == 15 and len(crm.activities) == 15
+
+
+def test_a_retail_enquiry_is_priced_off_the_catalogue(erp, crm):
+    batch = _crm_batch(erp, crm)
+    _, conversation, lead = next(row for row in _lead_rows(batch) if row[0].bot_id == "retail")
+    searched = _tool_rows(conversation, "erp_search_sku")[0]
+    sku = json.loads(searched.values["output"])["products"][0]
+    given = lead.values["input"]
+    # Every language writes the quantity first: "2 台 X", "2 x X", "2 unit X".
+    quantity = int(given["requirement"].split()[0])
+    assert 2 <= quantity <= 6
+    assert sku["name"] in given["requirement"]
+    assert given["amount"] == round(float(sku["unit_price_incl_tax"]) * quantity, 2)
+    # The enquiry follows the search it was priced off, in the same conversation.
+    assert lead.at > searched.at
+    assert given["delivery_address"] in seed_lines.ADDRESSES
+
+
+def test_a_viewing_records_the_enquiry_in_the_same_turn(erp, crm):
+    batch = _crm_batch(erp, crm)
+    _, conversation, lead = next(row for row in _lead_rows(batch) if row[0].bot_id == "realestate")
+    booked = _tool_rows(conversation, "book_property_viewing")[0]
+    assert booked.at < lead.at
+    # One reply covers both calls, the way realestate's persona has it.
+    after = [row for row in conversation.rows if row.kind == "message" and row.at > lead.at]
+    assert after[0].values["role"] == "assistant"
+    listing = next(
+        row
+        for row in get_bot("realestate").context_data["listings"]
+        if row["listing_id"] == booked.values["input"]["listing_id"]
+    )
+    assert lead.values["input"]["amount"] == float(listing["price_rm"])
+    assert listing["listing_id"] in lead.values["input"]["requirement"]
+
+
+def test_the_number_a_seeded_customer_gives_is_one_the_live_tool_would_accept(erp, crm):
+    batch = _crm_batch(erp, crm)
+    numbers = {}
+    for customer, conversation, lead in _lead_rows(batch):
+        number = lead.values["input"]["phone"]
+        assert number == seed_crm.phone_for(customer.key_id)
+        # What `crm_create_lead` puts a lead through before writing it: a number
+        # it would refuse is a card the live system could not have made.
+        assert crm_tools._usable(customer.name, number, "2 fans", 100.0) is not None
+        # The customer read it out, which is the only way a lead gets a number
+        # from somebody whose handset the channel is not telling us about.
+        assert any(number in row.values["content"] for row in conversation.rows if row.kind == "message")
+        numbers[customer.key_id] = number
+    assert len(set(numbers.values())) == len(numbers)
+    # Nobody real is on this block, so a lookup by a customer's own number misses it.
+    assert not any(phone.matches(number, "+60 17-394 8123") for number in numbers.values())
+
+
+def test_the_card_the_console_shows_is_the_one_crm_os_made(erp, crm):
+    batch = _crm_batch(erp, crm)
+    _, _, lead = _lead_rows(batch)[0]
+    card = json.loads(lead.values["output"])
+    deal = next(d for d in crm.deals if d["id"] == card["deal_id"])
+    contact = next(c for c in crm.contacts if c["id"] == card["contact_id"])
+    assert card["title"] == deal["title"] and card["amount"] == deal["amount"]
+    assert card["status"] == "lead" and card["activity_logged"] is True
+    assert card["contact_name"] == contact["name"]
+
+
+def test_the_note_inside_the_card_is_the_one_the_live_tool_writes(erp, crm):
+    batch = _crm_batch(erp, crm)
+    _, _, lead = next(row for row in _lead_rows(batch) if row[0].bot_id == "retail")
+    card = json.loads(lead.values["output"])
+    note = next(a for a in crm.activities if a["deal_id"] == card["deal_id"])["content"]
+    given = lead.values["input"]
+    assert note == crm_tools._activity_note(
+        crm_tools._Lead(
+            name=given["name"],
+            phone=given["phone"],
+            title=card["title"],
+            requirement=given["requirement"],
+            amount=given["amount"],
+            delivery_address=given["delivery_address"],
+        )
+    )
+    assert given["delivery_address"] in note
+
+
+def test_every_seeded_row_carries_the_seed_mark_and_nothing_else_does(erp, crm):
+    _crm_batch(erp, crm)
+    assert all(contact["notes"] == seed_crm.NOTES for contact in crm.contacts)
+    assert all(crm_client.is_marked(deal["title"], crm_client.SEED_MARK) for deal in crm.deals)
+    # Neither mark is a prefix of the other, so neither deletion rule can reach
+    # the other's rows. This is the whole of what keeps the two jobs apart.
+    assert not any(crm_client.is_marked(deal["title"]) for deal in crm.deals)
+    assert not crm_client.is_marked(crm_client.SEED_MARK + " anything")
+    assert not crm_client.is_marked(crm_client.DEMO_MARK + " anything", crm_client.SEED_MARK)
+
+
+def _two_kinds(crm):
+    """One row a live demo left behind, one the seed left behind."""
+    crm.create_contact(
+        name="Walk-in",
+        phone="+60 12-345 6789",
+        title=crm_client.marked("10 fans"),
+        amount=100.0,
+        notes=crm_tools.NEW_CONTACT_NOTES,
+    )
+    seed_crm.Leads(crm).lead(
+        name="Seeded", phone=seed_crm.phone_for("ZZ.SEED0007"), requirement="2 fans", amount=50.0
+    )
+
+
+def test_the_seed_clears_its_own_rows_and_leaves_a_live_demos_where_they_are(crm):
+    _two_kinds(crm)
+    assert seed_crm.clear(crm) == 1  # the contact; crm_os cascades to its card
+    assert [c["name"] for c in crm.contacts] == ["Walk-in"]
+    assert [d["title"] for d in crm.deals] == ["[DEMO] 10 fans"]
+
+
+def test_the_cleanup_between_demos_leaves_the_seeded_rows_where_they_are(crm):
+    """The trap this task was written around: `cleanup` deletes every `[DEMO]`
+    row between demos, and last night's conversations name the seeded cards."""
+    _two_kinds(crm)
+    report = cleanup.Report()
+    cleanup._clear_crm_cards(crm, report)
+    cleanup._clear_crm_contacts(crm, report)
+    assert [c["name"] for c in crm.contacts] == ["Seeded"]
+    assert [d["title"] for d in crm.deals] == ["[DEMO-SEED] 2 fans"]
+
+
+def test_no_crm_board_means_no_enquiries(erp):
+    assert _lead_rows(seed_console.plan(NOW, random.Random(7), FakeFiler(), [])) == []
+
+
+def test_a_crm_that_stops_answering_stops_the_seed(erp, crm):
+    crm.down = True
+    with pytest.raises(ApiClientError):
+        _crm_batch(erp, crm)
+
+
+def test_a_contact_crm_os_filed_no_card_for_stops_the_seed(erp, crm):
+    crm.no_card = True
+    with pytest.raises(RuntimeError, match="no card"):
+        _crm_batch(erp, crm)
+
+
+@pytest.mark.parametrize("missing", ["crm_base_url", "crm_email", "crm_password"])
+def test_refuses_to_run_without_the_crm(missing, capsys):
+    given = {
+        "mysql_url": "mysql://u:p@db:3306/chat",
+        "redis_url": "redis://r:6379/0",
+        "verticals_mysql_url": "mysql://u:p@db:3306/verticals",
+        "crm_base_url": "https://crm.example.com",
+        "crm_email": "demo@example.com",
+        "crm_password": "secret",
+    }
+    given[missing] = ""
+    with patch.multiple(settings, **given):
+        assert seed_console.main([]) == 2
+    assert "CRM_BASE_URL" in capsys.readouterr().out
+
+
+def test_an_unreachable_erp_clears_no_crm_rows(crm):
+    """The ERP is read first so that a night it is down changes nothing at all --
+    the pipeline included, because its rows are named by last night's conversations.
+    """
+    urls = {
+        "mysql_url": "mysql://u:p@db:3306/chat",
+        "redis_url": "redis://r:6379/0",
+        "verticals_mysql_url": "mysql://u:p@db:3306/verticals",
+    }
+    _two_kinds(crm)
+    down = FakeErp(down=True)
+    with patch.multiple(settings, **urls), patch.object(erp_client, "client", lambda: down), patch.object(
+        crm_client, "client", lambda: crm
+    ), patch.object(seed_documents, "clear"), patch.object(seed_console, "reseed"):
+        assert seed_console.main([]) == 1
+    assert len(crm.contacts) == 2

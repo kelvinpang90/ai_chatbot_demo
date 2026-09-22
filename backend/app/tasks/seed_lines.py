@@ -1,4 +1,4 @@
-"""What the seeded customers say, and what the bots said back (tasks 39.1, 39.2).
+"""What the seeded customers say, and what the bots said back (tasks 39.1, 39.2, 39.4).
 
 Two kinds. The ordinary conversations (`TOPICS`): a price asked, an opening
 hour, a known issue looked up. And the ones that end in a document (`DEALS`): a
@@ -535,16 +535,19 @@ DEALS: dict[str, dict[str, dict[str, str]]] = {
     },
     "realestate": {
         "zh": {
-            "ask_viewing": "我想看 {listing_id}（{area}），{viewing_date} {preferred_time}，我叫 {name}",
+            "ask_viewing": "我想看 {listing_id}（{area}），{viewing_date} {preferred_time}，我叫 {name}，电话 {phone}",
             "viewing_reply": "收到 ✅ {listing_id} 的看房申请已提交：{viewing_date} {preferred_time}。经纪人会打电话跟您确认时间。",
+            "lead_requirement": "看房 {listing_id}（{area}），{viewing_date} {preferred_time}",
         },
         "en": {
-            "ask_viewing": "I'd like to view {listing_id} in {area} on {viewing_date}, {preferred_time}. My name is {name}",
+            "ask_viewing": "I'd like to view {listing_id} in {area} on {viewing_date}, {preferred_time}. My name is {name}, my number is {phone}",
             "viewing_reply": "Done ✅ Your viewing request for {listing_id} on {viewing_date} ({preferred_time}) is in. The agent will call you to confirm the time.",
+            "lead_requirement": "Viewing {listing_id} in {area} on {viewing_date}, {preferred_time}",
         },
         "ms": {
-            "ask_viewing": "Saya nak tengok {listing_id} di {area} pada {viewing_date}, {preferred_time}. Nama saya {name}",
+            "ask_viewing": "Saya nak tengok {listing_id} di {area} pada {viewing_date}, {preferred_time}. Nama saya {name}, nombor {phone}",
             "viewing_reply": "Baik ✅ Permohonan lawatan {listing_id} pada {viewing_date} ({preferred_time}) sudah dihantar. Ejen akan telefon untuk sahkan masa.",
+            "lead_requirement": "Lawatan {listing_id} di {area} pada {viewing_date}, {preferred_time}",
         },
     },
 }
@@ -607,6 +610,9 @@ RETAIL: dict[str, dict[str, str]] = {
         "stock_reply": "目前可以卖的库存：\n{lines}",
         "stock_line": "• *{name}* {available} 件（{warehouses}）",
         "no_stock_line": "• *{name}* 暂时没货",
+        "ask_lead": "那先给我留 {quantity} 台 {product}，我叫 {name}，电话 {phone}，送到 {address}",
+        "lead_requirement": "{quantity} 台 {product}",
+        "lead_reply": "好的 {name}，需求我已经记下来了，销售同事会尽快联系您 👍",
     },
     "en": {
         "ask_orders": "Hi, this is {contact} from {company}. Can you check our recent orders?",
@@ -621,6 +627,9 @@ RETAIL: dict[str, dict[str, str]] = {
         "stock_reply": "Stock available right now:\n{lines}",
         "stock_line": "• *{name}* {available} ({warehouses})",
         "no_stock_line": "• *{name}* out of stock",
+        "ask_lead": "I'll take {quantity} of the {product} then. I'm {name}, my number is {phone}, deliver to {address}",
+        "lead_requirement": "{quantity} × {product}",
+        "lead_reply": "Noted, {name} 👍 I've recorded your enquiry and our sales team will call you shortly.",
     },
     "ms": {
         "ask_orders": "Hai, saya {contact} dari {company}. Boleh semak pesanan terkini kami?",
@@ -635,5 +644,8 @@ RETAIL: dict[str, dict[str, str]] = {
         "stock_reply": "Stok yang boleh dijual sekarang:\n{lines}",
         "stock_line": "• *{name}* {available} unit ({warehouses})",
         "no_stock_line": "• *{name}* kehabisan stok",
+        "ask_lead": "Kalau macam tu saya nak {quantity} unit {product}. Nama saya {name}, nombor {phone}, hantar ke {address}",
+        "lead_requirement": "{quantity} unit {product}",
+        "lead_reply": "Baik {name} 👍 Permintaan anda sudah direkodkan, wakil jualan kami akan hubungi anda tidak lama lagi.",
     },
 }

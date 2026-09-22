@@ -20,6 +20,10 @@ reach the seed data the demo is shown against:
   * CRM cards this bot filed onto a customer who was already on the books --
     deleted one at a time, because the customer must stay.
   * CRM contacts this bot opened -- deleted whole, cards and all.
+    Both go by `[DEMO]`, and the console seed's rows carry `[DEMO-SEED]` for
+    that reason (`app/tasks/seed_crm.py`): they are named by conversations the
+    console shows all day, so a cleanup that swept them up would leave the
+    board disagreeing with the screen beside it.
   * ERP trade accounts this bot opened -- deleted by their `WA-` code prefix.
     erp_os's own demo reset does not touch `customers`, so without this they
     accumulate one per demo forever.

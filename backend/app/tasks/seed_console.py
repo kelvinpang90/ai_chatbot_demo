@@ -11,7 +11,8 @@ newest customer wrote a month ago. `--clear` stops after the first half.
 
 Some of those conversations end in a food order, a booking, a ticket or a
 viewing, and those are filed in the back office too (`seed_documents.py`), so a
-number the console shows is a row `/admin` shows.
+number the console shows is a row `/admin` shows. The ones that end in an
+enquiry leave a card on the CRM's pipeline the same way (`seed_crm.py`).
 
 What is seeded is decided in tasks/todo.md, batch 07, and so is what is not: the
 live feed, a takeover, the tools switch and the failure drill are all left alone.
@@ -53,12 +54,12 @@ from app.bots.registry import get_bot
 from app.config import settings
 from app.console import cost
 from app.routers.whatsapp_webhook import GREETING_SUFFIX_EN
-from app.services import audit, erp_client
+from app.services import audit, crm_client, erp_client
 from app.services.clock import sql_timestamp
 from app.services.mysql_url import connect as _default_connect
 from app.services.mysql_url import dsn as _mysql_dsn
 from app.services.user_store import UserProfile, UserStore, user_store
-from app.tasks import seed_documents, seed_lines, seed_retail
+from app.tasks import seed_crm, seed_documents, seed_lines, seed_retail
 from app.tools import erp as erp_tools
 from app.tools import food as food_tools
 from app.tools import local
@@ -77,6 +78,11 @@ DEALS_PER_COMBINATION = 3
 # Retail's "deals" are buyers from the ERP's own trade accounts asking after their
 # orders (task 39.3): one for each deal slot, in all three languages.
 RETAIL_BUYERS = DEALS_PER_COMBINATION * 3
+# Of the retail customers who are not buying as a trade account, how many per
+# language go on to leave an enquiry in the CRM (task 39.4). The rest ask their
+# question and leave, which is both the commoner thing and what the console has
+# been showing since task 39.3.
+RETAIL_LEADS_PER_COMBINATION = 2
 # Share of customers who also wrote once before, days earlier. A list in which
 # every customer has exactly one conversation reads as a list somebody generated.
 RETURNING_SHARE = 0.3
@@ -151,11 +157,13 @@ def plan(
     rng: random.Random,
     filer: seed_documents.Filer | None = None,
     retail: list[seed_retail.Account] | None = None,
+    leads: seed_crm.Leads | None = None,
 ) -> list[Customer]:
     """The whole batch. Files documents through `filer` as it goes, if given one.
 
     `retail` is the ERP's own accounts the retail buyers are (task 39.3); without
     it retail talks policy only, which is what a run with no ERP to read gets.
+    `leads` is the CRM board (task 39.4); without it nobody leaves an enquiry.
     """
     customers = []
     buyers = iter(retail or [])
@@ -187,9 +195,20 @@ def plan(
                 if account is not None:
                     exchanges = _retail_orders(bot, customer, account)
                 elif filer is not None and deal is not None and i < DEALS_PER_COMBINATION:
-                    exchanges = deal(bot, customer, rng, filer, latest)
+                    exchanges = deal(bot, customer, rng, filer, leads, latest)
                 elif bot_id == "retail" and retail is not None:
-                    exchanges = _retail_ordinary(bot, customer, rng)
+                    # By slot rather than by "whoever is left over": on a night
+                    # the ERP has fewer accounts worth speaking as, the buyers
+                    # thin out and the enquiries stay the number they are.
+                    leaves_enquiry = (
+                        DEALS_PER_COMBINATION
+                        <= i
+                        < DEALS_PER_COMBINATION + RETAIL_LEADS_PER_COMBINATION
+                    )
+                    if leads is not None and leaves_enquiry:
+                        exchanges = _retail_lead(bot, customer, rng, leads)
+                    else:
+                        exchanges = _retail_ordinary(bot, customer, rng)
                 else:
                     exchanges = _ordinary(bot, customer, rng, topics=rng.choice((1, 2)))
                 customer.conversations.append(_conversation(customer, latest, rng, exchanges))
@@ -305,6 +324,16 @@ def _tool_output(bot, name: str, tool_input: dict, caller: UserProfile | None = 
     return output
 
 
+def _lead(leads: seed_crm.Leads, lead_input: dict) -> str:
+    """The card `crm_create_lead` would have answered with (task 39.4).
+
+    Rebuilt from what the write returns, the way the food order's reply is,
+    because the tool itself cannot be called here: it marks what it writes
+    `[DEMO]`, and the between-demos cleanup deletes every row carrying that.
+    """
+    return json.dumps(leads.lead(**lead_input), ensure_ascii=False, default=str)
+
+
 def _ordinary(bot, customer: Customer, rng: random.Random, *, topics: int) -> list[Exchange]:
     chosen = rng.sample(seed_lines.TOPICS[customer.bot_id][customer.language], topics)
     return [_from_topic(bot, topic) for topic in chosen]
@@ -334,7 +363,10 @@ def _day_text(day: date, language: str) -> str:
 # itself would stamp the order with the clock rather than the moment it happened.
 
 
-def _food_deal(bot, customer: Customer, rng: random.Random, filer: seed_documents.Filer, start: float) -> list[Exchange]:
+def _food_deal(
+    bot, customer: Customer, rng: random.Random, filer: seed_documents.Filer,
+    leads: seed_crm.Leads | None, start: float,
+) -> list[Exchange]:
     text = seed_lines.DEALS["food"][customer.language]
     menu = food_tools._menu()
     picks = rng.sample(sorted(menu), rng.randint(1, 3))
@@ -394,7 +426,10 @@ def _food_minutes() -> int:
     return round((settings.push_delay_seconds + food_models.RIDER_MINUTES * 60) / 60)
 
 
-def _hotel_deal(bot, customer: Customer, rng: random.Random, filer: seed_documents.Filer, start: float) -> list[Exchange]:
+def _hotel_deal(
+    bot, customer: Customer, rng: random.Random, filer: seed_documents.Filer,
+    leads: seed_crm.Leads | None, start: float,
+) -> list[Exchange]:
     text = seed_lines.DEALS["hotel"][customer.language]
     location = rng.choice(("Langkawi", "Penang"))
     guests = rng.choice((2, 2, 2, 3, 4))
@@ -455,7 +490,10 @@ def _hotel_deal(bot, customer: Customer, rng: random.Random, filer: seed_documen
     ]
 
 
-def _saas_deal(bot, customer: Customer, rng: random.Random, filer: seed_documents.Filer, start: float) -> list[Exchange]:
+def _saas_deal(
+    bot, customer: Customer, rng: random.Random, filer: seed_documents.Filer,
+    leads: seed_crm.Leads | None, start: float,
+) -> list[Exchange]:
     text = seed_lines.DEALS["saas"][customer.language]
     issue = rng.choice(seed_lines.ISSUES)
     search_input = {"query": issue["query"]}
@@ -482,7 +520,10 @@ def _saas_deal(bot, customer: Customer, rng: random.Random, filer: seed_document
     ]
 
 
-def _realestate_deal(bot, customer: Customer, rng: random.Random, filer: seed_documents.Filer, start: float) -> list[Exchange]:
+def _realestate_deal(
+    bot, customer: Customer, rng: random.Random, filer: seed_documents.Filer,
+    leads: seed_crm.Leads | None, start: float,
+) -> list[Exchange]:
     text = seed_lines.DEALS["realestate"][customer.language]
     listing = rng.choice([row for row in bot.context_data["listings"] if row.get("status") == "Available"])
     viewing_day = date.fromtimestamp(start) + timedelta(days=rng.randint(2, 10))
@@ -493,12 +534,14 @@ def _realestate_deal(bot, customer: Customer, rng: random.Random, filer: seed_do
         "viewing_date": viewing_day.isoformat(),
         "preferred_time": preferred_time,
     }
+    phone = seed_crm.phone_for(customer.key_id)
     words = {
         "listing_id": listing["listing_id"],
         "area": listing["area"],
         "viewing_date": _day_text(viewing_day, customer.language),
         "preferred_time": preferred_time,
         "name": customer.name,
+        "phone": phone,
     }
 
     def book(at: float) -> str:
@@ -511,10 +554,25 @@ def _realestate_deal(bot, customer: Customer, rng: random.Random, filer: seed_do
         )
         return realestate_tools._confirmation(viewing, how="gave these details in the chat")
 
+    steps = [Step("book_property_viewing", viewing_input, book)]
+    if leads is not None:
+        # Both in the one turn, because that is how the persona has it: confirm
+        # the viewing and record the enquiry, in a single reply. The viewing
+        # form carries no phone number, so the one the client read out in the
+        # chat is the only thing a colleague could call back on -- which is the
+        # whole reason the lead is worth writing.
+        lead_input = {
+            "name": customer.name,
+            "phone": phone,
+            "requirement": text["lead_requirement"].format(**words),
+            "amount": float(listing["price_rm"]),
+        }
+        steps.append(Step("crm_create_lead", lead_input, lambda at: _lead(leads, lead_input)))
+
     return [
         Exchange(
             text["ask_viewing"].format(**words),
-            [Step("book_property_viewing", viewing_input, book)],
+            steps,
             lambda outputs: text["viewing_reply"].format(**words),
         ),
     ]
@@ -568,36 +626,100 @@ def _retail_ordinary(bot, customer: Customer, rng: random.Random) -> list[Exchan
     return [product]
 
 
+def _retail_lead(bot, customer: Customer, rng: random.Random, leads: seed_crm.Leads) -> list[Exchange]:
+    """Asks what is on the shelf, then leaves an enquiry (task 39.4).
+
+    Which is what retail's persona says to do with somebody the ERP has never
+    heard of: take the enquiry to the CRM so a salesperson picks it up, with the
+    address they gave, rather than open a trade account they did not ask for.
+
+    Always the search rather than the stock question, because this is the turn
+    the card's amount is priced off. A catalogue that has lost the product falls
+    back to a policy question, the way an ordinary retail conversation does --
+    no lead, and the night's seed still stands.
+    """
+    keyword, local_words = rng.choice(seed_lines.PRODUCTS)
+    searched = _retail_search(bot, customer, keyword, local_words)
+    if searched is None:
+        return _ordinary(bot, customer, rng, topics=1)
+    search, shown = searched
+    text = seed_lines.RETAIL[customer.language]
+    sku = shown[0]
+    quantity = rng.randint(2, 6)
+    words = {
+        "quantity": quantity,
+        "product": sku["name"],
+        "name": customer.name,
+        "phone": seed_crm.phone_for(customer.key_id),
+        "address": rng.choice(seed_lines.ADDRESSES),
+    }
+    lead_input = {
+        "name": customer.name,
+        "phone": words["phone"],
+        "requirement": text["lead_requirement"].format(**words),
+        "amount": round(float(sku["unit_price_incl_tax"]) * quantity, 2),
+        "delivery_address": words["address"],
+    }
+    return [
+        search,
+        Exchange(
+            text["ask_lead"].format(**words),
+            [Step("crm_create_lead", lead_input, lambda at: _lead(leads, lead_input))],
+            lambda outputs: text["lead_reply"].format(**words),
+        ),
+    ]
+
+
 def _retail_product(bot, customer: Customer, rng: random.Random) -> Exchange | None:
     """None when the catalogue no longer has the product asked about."""
-    text = seed_lines.RETAIL[customer.language]
     keyword, local_words = rng.choice(seed_lines.PRODUCTS)
-    asked = local_words[customer.language]
-
     if rng.random() < 0.5:
-        search_input = {"keyword": keyword}
-        found = _tool_output(bot, "erp_search_sku", search_input)
-        if found == erp_tools.NOT_FOUND:
-            return None
-        data = json.loads(found)
-        shown = data["products"][:3]
-        reply = text["search_reply"].format(
-            keyword=asked,
-            lines="\n".join(
-                text["product_line"].format(
-                    name=sku["name"], price=erp_tools._money(sku["currency"], sku["unit_price_incl_tax"])
-                )
-                for sku in shown
-            ),
-        )
-        if data["total_matches"] > len(shown):
-            reply += text["search_more"].format(shown=len(shown), total=data["total_matches"])
-        return Exchange(
+        searched = _retail_search(bot, customer, keyword, local_words)
+        return searched[0] if searched else None
+    return _retail_stock(bot, customer, keyword, local_words)
+
+
+def _retail_search(
+    bot, customer: Customer, keyword: str, local_words: dict
+) -> tuple[Exchange, list[dict]] | None:
+    """What the shelf holds, and the products the ERP answered with.
+
+    The products come back out because an enquiry filed after this one is priced
+    off them (task 39.4): the amount on the CRM card is the catalogue's, not a
+    number written here.
+    """
+    text = seed_lines.RETAIL[customer.language]
+    asked = local_words[customer.language]
+    search_input = {"keyword": keyword}
+    found = _tool_output(bot, "erp_search_sku", search_input)
+    if found == erp_tools.NOT_FOUND:
+        return None
+    data = json.loads(found)
+    shown = data["products"][:3]
+    reply = text["search_reply"].format(
+        keyword=asked,
+        lines="\n".join(
+            text["product_line"].format(
+                name=sku["name"], price=erp_tools._money(sku["currency"], sku["unit_price_incl_tax"])
+            )
+            for sku in shown
+        ),
+    )
+    if data["total_matches"] > len(shown):
+        reply += text["search_more"].format(shown=len(shown), total=data["total_matches"])
+    return (
+        Exchange(
             text["ask_search"].format(keyword=asked),
             [Step("erp_search_sku", search_input, lambda at: found)],
             lambda outputs: reply,
-        )
+        ),
+        shown,
+    )
 
+
+def _retail_stock(bot, customer: Customer, keyword: str, local_words: dict) -> Exchange | None:
+    text = seed_lines.RETAIL[customer.language]
+    asked = local_words[customer.language]
     stock_input = {"sku": keyword}
     stock = _tool_output(bot, "erp_get_inventory", stock_input)
     if stock == erp_tools.NOT_FOUND:
@@ -802,8 +924,15 @@ def main(argv: list[str] | None = None) -> int:
             " names from Redis, and the documents a conversation mentions live in the verticals database."
         )
         return 2
+    if not settings.crm_base_url or not settings.crm_email or not settings.crm_password:
+        print(
+            "CRM_BASE_URL, CRM_EMAIL and CRM_PASSWORD must be set: the seeded enquiries"
+            " are written to the same pipeline board the demo is shown against."
+        )
+        return 2
 
     filer = seed_documents.Filer()
+    leads = seed_crm.Leads(crm_client.client())
     now = time.time()
     retail: list[seed_retail.Account] = []
     try:
@@ -813,9 +942,11 @@ def main(argv: list[str] | None = None) -> int:
             retail = seed_retail.accounts(erp_client.client(), now=now, days=DAYS, wanted=RETAIL_BUYERS)
         # Documents first, conversations second: a conversation names the number
         # its document was given. A failure between the two leaves documents with
-        # no conversation, which the next run clears before filing again.
+        # no conversation, which the next run clears before filing again. The CRM
+        # goes with them -- its rows are named by the same conversations.
+        cleared_leads = seed_crm.clear(crm_client.client())
         seed_documents.clear(SEED_PREFIX)
-        customers = [] if args.clear else plan(now, random.Random(), filer, retail)
+        customers = [] if args.clear else plan(now, random.Random(), filer, retail, leads)
         counts = reseed(customers)
     except Exception as failure:
         # The audit half is one transaction and rolls back whole; a failure after
@@ -826,11 +957,11 @@ def main(argv: list[str] | None = None) -> int:
         print("Rows were written but the names did not reach Redis; the console will show keys, not names.")
         return 1
 
-    print(f"Cleared:   {counts.cleared_rows} rows, {counts.cleared_profiles} profiles")
+    print(f"Cleared:   {counts.cleared_rows} rows, {counts.cleared_profiles} profiles, {cleared_leads} CRM rows")
     print(
         f"Seeded:    {counts.customers} customers, {counts.messages} messages,"
         f" {counts.tool_calls} tool calls, {counts.usage} model calls, {filer.filed} documents,"
-        f" {len(retail)} ERP buyers"
+        f" {leads.filed} leads, {len(retail)} ERP buyers"
     )
     return 0
 

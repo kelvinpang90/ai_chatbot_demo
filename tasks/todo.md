@@ -1940,7 +1940,40 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **没验**：线上没跑（部署后今晚 03:30 首次带 ERP 跑，或手动补跑）；浏览器没看导演台
   **已知**：ERP 夜里 03:00 重置后单据全换，所以 03:30 的 seed 正好对得上；**白天有人在 ERP 后台手动重置或跑 `app.tasks.cleanup`，retail 那 9 段会对不上，直到补跑 seed**。CRM 还没接（39.4）
-- [ ] **任务 39.4：CRM 联系人 + 线索的写入与按标记删除**。⚠️ 标记不能以 `[DEMO]` 开头——`crm_client.is_marked` 是锚定前缀匹配，`cleanup` 按它删联系人，撞上就会被 cleanup 顺手删掉（`[DEMO-SEED]` 不以 `[DEMO]` 开头，可用，但要写测试钉住）
+- [x] **任务 39.4：CRM 联系人 + 线索的写入与按标记删除**。⚠️ 标记不能以 `[DEMO]` 开头——`crm_client.is_marked` 是锚定前缀匹配，`cleanup` 按它删联系人，撞上就会被 cleanup 顺手删掉（`[DEMO-SEED]` 不以 `[DEMO]` 开头，可用，但要写测试钉住）——**2026-09-22 完成**
+  文件：`backend/app/tasks/seed_crm.py`（新增）、`seed_console.py`、`seed_lines.py`、`services/crm_client.py`、`tasks/cleanup.py`（只改注释）、`tests/test_seed_console.py`
+
+  **做了什么**
+
+  - **15 张线索**：realestate 9 位看房客户 + retail 6 位（每语言 2 位）。两处都是 persona 明写的行为，不是我编的——realestate 的 persona 说「确认看房后 record the enquiry with crm_create_lead」，retail 的说「不在 ERP、还在问还在比的客户 → crm_lookup_customer + crm_create_lead 留给销售」。**导演台上有那张工具卡，CRM 看板上就必须有那一行**，否则演示时两块屏当场打架
+    - realestate：`book_property_viewing` 和 `crm_create_lead` **在同一轮里**，一条回复收尾（persona 就是这么写的；39.2 的 saas 已有「一轮两个工具」的先例）。金额 = listing 的 `price_rm`
+    - retail：问有哪些款（真 `erp_search_sku`）→「那给我留 N 台，我叫 X，电话 Y，送到 Z」→ `crm_create_lead`。**金额 = 目录里那一款的含税价 × 数量**，和 39.1 定下的「每个价格都对着真数据」同一条规矩
+  - **不调真工具 `crm_create_lead`，走 `crm_client` 自己写**——和 39.2 的点餐单据同一个理由，但这次的理由更硬：真工具把写进去的行标成 `[DEMO]`，而 **`app.tasks.cleanup` 在演示间隙按 `[DEMO]` 删**，删掉的正好是 seed 昨晚刚灌的那批。所以 seed 的行带 `[DEMO-SEED]`，导演台上那张卡按 `crm_create_lead` 的返回 JSON 逐字段重建
+  - **两个标记互不为前缀，这是整个任务的地基**：`"[DEMO-SEED]".startswith("[DEMO]")` 是 **False**（`]` 挡着），所以 cleanup 删不到 seed 的行，seed 的清理也删不到真演示留下的线索。**两个方向各有一条测试钉着**，不是只钉了我在意的那一边
+  - **卡片里那条 activity 是工具自己的 `_activity_note`**（连同 `_Lead`），所以销售打开卡片读到的句子和真客户留下的一字不差，包括那行 `Delivery address:`
+  - **seed 客户在对话里报了一个电话号码**，因为不报不行：`crm._usable` 拒绝没有号码的线索（「一条没人能回拨的线索不是线索」），而 seed 客户是隐藏号码那一类（BSUID、Redis 资料里没有号），真 bot 对他们**只有在客户自己报号时才写得出线索**。号码是 `+60 12-000 00NN`，NN 是 seed 序号：`01X` 的用户号不会以 `000` 开头，所以这个块上没有真人；一条测试拿 `crm._usable` 钉住「这号码是活系统会接受的那种」
+    - ⚠️ **没法证明绝对不撞**：两个后台都只比后 8 位，某个固话块理论上可能以同样 8 位结尾。真撞上的后果是 demo CRM 里一次 `crm_lookup_customer` 认错人，而且每晚重灌。接受，写在 `phone_for` 的 docstring 里
+  - **retail 的线索槽位按位置分配**（i=3、4），不是「采购员挑剩下的那些」。ERP 某晚可用账号不足时，采购员会变少，**线索数不跟着变多**——第一版写成了「剩下的都留线索」，测试里 6 张变成 13 张才发现
+  - **`main` 的顺序**：读 ERP → 清 CRM → 清 verticals 单据 → 生成对话（边生成边写）→ 审计库事务。CRM 的清理跟着单据走，同一个理由：它的行是被昨晚那批对话点名的。ERP 读不到就什么都不清（39.3 立的规矩），一条测试钉着「ERP 挂了，CRM 一行没少」
+  - `main` 现在还要求 `CRM_BASE_URL` / `CRM_EMAIL` / `CRM_PASSWORD` 配着；输出多了 `N leads` 和清理行里的 `N CRM rows`
+
+  **偏离计划的一处，和一个真的短板**
+
+  - 计划（批次 07 第 5 条）写的是「**retail** 假客户经 REST 建联系人 + 线索」。实际做成 **retail 6 + realestate 9**：realestate 那 9 张是 39.2 明确欠下的（「房产成交后真 bot 还会调 `crm_create_lead`，seed 里暂时没有，39.4 补上」），不补的话那 9 段对话就是真 bot 不会有的样子
+  - ⚠️ **CRM 的卡片没有日期回填，这是 seed 里唯一一处做不到的**。`ContactCreate` / `DealCreate` 都不收日期，`created_at` 由 crm_os 自己盖。所以审计库、ERP 单据、四张 verticals 表全都摊在过去四周里，**只有 CRM 看板上这 15 张卡全是当天凌晨 03:30**。对「线索真的会进 CRM」这个主张没有影响，对「像跑了几周」这个主张在这一块屏上是打折的。要改只能去动 crm_os 的接口，没动
+
+  **验证到什么程度**
+
+  - 单测：容器里全套 **1090 passed / 10 skipped**（基线 1074，净增 16）。`test_seed_console.py` 54 → 70 条
+  - **变异检查 7 处，7 处全红**：标记改成 `[DEMO] SEED`（撞上 cleanup 的规则）/ 线索槽位改成「剩下的都算」/ 号码写死成一个真号 / 清理改按 `[DEMO]` 走 / 不写 activity / 看房线索金额改 0 / 把清 CRM 挪到读 ERP 之前——每一处都有对应的测试变红
+  - 新测试钉住的：15 张的分布（realestate 9 / retail 6）；retail 金额 = 目录价 × 数量且排在那次搜索之后；看房那一轮两个工具的先后 + 金额 = listing 价；导演台那张卡的字段就是 crm_os 返回的；卡里的 note 就是工具的 `_activity_note`；每一行都带 `[DEMO-SEED]` 且没有一行带 `[DEMO]`；**两个清理规则互相够不着（两个方向各一条）**；号码唯一、`_usable` 接受、客户确实在对话里报了它、拿真号 `+60 17-394 8123` 去 `phone.matches` 匹配不上；没有 CRM 就一张卡都不写；CRM 中途挂掉 / crm_os 没建卡 → seed 抛异常；缺 CRM 凭据 → 退出码 2；ERP 挂了 → CRM 一行没少
+
+  **没验的（重要）**
+
+  - ⚠️ **真 CRM 一行都没写过**。本机没有 `.env`（只有 `.env.example`），CRM 凭据在 VPS 上。走的每一个 `crm_client` 方法都是真工具在生产上跑过的那几个，payload 形状没有新东西，但「建联系人 → 自动带出那张卡 → 删联系人级联带走卡」这条**往返**只有 `FakeCrm` 钉着。要真验，得在 VPS 上跑一次 seed 再看 CRM 看板
+  - 浏览器里没看 CRM 看板和导演台的样子（前端一行没改）
+  - 线上没跑。合并部署后今晚 03:30 的 cron 会第一次带 CRM 跑
+
 - [ ] **任务 39.5：Claude 生成 15 段精品 JSON**（用户审）
 - [x] **任务 39.6：VPS crontab 安装命令 + 手动补跑命令**——**2026-09-17 已装上**（用户让我直接上 VPS 装，原计划「用户执行」作废；提前于 39.2-39.5 做，用户拍板「先装定时任务」）
   **首次线上 seed**：同日 39.1 部署后我在 VPS 上跑了一次 `docker exec ai_chatbot_backend python -m app.tasks.seed_console`，exit 0，90 位 / 674 条消息。容器内只读回查：seed 90 位、日期 08-20 → 09-16；**原有 14 位真客户 278 条消息都在**；抽 `ZZ.SEED0001/0045/0090` 导演台能读出名字。真客户今天有对话，比 seed 都新，所以列表最上面是他们
