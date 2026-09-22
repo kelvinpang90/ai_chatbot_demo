@@ -1968,11 +1968,16 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **变异检查 7 处，7 处全红**：标记改成 `[DEMO] SEED`（撞上 cleanup 的规则）/ 线索槽位改成「剩下的都算」/ 号码写死成一个真号 / 清理改按 `[DEMO]` 走 / 不写 activity / 看房线索金额改 0 / 把清 CRM 挪到读 ERP 之前——每一处都有对应的测试变红
   - 新测试钉住的：15 张的分布（realestate 9 / retail 6）；retail 金额 = 目录价 × 数量且排在那次搜索之后；看房那一轮两个工具的先后 + 金额 = listing 价；导演台那张卡的字段就是 crm_os 返回的；卡里的 note 就是工具的 `_activity_note`；每一行都带 `[DEMO-SEED]` 且没有一行带 `[DEMO]`；**两个清理规则互相够不着（两个方向各一条）**；号码唯一、`_usable` 接受、客户确实在对话里报了它、拿真号 `+60 17-394 8123` 去 `phone.matches` 匹配不上；没有 CRM 就一张卡都不写；CRM 中途挂掉 / crm_os 没建卡 → seed 抛异常；缺 CRM 凭据 → 退出码 2；ERP 挂了 → CRM 一行没少
 
-  **没验的（重要）**
+  - **线上真跑，连跑两次**（VPS，真 `crm.acuventech.com` + 真 `erp.acuventech.com`；`docker exec` 被 Claude 这边的权限分类器拦掉，命令由用户执行）：
+    - 第一次 `Cleared: 1102 rows, 90 profiles, **0 CRM rows**` → `Seeded: … 36 documents, **15 leads**, 9 ERP buyers`。15 次 `POST /api/contacts` 全 **201**；每次紧跟 `GET /api/deals?contact_id=…` 拿到 crm_os 自动建的那张卡，再 `POST …/activities` **201**
+    - 第二次 `Cleared: … **15 CRM rows**`——**正好 15**，标记写错的话这里会是 0。15 次 `DELETE /api/contacts/…` 全 200，id 和第一次建的逐一对得上；**之后扫 `GET /api/deals` 没有任何 `DELETE /api/deals`**，证明卡是被联系人级联带走的，`clear` 的第二遍该空手而归，它就是空手而归
+    - 日志里看得见 retail 的顺序：`GET /api/skus?search=fan` → `POST /api/contacts`，先查目录再按目录价开卡
+    - 两次都是 `36 documents, 9 ERP buyers`，39.2 / 39.3 没被这次改动碰坏
 
-  - ⚠️ **真 CRM 一行都没写过**。本机没有 `.env`（只有 `.env.example`），CRM 凭据在 VPS 上。走的每一个 `crm_client` 方法都是真工具在生产上跑过的那几个，payload 形状没有新东西，但「建联系人 → 自动带出那张卡 → 删联系人级联带走卡」这条**往返**只有 `FakeCrm` 钉着。要真验，得在 VPS 上跑一次 seed 再看 CRM 看板
-  - 浏览器里没看 CRM 看板和导演台的样子（前端一行没改）
-  - 线上没跑。合并部署后今晚 03:30 的 cron 会第一次带 CRM 跑
+  **没验的**
+
+  - 浏览器里没看 CRM 看板和导演台的样子（前端一行没改）。卡片的 `title` / `amount` 在 crm_os 里长什么样没有肉眼看过，只由「按 `[DEMO-SEED]` 正好找回 15 张」间接证明
+  - 今晚 03:30 的 cron 会是第一次**无人值守**带 CRM 跑
 
 - [ ] **任务 39.5：Claude 生成 15 段精品 JSON**（用户审）
 - [x] **任务 39.6：VPS crontab 安装命令 + 手动补跑命令**——**2026-09-17 已装上**（用户让我直接上 VPS 装，原计划「用户执行」作废；提前于 39.2-39.5 做，用户拍板「先装定时任务」）
