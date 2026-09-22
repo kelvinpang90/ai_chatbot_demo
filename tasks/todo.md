@@ -51,12 +51,42 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **账号层的门槛，代码修不了**。看到 `139000` 别查代码
   - **影响的是「能不能演」，不是能不能开发**：门槛过之前，剧本 4a 的原生表单演不了，走聊天降级（已补成会落库、会自动接住拒收，见任务 24 记录）
   - 门槛过了之后**不用改代码**：Builder 里 Publish → `WHATSAPP_FLOW_MODE=published` → 重建容器
+
+  **2026-09-22 用户说 business verification 过了。我去查了线上，还差的不是 mode，是 ID**：
+
+  - `/opt/ai_chatbot/backend/.env` 里**既没有 `WHATSAPP_FLOW_ID` 也没有 `WHATSAPP_FLOW_MODE`**。`whatsapp_flow_mode` 的默认值本来就是 `"published"`（`config.py:42`），**所以 mode 这行根本不用加**；真正缺的是 `WHATSAPP_FLOW_ID`——空 ID 时 `realestate.py:111` 直接走降级，`offer_viewing_form` 连试都不试，日志是 `no viewing form to send`。这条从任务 24 至今就没配过（当时配了也发不出去，所以没人补）
+  - **还剩的步骤**（都在用户那边，我进不去 Meta 后台、也写不了 VPS 的 .env）：
+    1. Flow Builder 里把 Flow `1066318999658447` **Publish**
+    2. VPS 上加 ID 并重建容器——一条命令：
+       ```
+       ssh -i "C:/Users/PC/.ssh/kelvin.pem" ubuntu@103.40.204.95 'cd /opt/ai_chatbot && grep -q "^WHATSAPP_FLOW_ID=" backend/.env || echo "WHATSAPP_FLOW_ID=1066318999658447" >> backend/.env; docker compose -f docker-compose.prod.yml up -d --force-recreate backend'
+       ```
+       ⚠️ **`-f docker-compose.prod.yml` 不能省**（2026-09-13 的教训），`/opt/ai_chatbot/.env` 里有 `BACKEND_IMAGE` / `FRONTEND_IMAGE`，compose 自己会读
+    3. 真机演剧本 4a，看表单弹不弹得出来
+  - **降级那条路不用拆**：ID 配上之后表单走原生，发不出去仍会自动接住退回聊天（任务 24 建的），两条路并存
 - [x] ~~**C. 语音转录选型拍板**~~——**2026-09-06 已定：走外部 API（OpenAI `/v1/audio/transcriptions`，默认 `whisper-1`）**，正是这一条当初建议的路子：先接外部 API 把戏跑通，转录做成抽象层，换实现只是换一个类。任务 36 已落地并真机验收。自托管 faster-whisper 没有被否掉，只是没有理由现在做——真要换，见任务 15 条目下记的那处残留（换类可以，换环境变量还不行）。以下是原文：
   ~~外部 API（准、快、多一个供应商）vs 自托管 faster-whisper（无外部依赖、CPU 上每条慢 3-5 秒、吃 VPS 内存）。阻塞任务 15。~~
-- [ ] **D. 演示环境的脏数据——会直接出现在演示要指的那块屏上**（2026-09-02 在 Chrome 上实地看到的）：
+- [x] ~~**D. 演示环境的脏数据**~~——**2026-09-22 用户授权后由我删掉了**（「同意你去删」）。CRM 板上 **46 → 40 条联系人、42 → 41 张卡**，没有留下孤儿卡。删的正好是下面点名的那六条，一条不多：
+
+  | id | 名字 | 建于 | 备注 |
+  |---|---|---|---|
+  | `53681c82…` | KK Hardware | 2026-08-16 | 0 商机 |
+  | `5c7a633f…` | demo company 4 | 2026-07-26 | 0 商机 |
+  | `9a2dcc9b…` | demo company 3 | 2026-07-26 | 0 商机 |
+  | `51856482…` | demo compnay 1 | 2026-07-25 | 0 商机（名字本来就拼错） |
+  | `5173da9a…` | demo company 2 | 2026-07-25 | 0 商机 |
+  | `16a32554…` | 16315551181 | 2026-05-14 | 负责人 Marcus Johnson，带 1 张 RM 0 的 `lead` 卡，级联删掉 |
+
+  **怎么做的**：临时脚本走 `crm_client`（容器里跑，不碰宿主 Python），**先 dry run，再 `--apply`**；每个 id 删之前拿名字核对一遍，对不上就整个中止——id 陈旧的话删的就是别人的联系人，而这边没有撤销。脚本没进仓库（一次性的，且它按 id 写死，第二次跑没有意义）
+  **没删、留着的**（不在用户授权的范围里，要清得再说一声）：`陈家明`（09-15，0 商机）、`Kelvin Peng`（09-12，0 商机）、`Kelvin`（09-04，**4 张卡共 RM 901,315.60**，真机测试攒的）、`Lee Kok Hao`（09-03，1 张 RM 164.89）、`Ahmad Faizal`（09-03，1 张 RM 986.70）——后三条是真演示留下的痕迹，看着像真数据，我倾向留着
+  **不会自己长回来**：这六条从 5/7/8 月一直活到 9 月，说明 crm_os 没有把它们重灌回去的定时任务
+
+  <details><summary>原文（2026-09-02 在 Chrome 上实地看到的）</summary>
+
   - **Lead 那一列现在有一张标题是 `16315551181`、金额 RM 0 的卡**，负责人 Marcus Johnson。这正是 `crm_os/backend/app/utils/demo_scope.py` 注释里写「a dashboard full of leads named after phone numbers and worth RM 0 undercuts the product being demonstrated」的那种卡——但它**没有被过滤掉**，说明这条联系人的 `is_gateway` 是 false（`demo_scope` 只挡 true 的）。任务 9.1 建出来的线索卡就会挨着它出现
   - **联系人列表最上面 5 条是 `KK Hardware` / `demo company 1-4`**，全是 RM 0、0 个商机的空壳（列表按创建时间倒序，所以它们排最前）。客户点开 Contacts 第一眼看到的就是这些
   - 全库 26 条联系人。**要不要删由你定**——删是写操作，而且是你的数据，我没动
+  </details>
 - [x] ~~**E. 本地 `backend/.env` 的 `CRM_PASSWORD` 已失效**~~——**2026-09-03 任务 11 实测已恢复，这一条可以划掉**。同一份 `backend/.env`（文件时间戳 09-03 11:32，看起来是被改过）在容器里跑 `crm_lookup_customer("David Park")` 和 `crm_lookup_customer("+1-858-555-1515")` 都返回真实联系人（MedTech Innovations），说明**登录这一跳是通的**——查不到人会返回 `NOT_FOUND`，登录失败才返回 `UNAVAILABLE`，两者分得开。ERP 侧同样实测 `login 200`。**VPS 上那份 `/opt/ai_chatbot/backend/.env` 仍未验**。以下是原文，留作来龙去脉：
   ~~（2026-09-02）~~：对 `crm.kelvinpeng.com/api/auth/login` 返回 **401**。`CRM_EMAIL` 是对的（`admin@crm.com`，和线上登录页显示的 demo 管理员一致），**密码不对**——`.env` 里是 14 位，而线上登录页预填的密码是 8 位。
   ⚠️ 同一份凭据在今天早些时候审查方跑 live 脚本时还是好的，所以是中途失效或那份 `.env` 从来就和线上不同步。
