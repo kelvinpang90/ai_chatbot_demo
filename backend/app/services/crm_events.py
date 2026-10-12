@@ -68,6 +68,14 @@ RETRY = "retry"
 # not a default multi-second timeout.
 CONNECT_TIMEOUT_SECONDS = 1.0
 OPERATION_TIMEOUT_SECONDS = 1.0
+# And once a write has failed, `enqueue` stops paying that second for this long
+# -- the same breaker `user_store` keeps on the same Redis. Without it a Redis
+# that is down cost a second per event, and one reply queues an event between
+# each of its messages: the greeting arrived, then its buttons a second later,
+# on the thread the customer is waiting on. Found by the cold review of task
+# 40.2. Events in the window are dropped, as they would be anyway with nowhere
+# to put them; each drop is logged.
+REDIS_RETRY_AFTER_SECONDS = 30.0
 
 
 def _default_client(url: str):
@@ -85,6 +93,7 @@ def _default_client(url: str):
 _client_factory = _default_client
 _client = None
 _thread: threading.Thread | None = None
+_offline_until = 0.0
 
 
 def _now() -> float:
@@ -145,6 +154,7 @@ def enqueue(event_type: str, who: dict, *, occurred_at: float | None = None, **f
     The event is stored as the exact string that will later be sent and signed,
     so what the CRM verifies is byte for byte what was queued.
     """
+    global _offline_until
     if not enabled():
         return
     try:
@@ -158,7 +168,14 @@ def enqueue(event_type: str, who: dict, *, occurred_at: float | None = None, **f
             "visitor": who,
             **fields,
         }
-        _redis().rpush(QUEUE_KEY, json.dumps(event, ensure_ascii=False))
+        if _now() < _offline_until:
+            logger.error("crm events: dropped a %s event, Redis failed a moment ago", event_type)
+            return
+        try:
+            _redis().rpush(QUEUE_KEY, json.dumps(event, ensure_ascii=False))
+        except Exception:
+            _offline_until = _now() + REDIS_RETRY_AFTER_SECONDS
+            raise
     except Exception:
         logger.exception("crm events: could not queue a %s event", event_type)
 
@@ -393,7 +410,8 @@ def start() -> threading.Thread | None:
 
 def reset() -> None:
     """Forget the connection and the alarm. Tests."""
-    global _client, _thread
+    global _client, _thread, _offline_until
     _client = None
     _thread = None
+    _offline_until = 0.0
     _alarm.cleared()

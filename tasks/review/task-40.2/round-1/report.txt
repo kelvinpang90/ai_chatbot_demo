@@ -1,0 +1,8 @@
+任务 40.2 / 第 1 轮 / commit 529178af
+verdict: findings
+
+报了 1 条，进修复队列 1 条，降级 0 条。
+
+[MUST FIX] P3-1 P3  backend/app/routers/whatsapp_webhook.py:316
+    With the switch on and Redis unreachable, every enqueue blocks the customer's thread ~1s, and 40.2 puts an ai_reply enqueue between consecutive sends of one reply -- so a Redis outage adds seconds per turn and a visible pause between a greeting and its buttons; crm_events has no go-offline switch like user_store's.
+    证据: repro repro/test_p3_1_redis_down_stalls_replies.py::test_an_unreachable_redis_does_not_pause_the_reply_between_messages

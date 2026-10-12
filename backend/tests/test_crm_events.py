@@ -225,6 +225,26 @@ def test_a_redis_that_fails_on_write_does_not_raise(switched_on, fake, caplog):
     assert "could not queue" in caplog.text
 
 
+def test_after_a_failed_write_redis_is_left_alone_for_a_while(switched_on, fake, clock, caplog):
+    """A Redis that is down costs its timeout once, not once per event: one reply
+    queues an event between each of its messages (task 40.2 cold review)."""
+    fake.fail = True
+    crm_events.enqueue("customer_message", _someone(), message={})
+    assert fake.calls == ["rpush"]
+
+    clock.at += crm_events.REDIS_RETRY_AFTER_SECONDS - 1
+    with caplog.at_level("ERROR"):
+        crm_events.enqueue("ai_reply", _someone(), message={})
+    assert fake.calls == ["rpush"]
+    assert "dropped a ai_reply event" in caplog.text
+
+    fake.fail = False
+    clock.at += 1
+    crm_events.enqueue("ai_reply", _someone(), message={"body": "back"})
+    assert fake.calls == ["rpush", "rpush"]
+    assert [json.loads(raw)["message"] for raw in fake.queue()] == [{"body": "back"}]
+
+
 def test_a_redis_that_cannot_even_be_created_does_not_raise(switched_on, monkeypatch):
     def explode(url):
         raise ValueError("bad url")

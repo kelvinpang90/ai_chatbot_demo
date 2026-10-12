@@ -2851,6 +2851,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - 网关入口 `/internal/whatsapp/inbound` 也会推 `customer_message`（批次开头已接受；待清理是删掉 `routers/internal_whatsapp.py`，不在本批）
     - 两条消息几乎同时到时入队先后不保证（边缘情况一节已写，CRM 以 Meta 时间戳 `occurred_at` 展示）
     - 发给只有 BSUID 的访客时 payload 用 `recipient` 而不是 `to`——`whatsapp._recipient` 自己就写着「未对真机验证」。`outbound` 两个键都读、有一条测试走过，但 Meta 那边真不真这么认，要等真机
+  - **冷审第 1 轮（`529178a`）**：报 1 条、进队列 1 条——**P3-1 成立，已修**；它那条 repro 的第一条断言**钉错了靶子**，按 REVIEW.md 教训 2「证据形式可以驳回，问题本身照修」处理：
+    - 问题：开关开着而 Redis 连不上时，每次 `enqueue` 都在顾客那条线程上卡满 1 秒连接超时；40.2 又在一条回复的相邻两条消息之间各入队一次 `ai_reply`，于是问候语发出后按钮晚 1 秒，一个回合多 2–3 秒（审查方实测：开关关 0.01 秒、开 2.03 / 3.06 秒）。同一个 Redis 上的 `user_store` 有「失败一次就 30 秒不碰」的断路，`crm_events` 没有。我的 37 条测试全用只会 append 的假 Redis，结构上看不见延迟——审查方说得对
+    - 修法：`crm_events.enqueue` 加同样的断路——`rpush`（或建客户端）失败一次，`REDIS_RETRY_AFTER_SECONDS = 30` 秒内不再碰 Redis，这期间的事件直接丢弃并逐条打 ERROR `dropped a <type> event, Redis failed a moment ago`（Redis 挂着时事件本来也无处可放，丢弃是 40.1 就接受的）；`reset()` 清掉断路
+    - 新测试：`test_crm_events.py::test_after_a_failed_write_redis_is_left_alone_for_a_while`（失败一次后 29 秒内零调用 + 丢弃日志，满 30 秒恢复写入）；`test_crm_events_wiring.py::test_a_redis_that_is_down_costs_one_timeout_not_one_per_message`——审查方 repro 的意图，用真 redis-py 客户端打不可达地址 `10.255.255.1`，量回复里相邻消息的间隔 < 0.5 秒、整个回合 < 一次超时 + 0.5 秒。**在修复前的 `crm_events.py`（`529178a`）上跑红，红在间隔 1.01 秒**（第一版这条测试红在 `AttributeError`，不算数，改成用日志判断「Redis 确实被试过」后重做，才红在对的地方）；修复后绿
+    - **repro 仍红，驳回其第一条断言**：它把 `send_times[0]` 当成问候语，但 `_handle_incoming_message` 第一个 `send_raw` 是「对方正在输入」提示（`send_typing_indicator` 也走 `send_raw`）——它自己的输出 `first send after 0.00s` 就是这个。所以它的 `gap` 量的是「输入提示 → 问候语」，即 Redis 刚挂时**第一次**入队（`customer_message`）付的那 1 秒。修复后实测：`gap 1.05s, turn 1.05s`（修前 `turn 3.06s`），第二条断言 `total < 1.5` 已过。这 1 秒每 30 秒最多付一次，和 `user_store` 在同一个 Redis 上付的完全一样；同步入队就不可能是 0——要彻底不碰顾客线程得改成内存队列 + 写线程，那是改 40.1 已批准的设计，不在本修复范围，如有必要另开任务
+    - 全套：**1210 passed, 10 skipped**
 
 ### 上线步骤（40.0、40.1、40.2 都合并后）
 

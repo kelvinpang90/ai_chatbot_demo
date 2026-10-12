@@ -460,6 +460,42 @@ def test_a_console_reply_is_the_reply_then_the_renewal(queue, console_token):
     assert [event["type"] for event in queue()] == ["handover_changed", "console_reply", "handover_changed"]
 
 
+# --- Redis down ---------------------------------------------------------------
+
+
+def test_a_redis_that_is_down_costs_one_timeout_not_one_per_message(caplog):
+    """The cold review of 40.2 (P3-1): one reply queues an event between each of
+    its messages, so with no breaker a down Redis put a one-second pause between
+    a greeting and its buttons, and three per turn. A real redis-py client aimed
+    at an address nothing answers on, as a stopped infra_redis looks from the
+    container. The typing indicator also goes through `send_raw`; it is not one
+    of the reply's messages and is left out of the gaps."""
+    sent = []
+
+    def meta_accepts(payload):
+        sent.append((time.monotonic(), payload))
+        return _meta_accepts(payload)
+
+    crm_events.reset()
+    try:
+        with patch.object(settings, "crm_events_enabled", True),                 patch.object(settings, "crm_events_secret", "s"),                 patch.object(settings, "redis_url", "redis://10.255.255.1:6379/16"),                 patch.object(crm_events, "_client_factory", crm_events._default_client),                 patch.object(whatsapp, "send_raw", side_effect=meta_accepts):
+            started = time.monotonic()
+            with caplog.at_level("ERROR"):
+                _handle_incoming_message(
+                    _message("interactive", {"type": "list_reply", "list_reply": {"id": "retail", "title": "Retail"}}),
+                    {"wa_id": PHONE},
+                )
+            turn = time.monotonic() - started
+    finally:
+        crm_events.reset()
+
+    assert "could not queue" in caplog.text, "Redis was never tried, so this proves nothing"
+    replies = [at for at, payload in sent if "typing_indicator" not in payload]
+    assert len(replies) >= 2, "expected the greeting and its buttons"
+    assert max(b - a for a, b in zip(replies, replies[1:])) < 0.5
+    assert turn < crm_events.CONNECT_TIMEOUT_SECONDS + 0.5
+
+
 # --- switched off ------------------------------------------------------------
 
 
