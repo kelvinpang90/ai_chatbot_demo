@@ -2675,7 +2675,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - 没验：线上 / 真机。到期要等两小时（或把 `HANDOVER_IDLE_SECONDS` 调小），本任务没上手机走一遍
   - ⚠️ 跑全套的坑：worktree 里没有 `backend/.env`（被 gitignore），不带 `CRM_EMAIL` / `CRM_PASSWORD` 时 `test_seed_console.py` 的两条 `*unreachable*` 会因为 `main()` 提前返回 2 而红（预期 1）——**与本改动无关**，容器加 `-e CRM_EMAIL=x@example.com -e CRM_PASSWORD=x` 即全绿。测试依赖环境变量这件事本身算待清理项，不在本任务范围
 
-- [ ] 🔍 **任务 40.1（C1）：事件队列 + 顺序投递 + 签名 + 死信，开关默认关**
+- [x] 🔍 **任务 40.1（C1）：事件队列 + 顺序投递 + 签名 + 死信，开关默认关**
   文件：`backend/app/config.py`、`backend/app/services/crm_events.py`（新增）、`backend/app/main.py`、`backend/.env.example`；测试 `backend/tests/test_crm_events.py`（新增）
   目标：别的代码调一句 `crm_events.enqueue(...)`，事件就持久化进 Redis，由后台线程按顺序、带签名送到 CRM；任何失败都不影响顾客那条线
 
@@ -2711,6 +2711,44 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - **变异检查**（验收时做）：把「失败不出队」改成「失败也出队」→ 顺序测试必须变红；把签名改成只签 body → 签名测试必须变红
 
   验收：容器里全套 pytest 通过（报数字）；本地 `docker compose` 起 Redis，开关开、`CRM_EVENTS_URL` 指向一个本地临时接收端（测试用的小脚本，验签并打印），手工 `enqueue` 三条，看到按序到达、验签通过；停掉接收端再入队，看到退避日志、重启接收端后补齐
+
+  **结果（2026-10-12）**：
+  - 做了什么：
+    - `crm_events.py`（新增）：`visitor` / `enqueue` / `deliver_one` / `Backoff` / `run_forever` / `start` / `reset`，键 `chat:crm_events`、`chat:crm_events:dead`，常量照计划（2s 翻倍封顶 300s、单次 10s、空队列 1s、告警间隔 600s、死信响应截 500 字）。Redis 客户端与 `user_store` 同样的 1 秒超时，测试经模块变量 `_client_factory` 注入（`UserStore` 是构造参数，这里是模块函数，所以是模块变量）；时钟经 `_now` 注入
+    - `config.py` 三项、`.env.example` 一段（含生成密钥、生效命令、查日志的方法）；`main.py` 加 `lifespan` 调 `crm_events.start()`
+    - 没有任何业务代码调 `enqueue`（那是 40.2）
+  - 与契约核对：读的是 `origin/docs/chatbot-inbound-design:docs/chatbot-events.md`（`71f9ff5`，尚未合并进 acuven_crm_demo 的 master）。与本计划**无冲突**。契约没写密钥按什么字节进 HMAC：这里用 `CRM_EVENTS_SECRET` 字符串的 UTF-8 字节（`openssl rand -hex 32` 生成的是 ASCII，不会有歧义）——CRM-TASK-008 验签要用同一种，已在下面「留给 40.2 / CRM 侧」写明
+  - 计划里没写死、我自己定的（审查可挑）：
+    1. `enqueue` 多了一个关键字参数 `occurred_at`（Unix 秒，缺省 = 现在）：40.2 的 `customer_message` 要用 Meta 的 `timestamp`，现在加上省得 40.2 再改本模块的签名。一条测试钉住
+    2. `visitor()` 收到 BSUID 形状的「号码」会挪到 `bsuid`（用 `phone.is_bsuid` 判断）——40.2 的 `delivery_status` 只有一个 `recipient_id`，计划要求「是 BSUID 形状就放 `bsuid`」，放在这里一处做。「两个都空不入队 + ERROR」放在 `enqueue` 里查，调用方绕不过去
+    3. **告警节流对 401 也生效**：计划表里 401 写「打 ERROR」、其他写「第一次 + 每 10 分钟」。我把 401 也纳入同一节流（文案不同、点名查 `CRM_EVENTS_SECRET`）——退避封顶 300 秒，不节流就是每小时 12 行同样的 ERROR，正是计划想避免的刷屏。恢复时打一行 INFO「delivering again after N failed attempts」
+    4. 每次退避打一行 INFO `retrying in N seconds`（计划验收要求「看到退避日志」；ERROR 已节流，这行是 INFO 不算告警）
+    5. 200 但响应不是 JSON → 与「`result` 不在三者之中」同样处理：WARNING + 出队
+    6. 死信里的 `event` 存**原始字符串**而非解析后的对象：人工补投时 `RPUSH chat:crm_events` 原样塞回即可，字节不变
+    7. 422 时先 `RPUSH` 死信再 `LPOP`（两条命令，没用 MULTI）：中间被杀的代价是多一条重复死信，不会丢事件
+    8. `run_forever` 里 Redis 出错（`LINDEX` 抛异常）与投递失败同样退避、同样走告警节流
+  - 测试 `tests/test_crm_events.py`，29 条，全部假 Redis + `httpx.MockTransport`：
+    - 开关：关时 `enqueue` 连 `_client_factory` 都不调、假 Redis 零调用；`start()` 返回 None、没有 `crm-events` 线程、日志有 `crm events off`；开着但缺密钥 / 缺 `REDIS_URL`（参数化两条）→ 一行 ERROR 点名缺哪个、`enqueue` 零调用、无线程；配齐 → daemon 线程跑起 `run_forever`；`TestClient(app)` 启动时 `start` 被调一次（钉住 `main.py` 的接线）
+    - 形状：`event_id` 是 uuid4、`occurred_at` 精确到 `...Z`、`visitor` 三键；`occurred_at` 可传入；只有 BSUID → `phone is None`；BSUID 当号码传进来 → 挪到 `bsuid`；两个都空 → 不入队 + ERROR；`rpush` 抛错 / `_client_factory` 本身抛错 → `enqueue` 不抛
+    - 签名：测试里独立 `hmac.new(SECRET, f"{ts}.".encode() + 存储字节)` 比对；请求体与 Redis 里那串逐字节相等；入队后时钟拨 400 秒再投 → 时间戳 = 投递时刻；`Content-Type`、URL 也查了
+    - 顺序：A、B、C，A 两次 503 期间 MockTransport 只见过 A、A，最终 A、A、A、B、C
+    - 返回码：200 出队；200 但 `result` 陌生 → WARNING 且出队；422 → 死信（`event` 原样、`status`、`response` 截到 500、`failed_at`）且下一条照走；401 / 503 / 500 / 404 / 连接错误 / 超时（参数化 6 条）都不出队、不进死信；401 的 ERROR 点名 `CRM_EVENTS_SECRET`；告警第一次立即、599 秒内不再报、满 600 秒再报、恢复时 INFO
+    - 退避：`Backoff` 序列 2,4,8,…,256,300,300，复位后回 2；`run_forever` 注入 `sleep`：503,503,200,503,200 → 睡 [2, 4, 2, 1]（翻倍、成功复位、空队列 1 秒）；Redis 坏掉 → 睡 [2, 4, 8]、线程不死
+  - 验证：
+    - 新测试单跑 29 passed；全套（`python:3.13-slim` 容器，带 40.0 记录里那两个 `CRM_EMAIL` / `CRM_PASSWORD` 环境变量）：**1171 passed, 10 skipped**（40.0 时 1142 + 本任务 29）
+    - 变异 1：在「其他返回码」分支 `return RETRY` 前加 `client.lpop(QUEUE_KEY)`（失败也出队）→ **7 failed**，含顺序测试 `test_nothing_behind_the_head_is_sent_until_the_head_gets_through`（另 6 条是 401/503/500/404 不出队、告警、loop 测试；连接错误 / 超时走另一个分支，没被这个变异碰到，所以仍绿，符合预期）
+    - 变异 2：签名改成只签 `body` → **1 failed**，正是签名测试。两个变异都已还原（`git diff` 核过）
+    - **手工验收（做了，Docker，没用 compose）**：一个临时网络里起 `redis:7-alpine`、一个 stdlib 写的临时接收端（验 HMAC + 300 秒窗口，过了回 200 `stored`，不过回 401）、一个挂载本 worktree `backend/` 的容器开开关跑 `crm_events.start()` + `enqueue`。脚本在 scratchpad，不进仓库。结果：
+      - 三条 `manual.1/2/3` 按序到达、接收端验签通过
+      - 从 app 容器发一个**不带签名**的 POST → 接收端 401（证明接收端真的在验，不是来者不拒）
+      - 停掉接收端后入队 `manual.4/5` → app 日志一行 ERROR `could not reach the CRM: ConnectError(...) (1 failed attempts so far)`，随后只有 INFO `retrying in 2 / 4 / 8 seconds`（ERROR 没刷屏）
+      - 20 秒后重启接收端 → `manual.4`、`manual.5` 按序补齐、验签通过，INFO `delivering again after 3 failed attempts`；**时间戳是投递时刻（05:19:49）而不是入队时刻（05:19:23）**；收尾 `LLEN chat:crm_events` = 0、`LLEN chat:crm_events:dead` = 0
+      - 第一次跑时 `REDIS_URL` 用了 `/16`，而 stock `redis:7` 只有 0–15 号库 → `DB index is out of range`。顺带看到的真实行为：`enqueue` 三次都只打 ERROR 不抛、消费线程退避且 ERROR 只报一次。第二次给 Redis 加 `--databases 32` 后通过。线上 `user_store` 早就在用 `infra_redis` 的 16 号库，说明 infra_redis 配了多于 16 个库，不是问题
+    - 没验：真 CRM（CRM-TASK-008 未实现、未部署）；线上 VPS（未推）；容器名 `crm_os-backend-1` 仍是读 nginx 配置得来，上线步骤 4 的预检会核
+  - 偏离：除上面「自己定的」8 条外无。文件就是计划列的 5 个
+  - 留给 40.2 / CRM 侧：
+    - CRM-TASK-008 验签时密钥取 `CHATBOT_EVENTS_SECRET` 字符串的 UTF-8 字节，签名串 = `f"{ts}."` 的字节 + 原始请求体字节，与这里一致
+    - `enqueue` 失败用 `logger.exception`，带完整 traceback；Redis 整个挂掉时每条消息一段 traceback。量级是 demo 的（一天几百条），先这样；嫌吵再改成节流
 
 - [ ] 🔍 **任务 40.2（C2）：四处入队 + 送达状态转推**（依赖 40.1）
   文件：`backend/app/routers/whatsapp_webhook.py`、`backend/app/services/notify.py`、`backend/app/services/handover.py`；测试 `backend/tests/test_crm_events_wiring.py`（新增）

@@ -99,6 +99,19 @@ class Settings(BaseSettings):
     crm_email: str = ""
     crm_password: str = ""
 
+    # Every WhatsApp visitor's conversation, pushed to the CRM's inbox (task
+    # 40.1, `services/crm_events.py`). Off by default: switched off, nothing is
+    # queued and no thread starts, so deploying this changes nothing until the
+    # CRM side is live and both ends hold the same secret. Switched on without
+    # REDIS_URL or the secret, it says so once at startup and stays off.
+    crm_events_enabled: bool = False
+    # Not a secret, and only reachable inside the Docker networks the two
+    # containers share -- the container name is the one infra_nginx proxies to.
+    crm_events_url: str = "http://crm_os-backend-1:8000/internal/chatbot/events"
+    # The HMAC key, the same value as the CRM's CHATBOT_EVENTS_SECRET. This
+    # repository is public: never give it a default.
+    crm_events_secret: str = ""
+
     # The shared infra_redis, where customer profiles live. Empty on purpose:
     # unset means "keep everything in memory", which is how this service ran
     # before there was a Redis and how it has to keep running if there is not
