@@ -2603,6 +2603,172 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
+## 批次 08：demo 号多客服第 1 阶段「入站进 CRM」——chatbot 侧（2026-10-12 新增，⏳ 计划待 Kelvin 批准）
+
+> **上位设计**（2026-10-12 Kelvin 批准）：`acuven_hub/CHATBOT_DEMO_CRM_MULTIAGENT_2026-10-12.md` 的 D1–D11，现行索引 `acuven_hub/DECISIONS.md` J-04、A-18。
+> demo 号是唯一对接 Meta 的一方；所有访客对话（D9）经内部签名接口推给 CRM（`acuven_crm_demo`，原 `crm_os`），CRM 自动指派客服、多客服在收件箱看。
+>
+> **接口契约以 `acuven_crm_demo` 的 `docs/chatbot-events.md` 为准**——目前在 PR #17（分支 `docs/chatbot-inbound-design`），**也在等 Kelvin 批准**；契约若改，以 PR 最新版为准，本计划跟着改。读法：
+> `git -C E:\projects\acuven_crm_demo show origin/docs/chatbot-inbound-design:docs/chatbot-events.md`
+>
+> **已定、不再讨论**：
+> 1. C1 / C2 由人工会话做，**不登记进 OpenClaw**（Kelvin 2026-10-12，契约 P5）
+> 2. 接管变化与送达状态第 1 阶段就推（P3）；号码补 60、`is_gateway` 都是 CRM 的事，chatbot 原样推 Meta 给的号码
+> 3. **不做**：接管时长改 24 小时、CRM → chatbot 的发送接口、「交还 AI」——都是第 2 阶段
+> 4. 第 1、2 阶段之间客服在 CRM 里回复这些访客必然发不出去（CRM 侧如实报 502），已知情
+>
+> **范围边界**：只推 **demo 号上的 WhatsApp 访客**。网页聊天线（`routers/chat.py`）、自动播放（任务 29，走网页线）、导演台 seed 的 `ZZ.SEED*` 假客户（任务 39，直接写库）都**不推**——它们不是 WhatsApp 访客，CRM 那边也没有号码可挂。已停用的网关入口 `/internal/whatsapp/inbound` 也不推（见 C2 第 1 条为什么挂在 `_handle_incoming_message` 而不是 `dispatch_message`）。
+>
+> **名字**：现有 `app/services/outbox.py` 是「一次回复里随行的附件 / 列表 / 表单」队列，和这里无关。新模块叫 **`app/services/crm_events.py`**，Redis 键叫 `chat:crm_events`，文中一律称「事件队列」，不叫 outbox。
+
+### 现状侦察（2026-10-12，读代码，未跑）
+
+- **出站一共四个口子**，全都最终走 `whatsapp.send_raw`，它返回 Meta 的响应，`messages[0].id` 就是 `wa_message_id`：
+  1. `whatsapp_webhook._handle_incoming_message` 的发送循环——bot 回复、菜单、canned 道歉、文件、列表、表单
+  2. `whatsapp_webhook._say_instead_of_the_form`——表单被拒后的聊天降级
+  3. `notify._send`——定时推送（下单后 30 秒那条）、`send_now`（控制台人工回复 `source=audit.HUMAN`、结束演示总结 `source=audit.TEXT`）
+  4. `whatsapp.send_typing_indicator`——不是消息，不推
+- **接管的三个变化点全在 `services/handover.py`**：`begin`（关键词转人工、`request_human_help` 工具、控制台接管）、`touch`（控制台每回复一次 = 续期）、`end`（控制台交还、顾客发 `menu`）。**空闲到期没有「那一刻」**：`active()` 是读时计算，没有任何代码在到期时运行——契约第五节已经写明 CRM 以 `expires_at` 为准、不依赖 chatbot 补推，所以到期**不推事件**，这是契约允许的，不是遗漏
+- webhook 现在只读 `value.messages`，**`value.statuses` 整个被忽略**
+- 后台线程：本服务没有 lifespan / 常驻线程，`notify` 用的是 `threading.Timer`；单进程（`session_store` 早就以此为前提）
+- Redis：`REDIS_URL=redis://infra_redis:6379/16`，`user_store` 的键前缀 `chat:user:`
+- 网络：chatbot backend 在 `default` / `proxy_net` / `data_net`，CRM backend 在 `proxy_net` / `data_net`，**共享网络已经通，compose 不用改**。nginx 里 CRM 后端容器名是 `crm_os-backend-1:8000`（vps_infra 的 `kelvinpeng.com.conf`），上线前在 VPS 上 `docker ps` 再核一次
+- ⚠️ **顺带发现一个既有问题（读代码判断，未跑）**：`handover.begin` 开头是 `if profile.handover_since: return True`，**不看是否已空闲到期**。到期后 `handover_since` 仍非零，于是：顾客再次说「转人工」→ `begin` 直接返回 True、什么都没刷新 → 下一条消息 bot 照答；控制台再按「接管」→ 同样不刷新 → 回复 409。现有测试 `test_once_it_has_lapsed_the_console_has_to_take_it_over_again` 只测了「到期后回复被拒」，没测「重新接管能成功」。C2 要在 `begin` 里推 `handover_changed`，**这个早退会让「到期后重新接管」既不生效也不推事件**。处理方式见文末待定 4
+
+### 配置项（C1 加进 `config.py` 和 `backend/.env.example`）
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `CRM_EVENTS_ENABLED` | `false` | 总开关。**关闭时不入队、不起后台线程**。开着但 `REDIS_URL` 或密钥为空 → 启动时打一行 ERROR，按关闭处理 |
+| `CRM_EVENTS_URL` | `http://crm_os-backend-1:8000/internal/chatbot/events` | 不是秘密，给默认值（同 `CRM_BASE_URL` 的做法）；只在 Docker 网络内可达 |
+| `CRM_EVENTS_SECRET` | 空 | HMAC 密钥，与 CRM 的 `CHATBOT_EVENTS_SECRET` 同值。**本仓库公开，永远不写进仓库** |
+
+退避、超时、键名是模块常量，不做成配置（没人需要在 VPS 上调它们）：初始退避 2 秒、翻倍、上限 300 秒、成功即复位；单次请求超时 10 秒；队列空时每秒看一次。
+
+---
+
+- [ ] 🔍 **任务 40.1（C1）：事件队列 + 顺序投递 + 签名 + 死信，开关默认关**
+  文件：`backend/app/config.py`、`backend/app/services/crm_events.py`（新增）、`backend/app/main.py`、`backend/.env.example`；测试 `backend/tests/test_crm_events.py`（新增）
+  目标：别的代码调一句 `crm_events.enqueue(...)`，事件就持久化进 Redis，由后台线程按顺序、带签名送到 CRM；任何失败都不影响顾客那条线
+
+  **`crm_events.py` 里有什么**
+  - `enqueue(type, visitor, **fields)`：开关关 → 直接返回，**Redis 一次都不碰**。开 → 拼公共部分（`event_id` = uuid4、`type`、`occurred_at` UTC `YYYY-MM-DDTHH:MM:SSZ`、`visitor{phone, bsuid, profile_name}`）+ 附加字段，`json.dumps` 成**字符串**后 `RPUSH chat:crm_events`。整个函数包在 try 里：Redis 写失败只打 ERROR 日志，**绝不把异常抛回顾客的处理路径**
+  - `visitor(phone, bsuid, profile_name)`：小工具函数，保证 `phone` / `bsuid` 至少一个非空（都空就不入队并打 ERROR——契约要求）。只有 BSUID 的访客 `phone=None`；判断「这个标识是号码还是 BSUID」一律用 `phone.is_bsuid`，不另写规则
+  - `deliver_one(client, http) -> 结果`：**一次投递一条，单独可测**。`LINDEX chat:crm_events 0` 取队首（不取出）→ 现算时间戳签名 → POST → 按返回码：
+    | 返回 | 动作 |
+    |---|---|
+    | 200 | `LPOP` 出队；`result` 不在 `stored/duplicate/ignored` 里打 WARNING 但照样出队 |
+    | 422 | 包一层 `{event, status, response(截 500 字), failed_at}` `RPUSH chat:crm_events:dead`，再 `LPOP`；打 ERROR |
+    | 401 | 不出队，退避；打 ERROR「签名或时钟不对，查两边密钥」 |
+    | 503 / 5xx / 其他 4xx / 连接失败 / 超时 | 不出队，退避；连续失败的**第一次**和之后**每 10 分钟**打一行 ERROR（不每次重试都刷屏） |
+
+    其他 4xx（比如 404 = 地址配错）归「重试」而不归「死信」：契约只把 422 定为「这条事件本身坏了」，配置错误修好后事件应该还在
+  - 签名：`X-Acuven-Timestamp` = **发送那一刻**的 Unix 秒（不是入队时刻——CRM 拒收相差 300 秒以上的，排队或退避过 5 分钟的事件用入队时刻会永远 401）；`X-Acuven-Signature: sha256=<hex>`，HMAC-SHA256(密钥, `f"{ts}.".encode() + body`)。**`body` 就是 Redis 里那串字符串的 UTF-8 字节，原样作请求体**（`content=`，不用 `json=` 让 httpx 重新序列化，否则签的和发的不是同一串字节）
+  - `run_forever()`：循环调 `deliver_one`，队列空睡 1 秒，失败按退避睡；任何意外异常记日志后继续，线程不死
+  - `start()`：开关开且配置齐 → 起一个 daemon 线程跑 `run_forever`
+  - **顺序保证**只靠一条：队首没 200（或 422 进死信）之前，绝不看第二条。单进程单消费者（和 `session_store` 同一个前提，生产 CMD 是单个 uvicorn）
+
+  **`main.py`**：加 FastAPI `lifespan`，启动时调 `crm_events.start()`。开关关时它什么都不做
+
+  **测试**（全部用假 Redis 对象 + `httpx.MockTransport`，不连真 Redis / 真 CRM；仿照 `UserStore` 的 `client_factory` 注入）
+  - 开关关：`enqueue` 后假 Redis **零调用**；`start()` 不起线程
+  - 开关开但缺密钥 / 缺 `REDIS_URL`：按关处理、有 ERROR 日志
+  - 事件形状：`event_id` 是 uuid、`occurred_at` 以 `Z` 结尾、只有 BSUID 的访客 `phone is None` 且 `bsuid` 有值、两个都空不入队
+  - 签名：测试里**独立**重算 HMAC 与请求头比对；请求体字节与 Redis 里存的逐字节相等；入队后把时钟拨过 400 秒再投，时间戳是投递时刻
+  - 顺序：入队 A、B、C，让 A 先失败两次 → 这期间 MockTransport 一次都没见过 B；最终送达顺序 A、B、C
+  - 返回码：200 出队；422 进死信且后面那条接着走；401 / 503 / 500 / 404 / 连接错误都不出队；退避 2→4→8…封顶 300、成功后复位
+  - Redis 写失败：`enqueue` 不抛异常
+  - **变异检查**（验收时做）：把「失败不出队」改成「失败也出队」→ 顺序测试必须变红；把签名改成只签 body → 签名测试必须变红
+
+  验收：容器里全套 pytest 通过（报数字）；本地 `docker compose` 起 Redis，开关开、`CRM_EVENTS_URL` 指向一个本地临时接收端（测试用的小脚本，验签并打印），手工 `enqueue` 三条，看到按序到达、验签通过；停掉接收端再入队，看到退避日志、重启接收端后补齐
+
+- [ ] 🔍 **任务 40.2（C2）：四处入队 + 送达状态转推**（依赖 40.1）
+  文件：`backend/app/routers/whatsapp_webhook.py`、`backend/app/services/notify.py`、`backend/app/services/handover.py`；测试 `backend/tests/test_crm_events_wiring.py`（新增）
+  目标：demo 号上每个访客的每条进出消息、每次接管变化、每个送达状态，都在队列里留下一条契约形状的事件，**顺序与真实发生顺序一致**
+
+  **1. `customer_message`**——`_handle_incoming_message` 开头、`dispatch_message` 之前
+  - 为什么在这里而不在 `dispatch_message` 里：`dispatch_message` 也被已停用的网关入口调用，那条路上的消息不是 demo 号访客；而 bot 回复的入队本来就只能在这个函数的发送循环里做（要拿 Meta 返回的 id），两头放在同一个函数里，顺序一眼可见
+  - 先于去重和每日限额：被限额挡掉的访客也是访客（D9），Meta 重发的同一条由 CRM 按 `wa_message_id` 去重（返回 `duplicate`），chatbot 不再判一次
+  - `visitor`：`_identify` 已经算好的 `Sender`——`phone` = `sender.phone`、`bsuid` = `sender.user_id`、`profile_name` = `sender.username`（它本来就是 username 或资料名）。认不出发件人的消息（`_identify` 返回 None）不推，现有的 SEND_FAILED 照旧
+  - `body`：一个小函数 `_customer_message_body(message)`
+    | 类型 | body |
+    |---|---|
+    | text | 原文 |
+    | image | `[image] 说明`（无说明就 `[image]`）|
+    | document | `[document] 文件名 说明` |
+    | audio | `[voice]`（见待定 1）|
+    | interactive 列表 / 按钮 | 所点那一项的 `title` |
+    | interactive 表单（nfm_reply）| `[form]` |
+    | button（模板快捷按钮）| `button.text` |
+    | 其他 | `[类型名]`，如 `[sticker]` |
+  - `occurred_at`：Meta 消息里的 `timestamp`（有就用），否则入队时刻
+
+  **2. `ai_reply`**——发送成功之后，拿到 `wa_message_id` 才入队
+  - 位置：`_handle_incoming_message` 发送循环里 `send_raw` 返回之后；`_say_instead_of_the_form` 的 `send_raw` 之后；`notify._send` 里 `source != audit.HUMAN` 的分支（定时推送、结束演示总结，见待定 2）
+  - 一个共用函数 `crm_events.outbound(kind, payload, response, text=None)`：从 `response.json()["messages"][0]["id"]` 取 id（取不到打 WARNING、不入队——Meta 200 必带 id，取不到说明响应形状变了）；按 `payload` 的收件人 `to` / `recipient` 读 `user_store` 拿 `visitor` 与 `bot_id`
+  - `bot_id`：发送那一刻 `profile.bot_id`；还没选行业（菜单、初次的 canned）时是 `null`——CRM 那列可空
+  - `body`：text → 正文；列表 / 按钮 → `[list] 正文` / `[buttons] 正文`；表单 → `[form] 正文`；文件 → `[document] 文件名 说明`；模板 → notify 那段我们自己的文字（和 `_remember` 写进历史的是同一句）
+  - **发送失败不入队**：顾客没收到的消息不该出现在 CRM 收件箱里
+
+  **3. `console_reply`**——`notify._send` 里 `source == audit.HUMAN`（即 `/console/reply`）那一路，同一个 `outbound` 函数，`kind` 不同、不带 `bot_id`
+
+  **4. `handover_changed`**——全部放在 `handover.py` 三个函数里，一处
+  - `begin` 真正开始时：`active=true`，`expires_at` = `handover_active_at + settings.handover_idle_seconds`（UTC ISO）；已经在接管中再调一次**不推**（它本来就不算一次新事件）
+  - `touch` 续期时：`active=true`、新的 `expires_at`
+  - `end` 真正结束时（控制台交还、顾客 `menu`）：`active=false`、`expires_at=null`；本来就没接管 → 不推
+  - 空闲到期：不推（见侦察第 2 条，契约已覆盖）
+  - `visitor` 取 `profile.phone` / `profile.user_id` / `profile.username`
+
+  **5. `delivery_status`**——`receive_webhook` 里补读 `value.statuses`，每条 `background_tasks.add_task` 入队（和消息一样不在请求里做，Redis 慢了也不拖住 Meta 的回调）
+  - 只转 `sent` / `delivered` / `read` / `failed`，其他状态值跳过
+  - `status{wa_message_id = id, status, error_code, error_title}`：`failed` 时取 `errors[0].code` / `title`，否则两个都 `null`
+  - `visitor`：`recipient_id`，是 BSUID 形状就放 `bsuid`（同 `_identify` 读两种拼写的做法，再兼读 `recipient_user_id`）
+  - 不判断「这条是不是我们推过的」——CRM 找不到那条消息就返回 `ignored`，契约就是这么设计的
+
+  **一个回合里的顺序**（测试要钉住）：顾客说「转人工」→ `customer_message` → `handover_changed(active)` → `ai_reply(「帮您转接同事」)`；控制台回复 → `console_reply` → `handover_changed(续期)`
+
+  **测试**（`dispatch_message` / webhook / 控制台接口走现有测试的做法，`send_raw` 打桩返回带 `messages[0].id` 的响应，`crm_events` 的 Redis 换成假对象读回队列）
+  - 每种入站类型的 `body`；只有 BSUID 的发件人 `phone is None`
+  - `ai_reply`：带 id、带 `bot_id`、菜单那条 `bot_id is None`；`send_raw` 抛错时不入队；表单降级那条也入队
+  - `console_reply`：经 `/console/reply`，不带 `bot_id`；结束演示总结按待定 2 的结论
+  - 接管：关键词开始、控制台开始、续期、控制台交还、`menu` 结束各一条，字段对；重复 `begin` 不多推；`expires_at` = 活动时刻 + 空闲秒数
+  - 送达：一份带 `statuses` 的 webhook 推出四种状态；`failed` 带错误码；未知状态值不推；同一份 webhook 既有消息又有状态时两边都推
+  - **开关关**：完整走一遍「顾客消息 → bot 回复 → 转人工 → 控制台回复 → 状态回调」，队列为空
+  - 上面那两段顺序
+
+  验收：容器里全套 pytest 通过（报数字）；变异检查——删掉 `handover.touch` 里的入队 → 续期测试变红；把 `customer_message` 挪到发送循环之后 → 顺序测试变红
+
+### 上线步骤（40.1、40.2 都合并后）
+
+1. **合并到 master（推送即自动部署），`CRM_EVENTS_ENABLED` 不设 = 关**。部署后核对：日志里有「crm events off」，真机发一条后 `docker exec infra_redis redis-cli -n 16 LLEN chat:crm_events` 是 0。这一步对线上零行为变化
+2. **等 CRM 侧 CRM-TASK-006 → 007 → 008 → 009 合并部署**（那时接口已上线、密钥未配，一律 503）
+3. Kelvin 在 VPS 上生成一把密钥（`openssl rand -hex 32`），**同一个值**写进 CRM 的 `CHATBOT_EVENTS_SECRET` 和 `/opt/ai_chatbot/backend/.env` 的 `CRM_EVENTS_SECRET`；**先重启 CRM**
+4. 连通性预检（不发事件）：从 chatbot 容器发一个不带签名的 POST，**期望 401**（说明网络通、CRM 已配密钥）；503 = CRM 还没读到密钥；连接错误 = 容器名不对，先停下核对 `docker ps`
+5. `/opt/ai_chatbot/backend/.env` 加 `CRM_EVENTS_ENABLED=true`，`docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**，见 2026-09-13 的运维教训；`restart` 读不到新环境变量）
+6. **真机验收（Kelvin 拿手机做）**：发文字 → CRM 收件箱出现联系人与消息；bot 回复显示「AI · 行业」；说「转人工」→ CRM 显示接管中与到期时间；控制台回复 → 显示为控制台回复、到期时间后延；控制台交还 → 接管结束；看送达对勾随手机已读变化。最后 `LLEN chat:crm_events` 回到 0、`LLEN chat:crm_events:dead` 为 0
+- **回滚**：`CRM_EVENTS_ENABLED=false` + 重建容器。已入队没送出的事件**留在 Redis 里不丢**，重新打开后接着送；真要丢弃就 `DEL chat:crm_events`
+- **不补历史**：打开开关之前的对话不会进 CRM
+
+### 边缘情况（已想过的）
+
+- CRM 长时间不可用：队列在 Redis 里一直长，不设上限（demo 量级，一天几百条）；ERROR 日志每 10 分钟一行提醒。恢复后按序补齐，CRM 靠去重 / 事件时间 / 只升不降保证补投不改坏状态
+- 一条事件被 CRM 永久 401（密钥配错）：整条队列卡住，这是契约「顺序优先」的代价，也正是要告警的原因；修好密钥自动恢复
+- 同一访客两条消息几乎同时到：两个后台任务并发，入队先后由各自线程决定——与 bot 今天的回复顺序同样不保证，CRM 侧以 `occurred_at`（Meta 时间戳）展示即可
+- 部署重建容器的瞬间：旧容器先停、新容器再起，不会有两个消费者；`deliver_one` 在 POST 成功、`LPOP` 之前被杀 → 重启后重发同一条，CRM 去重
+- Redis 里新增的是对话正文：`user_store` 早已在同一个 Redis 里存历史，没有新增个人数据类别；死信是 Redis 列表、不过期，排查完人工 `DEL`
+- 改了 `HANDOVER_IDLE_SECONDS` 重启后，CRM 里已存的 `expires_at` 按旧值算，直到下一次接管事件——可接受
+
+### 待定（请 Kelvin 逐条回）
+
+1. **语音消息推给 CRM 的正文**：A. `[voice]` 占位（推荐，入队只有一处）；B. `[voice] 转写文字`——客服看得懂顾客说了什么，但转写发生在 `dispatch_message` 深处、还要处理「被限额挡掉没转写」的分支，入队点变成两处
+2. **「结束演示」总结**（控制台按钮触发、程序拼的文字）：A. 算 `ai_reply`，带当时的 `bot_id`（推荐——不是人打的字）；B. 算 `console_reply`
+3. **告警渠道**：A. 只打 ERROR 日志（推荐——导演台大屏是给客户看的，演示中途冒一行红色「CRM 同步失败」是事故）；B. 再加导演台红线
+4. **上面侦察里那个「到期后无法重新接管」的既有问题**：A. 单开一个小任务（40.0），先写能跑红的测试再修，排在 40.2 之前（推荐——它是独立的 bug，和 CRM 无关，混进 40.2 审查时说不清哪段是为了什么）；B. 并进 40.2 一起做；C. 先不修
+5. 两个任务都标了 🔍（写外部系统数据 + 顺序状态机），走双 agent 冷审——同意吗？
+6. **分支**：交来的任务说「分支与 PR」，但本仓库的约定是**直接在 master 开发**（后台 job 进 worktree、收尾 ff-merge 回 master），本计划按仓库约定走；要改成 PR 请说
+
+---
+
 ## 运维教训：2026-09-13 —— 一条少了 `-f` 的 compose 命令把线上打挂了
 
 **没改一行代码，线上后端死了十几分钟。** 起因是执行阻塞项 I 的最后一步（改完 `.env` 重建容器），
