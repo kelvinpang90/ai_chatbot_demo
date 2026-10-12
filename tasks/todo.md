@@ -2864,7 +2864,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 ### 上线步骤（40.0、40.1、40.2 都合并后）
 
 1. **合并到 master（推送即自动部署），`CRM_EVENTS_ENABLED` 不设 = 关**。部署后核对：日志里有「crm events off」，真机发一条后 `docker exec infra_redis redis-cli -n 16 LLEN chat:crm_events` 是 0。这一步对线上零行为变化
-2. **等 CRM 侧 CRM-TASK-006 → 007 → 008 → 009 合并部署**（那时接口已上线、密钥未配，一律 503）
+2. **等 CRM 侧 CRM-TASK-006 → 007 → 011 → 008 → 009 合并部署**（那时接口已上线、密钥未配，一律 503）。011 是 2026-10-12 登记时从原 007 拆出的事件处理规则（Kelvin 定，acuven_crm_demo 的 PR #24）：007 只剩号码规范化、各保存入口与冲突查询
 3. Kelvin 在 VPS 上生成一把密钥（`openssl rand -hex 32`），**同一个值**写进 CRM 的 `CHATBOT_EVENTS_SECRET` 和 `/opt/ai_chatbot/backend/.env` 的 `CRM_EVENTS_SECRET`；**先重启 CRM**
 4. 连通性预检（不发事件）：从 chatbot 容器发一个不带签名的 POST，**期望 401**（说明网络通、CRM 已配密钥）；503 = CRM 还没读到密钥；连接错误 = 容器名不对，先停下核对 `docker ps`
 5. `/opt/ai_chatbot/backend/.env` 加 `CRM_EVENTS_ENABLED=true`，`docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**，见 2026-09-13 的运维教训；`restart` 读不到新环境变量）
