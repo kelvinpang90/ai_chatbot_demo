@@ -24,6 +24,7 @@ import time
 
 from app.config import settings
 from app.console import events
+from app.services import crm_events
 from app.services.language import Localized
 from app.services.user_store import user_store
 
@@ -99,6 +100,7 @@ def begin(profile, reason: str = "") -> bool:
     # Taking it over is itself the first sign of life.
     profile.handover_active_at = now
     user_store.save(profile)
+    _tell_crm(profile)
     events.emit(
         type=events.TOOL_START,
         tool=HANDOVER_TOOL,
@@ -128,6 +130,7 @@ def end(profile) -> bool:
     profile.handover_since = 0.0
     profile.handover_active_at = 0.0
     user_store.save(profile)
+    _tell_crm(profile)
     events.emit(
         type=events.TOOL_END,
         tool=HANDOVER_TOOL,
@@ -152,6 +155,23 @@ def touch(profile) -> None:
         return
     profile.handover_active_at = time.time()
     user_store.save(profile)
+    _tell_crm(profile)
+
+
+def _tell_crm(profile) -> None:
+    """Queue this customer's takeover state for the CRM (task 40.2).
+
+    Called where the state really changes -- a takeover starting, being renewed,
+    ending -- and nowhere else. A takeover that lapses is not pushed: nothing
+    runs at that moment (see `active`), and the contract has the CRM read
+    `expires_at` rather than wait to be told.
+    """
+    if profile.handover_since:
+        expires_at = crm_events.utc(profile.handover_active_at + settings.handover_idle_seconds)
+        state = {"active": True, "expires_at": expires_at}
+    else:
+        state = {"active": False, "expires_at": None}
+    crm_events.enqueue("handover_changed", crm_events.visitor_for(profile), handover=state)
 
 
 def active(profile) -> bool:

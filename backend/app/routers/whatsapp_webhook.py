@@ -12,6 +12,7 @@ from app.config import settings
 from app.console import events
 from app.services import (
     audit,
+    crm_events,
     doc_store,
     handover,
     llm,
@@ -160,8 +161,61 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
     payload = await request.json()
     for message, contact in _extract_messages(payload):
         background_tasks.add_task(_handle_incoming_message, message, contact)
+    # Off the request like the messages are, so a slow Redis never holds up
+    # Meta's callback (task 40.2).
+    for status in _extract_statuses(payload):
+        background_tasks.add_task(_forward_status, status)
 
     return Response(status_code=200)
+
+
+# What Meta reports about a message we sent that the CRM shows. Anything else
+# Meta adds later is skipped rather than guessed at.
+FORWARDED_STATUSES = {"sent", "delivered", "read", "failed"}
+
+
+def _extract_statuses(payload: dict) -> list[dict]:
+    """Every delivery receipt in a webhook call. Until task 40.2 these were ignored."""
+    return [
+        status
+        for entry in payload.get("entry", [])
+        for change in entry.get("changes", [])
+        for status in (change.get("value") or {}).get("statuses") or []
+    ]
+
+
+def _forward_status(status: dict) -> None:
+    """Pass one delivery receipt to the CRM.
+
+    Every one, without asking whether it is about a message the CRM has: a
+    receipt for one it never saw comes back `ignored`, which is how the contract
+    wants it. The recipient is a phone number or, for a customer who hid theirs,
+    a BSUID -- `crm_events.visitor` tells the two apart -- and the second
+    spelling is read too, the way `_identify` reads both of the sender's.
+    """
+    state = status.get("status")
+    if state not in FORWARDED_STATUSES:
+        return
+    error = (status.get("errors") or [{}])[0] if state == "failed" else {}
+    crm_events.enqueue(
+        "delivery_status",
+        crm_events.visitor(status.get("recipient_id"), status.get("recipient_user_id"), None),
+        occurred_at=_meta_time(status),
+        status={
+            "wa_message_id": status.get("id"),
+            "status": state,
+            "error_code": error.get("code"),
+            "error_title": error.get("title"),
+        },
+    )
+
+
+def _meta_time(block: dict) -> float | None:
+    """When Meta says something happened. It sends the Unix seconds as a string."""
+    try:
+        return float(block["timestamp"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _extract_messages(payload: dict) -> list[tuple[dict, dict]]:
@@ -252,12 +306,14 @@ def _handle_incoming_message(message: dict, contact: dict | None = None) -> None
         whatsapp.send_typing_indicator(str(message.get("id") or ""))
         for payload in dispatch_message(message, contact):
             try:
-                whatsapp.send_raw(payload)
+                response = whatsapp.send_raw(payload)
             except whatsapp.WhatsAppSendError as refused:
                 fallback = realestate.undelivered_form_fallback(payload)
                 if fallback is None:
                     raise
                 _say_instead_of_the_form(payload, fallback, refused)
+            else:
+                crm_events.outbound("ai_reply", payload, response)
     except Exception as failure:
         logger.exception("Unhandled error processing WhatsApp message %s", message.get("id"))
         # The customer is looking at a chat where nothing arrived. Say so on the
@@ -309,7 +365,8 @@ def _say_instead_of_the_form(payload: dict, fallback: Localized, refused: Except
         return
 
     text = fallback.pick(profile.language if profile else None)
-    whatsapp.send_raw(whatsapp.build_text_message(to, text))
+    said = whatsapp.build_text_message(to, text)
+    crm_events.outbound("ai_reply", said, whatsapp.send_raw(said))
     if profile is None:
         return
     profile.add_message("assistant", text)
@@ -373,16 +430,33 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
         logger.info("Skipping duplicate WhatsApp message %s", message_id)
         return []
 
-    if not session_store.check_and_increment_daily_count(sender.key):
+    msg_type = message.get("type")
+    over_limit = not session_store.check_and_increment_daily_count(sender.key)
+    # Heard before anything else so the CRM gets the words rather than "a voice
+    # note" (Kelvin, 2026-10-12) -- and not for a customer over the cap, who was
+    # never transcribed: Whisper is paid for per minute.
+    spoken = ""
+    if msg_type == "audio" and not over_limit:
+        spoken = _transcribe_voice_note(message.get("audio") or {})
+    # The one place a customer's message goes to the CRM (task 40.2): after the
+    # duplicate check, so Meta's retry of the same message is not pushed twice,
+    # and before the cap, because a customer the cap turns away is still a
+    # visitor the CRM should see.
+    crm_events.enqueue(
+        "customer_message",
+        crm_events.visitor(sender.phone, sender.user_id, sender.username),
+        occurred_at=_meta_time(message),
+        message={"wa_message_id": message_id, "body": _customer_message_body(message, spoken)},
+    )
+
+    if over_limit:
         logger.info("Rate limit hit for %s", sender.key)
         return _canned(sender, RATE_LIMIT_MESSAGE, (message.get("text") or {}).get("body", ""))
 
-    msg_type = message.get("type")
     if msg_type == "interactive":
         return _handle_interactive_reply(sender, message.get("interactive", {}))
 
     if msg_type == "audio":
-        spoken = _transcribe_voice_note(message.get("audio") or {})
         if not spoken:
             return _canned(sender, VOICE_UNREADABLE_MESSAGE)
         # From here it is a text message and nothing downstream is told otherwise:
@@ -438,6 +512,33 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
 
     text = message.get("text", {}).get("body", "")
     return _handle_text_message(sender, text)
+
+
+def _customer_message_body(message: dict, spoken: str) -> str:
+    """A customer's message as the line the CRM's inbox shows (task 40.2).
+
+    The CRM keeps text only, so media becomes a marker and whatever words came
+    with it. A tapped button or list row is what the customer saw on it, the
+    title, not our id for it.
+    """
+    kind = message.get("type")
+    block = message.get(kind) or {}
+    if kind == "text":
+        return block.get("body", "")
+    if kind == "image":
+        return " ".join(part for part in ("[image]", block.get("caption")) if part)
+    if kind == "document":
+        return " ".join(part for part in ("[document]", block.get("filename"), block.get("caption")) if part)
+    if kind == "audio":
+        return " ".join(part for part in ("[voice]", spoken) if part)
+    if kind == "interactive":
+        reply_type = block.get("type")
+        if reply_type == "nfm_reply":
+            return "[form]"
+        return (block.get(reply_type) or {}).get("title") or f"[{reply_type}]"
+    if kind == "button":
+        return block.get("text") or "[button]"
+    return f"[{kind or 'unknown'}]"
 
 
 def _transcribe_voice_note(audio: dict) -> str:

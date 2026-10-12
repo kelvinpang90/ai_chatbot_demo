@@ -30,7 +30,7 @@ from contextvars import ContextVar
 from typing import NamedTuple
 
 from app.console import events
-from app.services import audit, handover, whatsapp, whatsapp_media
+from app.services import audit, crm_events, handover, whatsapp, whatsapp_media
 from app.services.user_store import identity, user_store
 
 logger = logging.getLogger(__name__)
@@ -246,7 +246,14 @@ def _send(
             input={"to": to, "kind": payload.get("type", "")},
             key_id=key_id,
         )
-        whatsapp_media.send_message(payload)
+        response = whatsapp_media.send_message(payload)
+        # A person's line goes to the CRM as theirs; everything else this sends
+        # -- the timed follow-ups, the closing summary -- the program wrote, and
+        # goes as the bot's (task 40.2). Our own wording either way, the one
+        # `_remember` files, which is what a template stands in for.
+        crm_events.outbound(
+            "console_reply" if source == audit.HUMAN else "ai_reply", payload, response, text=push.text
+        )
         events.emit(
             type=events.TOOL_END,
             tool=label,

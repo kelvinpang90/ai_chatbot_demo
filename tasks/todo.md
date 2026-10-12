@@ -2752,7 +2752,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - ⚠️ **40.2 必须 `float(...)`**（冷审提醒，只读推测）：Meta 消息里的 `timestamp` 是**字符串**（如 `"1760000000"`）。原样传进 `enqueue(occurred_at=...)` 会在 `_utc()` 里 `TypeError`，被 `enqueue` 的 try 吞掉、记成「could not queue」——事件静默丢失。40.2 调用处转 `float`，并让一条测试用字符串时间戳走一遍
   - **冷审第 1 轮（`d66dff6`，print 模式，手工起——side session 里没等 Stop hook）**：verdict **clean**，报 0 条、进队列 0 条。核过不是假通过：`integrity.txt` dirty none；审查方自己做了真 Redis + 真线程 + 按契约原文独立验签的端到端（`round-1/e2e/e2e_real_redis.py`），结果与上面手工验收一致；另试了 Redis 挂起 / 不可路由时 `enqueue` 的阻塞时长，约 1.2 秒，与注释一致，因为是绿的所以没报、文件删了（`repro/` 里只剩那条的 pyc）。它跑全套是 `2 failed, 1169 passed`，两条红就是 40.0 记录过的 `CRM_EMAIL` 环境依赖。第二阶段指出的两处：契约已合并但未批准（已更正在上面）；「infra_redis 有多于 16 个库」是从 `user_store` 在用 16 号库推出来的、没直接看配置（接受，上线步骤 1 部署后 `LLEN` 那步自然会暴露）
 
-- [ ] 🔍 **任务 40.2（C2）：四处入队 + 送达状态转推**（依赖 40.1）
+- [x] 🔍 **任务 40.2（C2）：四处入队 + 送达状态转推**（依赖 40.1）
   文件：`backend/app/routers/whatsapp_webhook.py`、`backend/app/services/notify.py`、`backend/app/services/handover.py`；测试 `backend/tests/test_crm_events_wiring.py`（新增）
   目标：demo 号上每个访客的每条进出消息、每次接管变化、每个送达状态，都在队列里留下一条契约形状的事件，**顺序与真实发生顺序一致**
 
@@ -2817,6 +2817,40 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 上面那两段顺序
 
   验收：容器里全套 pytest 通过（报数字）；变异检查——删掉 `handover.touch` 里的入队 → 续期测试变红；把 `customer_message` 挪到发送循环之后 → 顺序测试变红
+
+  **结果（2026-10-12）**：
+  - 做了什么：
+    - `whatsapp_webhook.py`：`dispatch_message` 开头照计划理顺（去重 → 记 `over_limit` → 语音且未超限才转写 → 入队 `customer_message` → 超限返回 canned → 各分支），语音分支直接用上面的 `spoken`；新增 `_customer_message_body`（表照计划）、`_meta_time`（Meta 的 `timestamp` 是字符串，`float()`，缺或坏 → None = 入队时刻，40.1 冷审提醒的那条）；发送循环里 `send_raw` 成功（`try/except/else` 的 `else`）才 `crm_events.outbound("ai_reply", ...)`；`_say_instead_of_the_form` 发送成功后同样入队；`receive_webhook` 补读 `value.statuses`，每条 `background_tasks.add_task(_forward_status, ...)`，只转 `sent/delivered/read/failed`
+    - `notify._send`：`send_message` 返回后 `outbound("console_reply" if source == audit.HUMAN else "ai_reply", payload, response, text=push.text)`
+    - `handover.py`：`begin` 真正开始、`touch`、`end` 真正结束各调一次 `_tell_crm(profile)`；`expires_at` = `handover_active_at + handover_idle_seconds`，未接管 → `active=false, expires_at=null`
+    - `crm_events.py`（计划没列这个文件，但计划写了「共用函数 `crm_events.outbound`」，只能在这里）：加 `outbound`、`_outbound_body`、`visitor_for(profile)`；`_utc` 改名 `utc`（`handover` 要用它算 `expires_at`，加了一行 docstring）
+  - 计划里没写死、我自己定的（审查可挑）：
+    1. `delivery_status` 的 `occurred_at` 取 Meta 回执里的 `timestamp`（同消息的做法），计划只给消息写了这条
+    2. `outbound` 在开关关时**第一行就返回**，连 `response.json()`、`user_store.get` 都不做——「开关关零开销」和 `enqueue` 一致；整个函数 try 包住，绝不让一个已经发出去的回复因为入队出错而在发送循环里被报成 SEND_FAILED
+    3. 回复对象没有档案（例如陌生人第一次说 hi 拿到菜单，菜单不建档）→ `visitor` 只用收件人 `to`，`bot_id=None`
+    4. 未知消息类型且连 `type` 都没有 → `[unknown]`（不是 `[None]`）；列表 / 按钮回复没有 `title` → `[list_reply]` / `[button_reply]`
+    5. `handover_changed` 的 `occurred_at` 用入队时刻（计划没说），与 `handover_active_at` 相差不到 1 毫秒
+  - 测试 `tests/test_crm_events_wiring.py`，37 条，走真路径（签名过的 webhook、`_handle_incoming_message` 发送循环、`/console/reply`、`/console/handover`、`handover`），`send_raw` / `send_message` 打桩成 Meta 的形状（返回带 `messages[0].id`），队列的 Redis 换成只会 `rpush` 的假对象再读回：
+    - 入站：9 种类型的 `body`（参数化：text / image 有无说明 / document / list / button / 表单 / 模板快捷按钮 / sticker），`occurred_at` = Meta 的时间戳；只有 BSUID → `phone is None`、`profile_name` = username；没有 timestamp → 入队时刻；认不出发件人 → 不推
+    - 语音：转写成功 `[voice] 文字`；转写失败 `[voice]`；超限额 `[voice]` 且转写没被调；同一消息 id 两次 → 只推一条、只转写一次
+    - `ai_reply`：带 Meta 的 id、`bot_id`、正文就是发出去的那句；菜单 `bot_id is None` 且正文 `[list] ...`；`send_raw` 抛错 → 不推；Meta 200 但没 id → 不推 + WARNING；表单被拒后的聊天降级 → 推、带 `bot_id`
+    - `console_reply`：经 `/console/reply`，没有 `bot_id` 键、不产生 `ai_reply`；结束演示总结（`send_now` 默认来源，即 `/console/demo-summary` 调的那一句）→ `ai_reply` 带 `bot_id`；模板推送 → 正文是我们自己那句；发给只有 BSUID 的访客（payload 用 `recipient` 不用 `to`）→ `visitor.bsuid` 对、`phone is None`
+    - 接管：关键词开始（`expires_at` 精确等于活动时刻 + 空闲秒数）；控制台开始 → 回复续期（把 `handover` 的时钟拨 120 秒，`expires_at` 跟着后移 120 秒）→ 控制台交还，三条字段逐一对；`menu` 结束；重复 `begin` 只一条；没接管时 `end` 不推
+    - 送达：一份 webhook 四种状态按序推出，`failed` 带错误码和标题，非 failed 两个都 `None`，`occurred_at` 取回执时间戳；未知状态值（`deleted` / `warning`）不推；BSUID 收件人 → `bsuid`；同一份 webhook 既有消息又有状态 → 两边都推
+    - 顺序：「转人工」→ `customer_message`、`handover_changed(active)`、`ai_reply` 正好这三条这个顺序；控制台回复 → `handover_changed`（开始）、`console_reply`、`handover_changed`（续期）
+    - 开关关：签名 webhook 问一句 → 说「转人工」→ 控制台回复 → 控制台交还 → 状态回执，全程 `_client_factory` 一次都没被调；另断言 bot 真的回了、控制台那句真的发了（否则这条可能是空跑的绿）
+  - 验证：
+    - 新测试第一次就全绿——所以先怀疑它，做了下面三次反向检查
+    - 全套（`python:3.13-slim` 容器，带 `CRM_EMAIL` / `CRM_PASSWORD`）：**1208 passed, 10 skipped**（40.1 时 1171 + 本任务 37）
+    - 变异 1：删掉 `touch` 里的 `_tell_crm` → **2 failed**：续期测试 `test_the_console_taking_over_renewing_and_giving_back` + 顺序测试 `test_a_console_reply_is_the_reply_then_the_renewal`
+    - 变异 2：把 `customer_message` 的入队从 `dispatch_message` 删掉、改到 `_handle_incoming_message` 发送循环之后 → **16 failed**，含顺序测试 `test_asking_for_a_person_is_message_then_takeover_then_the_handover_line`（另 15 条是直接调 `dispatch_message` 的入站测试，挪走后自然看不到事件）
+    - 自加的第 3 个：删掉 `enqueue` 开头的开关判断 → 「开关关」那条红。三个变异都已还原（`cmp` 核过）
+    - 没验：真机、真 CRM、线上。按「上线步骤」，这批合并部署后开关仍关，第 1 步核 `crm events off` + `LLEN` = 0；真机全链路是第 6 步，要等 CRM 侧 006–009 部署、两边配密钥之后 Kelvin 拿手机做
+  - 偏离：动了计划文件清单外的 `crm_events.py`（理由见上）；其余无
+  - 已知、未处理：
+    - 网关入口 `/internal/whatsapp/inbound` 也会推 `customer_message`（批次开头已接受；待清理是删掉 `routers/internal_whatsapp.py`，不在本批）
+    - 两条消息几乎同时到时入队先后不保证（边缘情况一节已写，CRM 以 Meta 时间戳 `occurred_at` 展示）
+    - 发给只有 BSUID 的访客时 payload 用 `recipient` 而不是 `to`——`whatsapp._recipient` 自己就写着「未对真机验证」。`outbound` 两个键都读、有一条测试走过，但 Meta 那边真不真这么认，要等真机
 
 ### 上线步骤（40.0、40.1、40.2 都合并后）
 

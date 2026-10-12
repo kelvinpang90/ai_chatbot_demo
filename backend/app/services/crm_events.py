@@ -33,6 +33,7 @@ import httpx
 
 from app.config import settings
 from app.services import phone
+from app.services.user_store import user_store
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,8 @@ def _now() -> float:
     return time.time()
 
 
-def _utc(seconds: float) -> str:
+def utc(seconds: float) -> str:
+    """A moment as the contract spells it: UTC, to the second, with a Z."""
     return datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -152,13 +154,74 @@ def enqueue(event_type: str, who: dict, *, occurred_at: float | None = None, **f
         event = {
             "event_id": str(uuid.uuid4()),
             "type": event_type,
-            "occurred_at": _utc(_now() if occurred_at is None else occurred_at),
+            "occurred_at": utc(_now() if occurred_at is None else occurred_at),
             "visitor": who,
             **fields,
         }
         _redis().rpush(QUEUE_KEY, json.dumps(event, ensure_ascii=False))
     except Exception:
         logger.exception("crm events: could not queue a %s event", event_type)
+
+
+def visitor_for(profile) -> dict:
+    """The visitor an event is about, from their customer record."""
+    return visitor(profile.phone, profile.user_id, profile.username)
+
+
+# How each kind of interactive message is marked in the CRM's inbox: the CRM
+# only shows text, and "[list] Pick a demo" says what the customer was shown.
+_INTERACTIVE_MARKERS = {"list": "[list]", "button": "[buttons]", "flow": "[form]"}
+
+
+def _outbound_body(payload: dict, text: str | None) -> str:
+    """What one message we sent says, as the line the CRM's inbox shows."""
+    if text is not None:
+        return text
+    kind = payload.get("type")
+    if kind == "text":
+        return (payload.get("text") or {}).get("body", "")
+    if kind == "interactive":
+        interactive = payload.get("interactive") or {}
+        marker = _INTERACTIVE_MARKERS.get(interactive.get("type"), "[interactive]")
+        said = (interactive.get("body") or {}).get("text", "")
+        return f"{marker} {said}".strip()
+    if kind == "document":
+        document = payload.get("document") or {}
+        return " ".join(
+            part for part in ("[document]", document.get("filename"), document.get("caption")) if part
+        )
+    return f"[{kind}]"
+
+
+def outbound(kind: str, payload: dict, response, text: str | None = None) -> None:
+    """Queue a message we just sent: `ai_reply` or `console_reply`. Never raises.
+
+    Called only after Meta accepted the send, because the CRM files a message by
+    the id Meta gave it -- and a message the customer never received does not
+    belong in anybody's inbox. `text` overrides what is read off the payload; a
+    push sent as a template passes the sentence we keep for it, which is the one
+    `notify._remember` files too.
+
+    `bot_id` is the demo the customer is in at the moment of sending, None
+    before they have picked one; a console reply has none at all.
+    """
+    if not enabled():
+        return
+    try:
+        try:
+            wa_message_id = response.json()["messages"][0]["id"]
+        except Exception:
+            logger.warning("crm events: Meta's answer to a %s carried no message id; not queued", kind)
+            return
+        to = str(payload.get("to") or payload.get("recipient") or "")
+        profile = user_store.get(to) if to else None
+        who = visitor_for(profile) if profile else visitor(to, None, None)
+        fields = {"message": {"wa_message_id": wa_message_id, "body": _outbound_body(payload, text)}}
+        if kind == "ai_reply":
+            fields["bot_id"] = profile.bot_id if profile else None
+        enqueue(kind, who, **fields)
+    except Exception:
+        logger.exception("crm events: could not queue a %s", kind)
 
 
 def _sign(timestamp: int, body: bytes) -> str:
@@ -247,7 +310,7 @@ def deliver_one(client, http: httpx.Client) -> str:
             "event": raw,
             "status": response.status_code,
             "response": response.text[:DEAD_RESPONSE_CHARS],
-            "failed_at": _utc(_now()),
+            "failed_at": utc(_now()),
         }
         # Filed before it is removed: dying between the two calls costs a
         # second identical dead letter, never the event.
