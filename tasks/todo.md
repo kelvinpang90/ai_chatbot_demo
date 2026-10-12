@@ -2603,7 +2603,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
-## 批次 08：demo 号多客服第 1 阶段「入站进 CRM」——chatbot 侧（2026-10-12 新增，⏳ 计划待 Kelvin 批准）
+## 批次 08：demo 号多客服第 1 阶段「入站进 CRM」——chatbot 侧（2026-10-12 新增，计划同日 Kelvin 批准）
 
 > **上位设计**（2026-10-12 Kelvin 批准）：`acuven_hub/CHATBOT_DEMO_CRM_MULTIAGENT_2026-10-12.md` 的 D1–D11，现行索引 `acuven_hub/DECISIONS.md` J-04、A-18。
 > demo 号是唯一对接 Meta 的一方；所有访客对话（D9）经内部签名接口推给 CRM（`acuven_crm_demo`，原 `crm_os`），CRM 自动指派客服、多客服在收件箱看。
@@ -2617,7 +2617,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 > 3. **不做**：接管时长改 24 小时、CRM → chatbot 的发送接口、「交还 AI」——都是第 2 阶段
 > 4. 第 1、2 阶段之间客服在 CRM 里回复这些访客必然发不出去（CRM 侧如实报 502），已知情
 >
-> **范围边界**：只推 **demo 号上的 WhatsApp 访客**。网页聊天线（`routers/chat.py`）、自动播放（任务 29，走网页线）、导演台 seed 的 `ZZ.SEED*` 假客户（任务 39，直接写库）都**不推**——它们不是 WhatsApp 访客，CRM 那边也没有号码可挂。已停用的网关入口 `/internal/whatsapp/inbound` 也不推（见 C2 第 1 条为什么挂在 `_handle_incoming_message` 而不是 `dispatch_message`）。
+> **范围边界**：只推 **demo 号上的 WhatsApp 访客**。网页聊天线（`routers/chat.py`）、自动播放（任务 29，走网页线）、导演台 seed 的 `ZZ.SEED*` 假客户（任务 39，直接写库）都**不推**——它们不是 WhatsApp 访客，CRM 那边也没有号码可挂。
+> ⚠️ 已停用的网关入口 `/internal/whatsapp/inbound` 也调 `dispatch_message`，而 `customer_message` 为了带上语音转写挂在 `dispatch_message` 里（见 40.2 第 1 条），所以**那条路进来的消息会被推成 `customer_message`**（没有对应的 `ai_reply`，回复由网关发）。网关 2026-08-31 起停用、零流量，接受；**待清理**：删掉 `routers/internal_whatsapp.py` 不在本批范围。
 >
 > **名字**：现有 `app/services/outbox.py` 是「一次回复里随行的附件 / 列表 / 表单」队列，和这里无关。新模块叫 **`app/services/crm_events.py`**，Redis 键叫 `chat:crm_events`，文中一律称「事件队列」，不叫 outbox。
 
@@ -2633,7 +2634,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - 后台线程：本服务没有 lifespan / 常驻线程，`notify` 用的是 `threading.Timer`；单进程（`session_store` 早就以此为前提）
 - Redis：`REDIS_URL=redis://infra_redis:6379/16`，`user_store` 的键前缀 `chat:user:`
 - 网络：chatbot backend 在 `default` / `proxy_net` / `data_net`，CRM backend 在 `proxy_net` / `data_net`，**共享网络已经通，compose 不用改**。nginx 里 CRM 后端容器名是 `crm_os-backend-1:8000`（vps_infra 的 `kelvinpeng.com.conf`），上线前在 VPS 上 `docker ps` 再核一次
-- ⚠️ **顺带发现一个既有问题（读代码判断，未跑）**：`handover.begin` 开头是 `if profile.handover_since: return True`，**不看是否已空闲到期**。到期后 `handover_since` 仍非零，于是：顾客再次说「转人工」→ `begin` 直接返回 True、什么都没刷新 → 下一条消息 bot 照答；控制台再按「接管」→ 同样不刷新 → 回复 409。现有测试 `test_once_it_has_lapsed_the_console_has_to_take_it_over_again` 只测了「到期后回复被拒」，没测「重新接管能成功」。C2 要在 `begin` 里推 `handover_changed`，**这个早退会让「到期后重新接管」既不生效也不推事件**。处理方式见文末待定 4
+- ⚠️ **顺带发现一个既有问题（读代码判断，未跑）**：`handover.begin` 开头是 `if profile.handover_since: return True`，**不看是否已空闲到期**。到期后 `handover_since` 仍非零，于是：顾客再次说「转人工」→ `begin` 直接返回 True、什么都没刷新 → 下一条消息 bot 照答；控制台再按「接管」→ 同样不刷新 → 回复 409。现有测试 `test_once_it_has_lapsed_the_console_has_to_take_it_over_again` 只测了「到期后回复被拒」，没测「重新接管能成功」。C2 要在 `begin` 里推 `handover_changed`，**这个早退会让「到期后重新接管」既不生效也不推事件**。Kelvin 定：单开任务 40.0 先修，排在 40.2 之前
 
 ### 配置项（C1 加进 `config.py` 和 `backend/.env.example`）
 
@@ -2646,6 +2647,19 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 退避、超时、键名是模块常量，不做成配置（没人需要在 VPS 上调它们）：初始退避 2 秒、翻倍、上限 300 秒、成功即复位；单次请求超时 10 秒；队列空时每秒看一次。
 
 ---
+
+**顺序**：40.0 → 40.1 → 40.2，一个 session 一个。40.0 和 40.1 互不依赖，40.2 依赖两者。
+
+- [ ] **任务 40.0：接管空闲到期后能重新接管**（既有 bug，与 CRM 无关；先于 40.2）
+  文件：`backend/app/services/handover.py`、`backend/tests/test_handover.py`
+  问题：见上面侦察最后一条——`begin` 的早退看的是 `handover_since` 而不是 `active()`，到期的记录再也接管不回来
+  做法：早退条件改成 `active(profile)`。已到期的记录按**一次新的接管**处理：`handover_since`、`handover_active_at` 都重置为现在，照常存盘、照常发 TOOL_START。未到期时重复 `begin` 仍然什么都不做（保住「问两次不算两次」）
+  测试（**先写、先跑红**，再改代码）：
+  - 到期后顾客再说「转人工」→ 收到转接那句，下一条消息 bot 不答
+  - 到期后控制台 `POST /console/handover` 接管 → 随后 `/console/reply` 返回 200（现状是 409）
+  - 未到期时再次 `begin` → `handover_since` 不变
+  验收：容器里全套 pytest 通过（报数字）；把改动退回 → 前两条变红
+  不标 🔍：一行条件 + 三条测试
 
 - [ ] 🔍 **任务 40.1（C1）：事件队列 + 顺序投递 + 签名 + 死信，开关默认关**
   文件：`backend/app/config.py`、`backend/app/services/crm_events.py`（新增）、`backend/app/main.py`、`backend/.env.example`；测试 `backend/tests/test_crm_events.py`（新增）
@@ -2661,6 +2675,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     | 422 | 包一层 `{event, status, response(截 500 字), failed_at}` `RPUSH chat:crm_events:dead`，再 `LPOP`；打 ERROR |
     | 401 | 不出队，退避；打 ERROR「签名或时钟不对，查两边密钥」 |
     | 503 / 5xx / 其他 4xx / 连接失败 / 超时 | 不出队，退避；连续失败的**第一次**和之后**每 10 分钟**打一行 ERROR（不每次重试都刷屏） |
+
+    **告警只进日志，不上导演台**（Kelvin 定）：大屏是给客户看的，演示中途冒一行「CRM 同步失败」是事故。查的方法：`docker logs ai_chatbot_backend 2>&1 | grep crm_events`
 
     其他 4xx（比如 404 = 地址配错）归「重试」而不归「死信」：契约只把 422 定为「这条事件本身坏了」，配置错误修好后事件应该还在
   - 签名：`X-Acuven-Timestamp` = **发送那一刻**的 Unix 秒（不是入队时刻——CRM 拒收相差 300 秒以上的，排队或退避过 5 分钟的事件用入队时刻会永远 401）；`X-Acuven-Signature: sha256=<hex>`，HMAC-SHA256(密钥, `f"{ts}.".encode() + body`)。**`body` 就是 Redis 里那串字符串的 UTF-8 字节，原样作请求体**（`content=`，不用 `json=` 让 httpx 重新序列化，否则签的和发的不是同一串字节）
@@ -2686,17 +2702,26 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   文件：`backend/app/routers/whatsapp_webhook.py`、`backend/app/services/notify.py`、`backend/app/services/handover.py`；测试 `backend/tests/test_crm_events_wiring.py`（新增）
   目标：demo 号上每个访客的每条进出消息、每次接管变化、每个送达状态，都在队列里留下一条契约形状的事件，**顺序与真实发生顺序一致**
 
-  **1. `customer_message`**——`_handle_incoming_message` 开头、`dispatch_message` 之前
-  - 为什么在这里而不在 `dispatch_message` 里：`dispatch_message` 也被已停用的网关入口调用，那条路上的消息不是 demo 号访客；而 bot 回复的入队本来就只能在这个函数的发送循环里做（要拿 Meta 返回的 id），两头放在同一个函数里，顺序一眼可见
-  - 先于去重和每日限额：被限额挡掉的访客也是访客（D9），Meta 重发的同一条由 CRM 按 `wa_message_id` 去重（返回 `duplicate`），chatbot 不再判一次
+  **1. `customer_message`**——`dispatch_message` 里、去重之后，**只有一处入队**
+  - 语音要带转写（Kelvin 定），转写发生在 `dispatch_message` 里，所以入队也挂在这里。为了只留一处入队，把 `dispatch_message` 开头几步理一下顺序（各步自身行为不变）：
+    ```
+    去重：重复的直接返回（现状）
+    over_limit = not session_store.check_and_increment_daily_count(sender.key)   # 现状的计数，先存成变量
+    spoken = _transcribe_voice_note(...) if 是语音 and not over_limit else ""      # 从下面的 audio 分支挪上来
+    crm_events 入队 customer_message（body = _customer_message_body(message, spoken)）
+    if over_limit: return 限额 canned（现状）
+    interactive / audio（直接用上面的 spoken）/ image / document / text 各分支：现状不变
+    ```
+  - 去重之后：Meta 重发的同一条在这里就被挡掉，不重复入队，更不重复转写
+  - 限额之前：被限额挡掉的访客也是访客（D9），照推；被挡掉的语音不转写（现状就不转，省 Whisper 的钱），正文是 `[voice]`
   - `visitor`：`_identify` 已经算好的 `Sender`——`phone` = `sender.phone`、`bsuid` = `sender.user_id`、`profile_name` = `sender.username`（它本来就是 username 或资料名）。认不出发件人的消息（`_identify` 返回 None）不推，现有的 SEND_FAILED 照旧
-  - `body`：一个小函数 `_customer_message_body(message)`
+  - `body`：一个小函数 `_customer_message_body(message, spoken)`
     | 类型 | body |
     |---|---|
     | text | 原文 |
     | image | `[image] 说明`（无说明就 `[image]`）|
     | document | `[document] 文件名 说明` |
-    | audio | `[voice]`（见待定 1）|
+    | audio | `[voice] 转写文字`；转写失败、听不出内容或被限额挡掉 → `[voice]` |
     | interactive 列表 / 按钮 | 所点那一项的 `title` |
     | interactive 表单（nfm_reply）| `[form]` |
     | button（模板快捷按钮）| `button.text` |
@@ -2704,7 +2729,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - `occurred_at`：Meta 消息里的 `timestamp`（有就用），否则入队时刻
 
   **2. `ai_reply`**——发送成功之后，拿到 `wa_message_id` 才入队
-  - 位置：`_handle_incoming_message` 发送循环里 `send_raw` 返回之后；`_say_instead_of_the_form` 的 `send_raw` 之后；`notify._send` 里 `source != audit.HUMAN` 的分支（定时推送、结束演示总结，见待定 2）
+  - 位置：`_handle_incoming_message` 发送循环里 `send_raw` 返回之后；`_say_instead_of_the_form` 的 `send_raw` 之后；`notify._send` 里 `source != audit.HUMAN` 的分支（定时推送；**结束演示总结也算 `ai_reply`、带当时的 `bot_id`**——程序拼的字，不是人打的，Kelvin 定）
   - 一个共用函数 `crm_events.outbound(kind, payload, response, text=None)`：从 `response.json()["messages"][0]["id"]` 取 id（取不到打 WARNING、不入队——Meta 200 必带 id，取不到说明响应形状变了）；按 `payload` 的收件人 `to` / `recipient` 读 `user_store` 拿 `visitor` 与 `bot_id`
   - `bot_id`：发送那一刻 `profile.bot_id`；还没选行业（菜单、初次的 canned）时是 `null`——CRM 那列可空
   - `body`：text → 正文；列表 / 按钮 → `[list] 正文` / `[buttons] 正文`；表单 → `[form] 正文`；文件 → `[document] 文件名 说明`；模板 → notify 那段我们自己的文字（和 `_remember` 写进历史的是同一句）
@@ -2729,8 +2754,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   **测试**（`dispatch_message` / webhook / 控制台接口走现有测试的做法，`send_raw` 打桩返回带 `messages[0].id` 的响应，`crm_events` 的 Redis 换成假对象读回队列）
   - 每种入站类型的 `body`；只有 BSUID 的发件人 `phone is None`
+  - 语音：转写成功 → `[voice] 转写文字`；转写失败 → `[voice]`；超限额 → `[voice]` 且转写**没被调用**；同一个消息 id 来两次 → 只入队一条、只转写一次
   - `ai_reply`：带 id、带 `bot_id`、菜单那条 `bot_id is None`；`send_raw` 抛错时不入队；表单降级那条也入队
-  - `console_reply`：经 `/console/reply`，不带 `bot_id`；结束演示总结按待定 2 的结论
+  - `console_reply`：经 `/console/reply`，不带 `bot_id`；结束演示总结是 `ai_reply`、带 `bot_id`
   - 接管：关键词开始、控制台开始、续期、控制台交还、`menu` 结束各一条，字段对；重复 `begin` 不多推；`expires_at` = 活动时刻 + 空闲秒数
   - 送达：一份带 `statuses` 的 webhook 推出四种状态；`failed` 带错误码；未知状态值不推；同一份 webhook 既有消息又有状态时两边都推
   - **开关关**：完整走一遍「顾客消息 → bot 回复 → 转人工 → 控制台回复 → 状态回调」，队列为空
@@ -2738,7 +2764,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
   验收：容器里全套 pytest 通过（报数字）；变异检查——删掉 `handover.touch` 里的入队 → 续期测试变红；把 `customer_message` 挪到发送循环之后 → 顺序测试变红
 
-### 上线步骤（40.1、40.2 都合并后）
+### 上线步骤（40.0、40.1、40.2 都合并后）
 
 1. **合并到 master（推送即自动部署），`CRM_EVENTS_ENABLED` 不设 = 关**。部署后核对：日志里有「crm events off」，真机发一条后 `docker exec infra_redis redis-cli -n 16 LLEN chat:crm_events` 是 0。这一步对线上零行为变化
 2. **等 CRM 侧 CRM-TASK-006 → 007 → 008 → 009 合并部署**（那时接口已上线、密钥未配，一律 503）
@@ -2758,14 +2784,14 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - Redis 里新增的是对话正文：`user_store` 早已在同一个 Redis 里存历史，没有新增个人数据类别；死信是 Redis 列表、不过期，排查完人工 `DEL`
 - 改了 `HANDOVER_IDLE_SECONDS` 重启后，CRM 里已存的 `expires_at` 按旧值算，直到下一次接管事件——可接受
 
-### 待定（请 Kelvin 逐条回）
+### 已定（Kelvin 2026-10-12 逐条回复）
 
-1. **语音消息推给 CRM 的正文**：A. `[voice]` 占位（推荐，入队只有一处）；B. `[voice] 转写文字`——客服看得懂顾客说了什么，但转写发生在 `dispatch_message` 深处、还要处理「被限额挡掉没转写」的分支，入队点变成两处
-2. **「结束演示」总结**（控制台按钮触发、程序拼的文字）：A. 算 `ai_reply`，带当时的 `bot_id`（推荐——不是人打的字）；B. 算 `console_reply`
-3. **告警渠道**：A. 只打 ERROR 日志（推荐——导演台大屏是给客户看的，演示中途冒一行红色「CRM 同步失败」是事故）；B. 再加导演台红线
-4. **上面侦察里那个「到期后无法重新接管」的既有问题**：A. 单开一个小任务（40.0），先写能跑红的测试再修，排在 40.2 之前（推荐——它是独立的 bug，和 CRM 无关，混进 40.2 审查时说不清哪段是为了什么）；B. 并进 40.2 一起做；C. 先不修
-5. 两个任务都标了 🔍（写外部系统数据 + 顺序状态机），走双 agent 冷审——同意吗？
-6. **分支**：交来的任务说「分支与 PR」，但本仓库的约定是**直接在 master 开发**（后台 job 进 worktree、收尾 ff-merge 回 master），本计划按仓库约定走；要改成 PR 请说
+1. 语音推给 CRM 的正文**带转写文字**——所以 `customer_message` 挂在 `dispatch_message` 里（40.2 第 1 条），代价是已停用的网关入口也会推（见批次开头）
+2. 「结束演示」总结算 `ai_reply`，带当时的 `bot_id`
+3. 告警只打 ERROR 日志，不上导演台
+4. 「到期后无法重新接管」单开任务 40.0，先写跑红的测试再修，排在 40.2 之前
+5. 40.1、40.2 走双 agent 冷审（🔍）
+6. 直接在 master 开发（后台 job 进 worktree，收尾 ff-merge 回 master），不开 PR
 
 ---
 
