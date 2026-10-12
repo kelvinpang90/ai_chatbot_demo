@@ -2857,6 +2857,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - 新测试：`test_crm_events.py::test_after_a_failed_write_redis_is_left_alone_for_a_while`（失败一次后 29 秒内零调用 + 丢弃日志，满 30 秒恢复写入）；`test_crm_events_wiring.py::test_a_redis_that_is_down_costs_one_timeout_not_one_per_message`——审查方 repro 的意图，用真 redis-py 客户端打不可达地址 `10.255.255.1`，量回复里相邻消息的间隔 < 0.5 秒、整个回合 < 一次超时 + 0.5 秒。**在修复前的 `crm_events.py`（`529178a`）上跑红，红在间隔 1.01 秒**（第一版这条测试红在 `AttributeError`，不算数，改成用日志判断「Redis 确实被试过」后重做，才红在对的地方）；修复后绿
     - **repro 仍红，驳回其第一条断言**：它把 `send_times[0]` 当成问候语，但 `_handle_incoming_message` 第一个 `send_raw` 是「对方正在输入」提示（`send_typing_indicator` 也走 `send_raw`）——它自己的输出 `first send after 0.00s` 就是这个。所以它的 `gap` 量的是「输入提示 → 问候语」，即 Redis 刚挂时**第一次**入队（`customer_message`）付的那 1 秒。修复后实测：`gap 1.05s, turn 1.05s`（修前 `turn 3.06s`），第二条断言 `total < 1.5` 已过。这 1 秒每 30 秒最多付一次，和 `user_store` 在同一个 Redis 上付的完全一样；同步入队就不可能是 0——要彻底不碰顾客线程得改成内存队列 + 写线程，那是改 40.1 已批准的设计，不在本修复范围，如有必要另开任务
     - 全套：**1210 passed, 10 skipped**
+  - **冷审第 2 轮（`19abf1c`，复验）**：verdict **clean**，报 0 条。`integrity.txt` dirty none。审查方在第 1 轮的端到端脚本上重跑（真 FastAPI + lifespan 起的真消费线程、真 Redis、签名 webhook、真 `/console/*`、按契约验签的假 CRM）：16 个事件真实顺序全对，队列 0、死信 0；Redis 挂掉：开关关 0.01 秒 / 回合，开关开 1.02 / 0.02 / 0.02 秒（第 1 轮 2.03 / 3.06 / 2.03 秒）。它认可了对 repro 第一条断言的驳回（亲自重跑，同样是输入提示 → 问候语那 1 秒）
+    - 它指出、记录里没写清的一条（不算 finding，补在这里）：断路器会把**一次偶发的 Redis 错误**（例如 Redis 其实活着、只是一次操作超时）也变成**30 秒内所有访客的事件被丢弃**，包括 `handover_changed`。这是照搬 `user_store` 的有意取舍：CRM 显示接管状态时以 `expires_at` 为准，丢一条续期最坏是 CRM 早一点显示「AI 在回」；丢掉的消息不会补。偶发错误真的出现时，日志里有逐条 `dropped a ... event`
+    - 两轮都没人验过的边界（审查方也承认）：Meta 对只有 BSUID 的访客，发送用 `recipient`、回执用 `recipient_user_id`，两边都是按文档猜的，要等真机
 
 ### 上线步骤（40.0、40.1、40.2 都合并后）
 
