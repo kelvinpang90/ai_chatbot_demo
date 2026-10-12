@@ -2717,7 +2717,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - `crm_events.py`（新增）：`visitor` / `enqueue` / `deliver_one` / `Backoff` / `run_forever` / `start` / `reset`，键 `chat:crm_events`、`chat:crm_events:dead`，常量照计划（2s 翻倍封顶 300s、单次 10s、空队列 1s、告警间隔 600s、死信响应截 500 字）。Redis 客户端与 `user_store` 同样的 1 秒超时，测试经模块变量 `_client_factory` 注入（`UserStore` 是构造参数，这里是模块函数，所以是模块变量）；时钟经 `_now` 注入
     - `config.py` 三项、`.env.example` 一段（含生成密钥、生效命令、查日志的方法）；`main.py` 加 `lifespan` 调 `crm_events.start()`
     - 没有任何业务代码调 `enqueue`（那是 40.2）
-  - 与契约核对：读的是 `origin/docs/chatbot-inbound-design:docs/chatbot-events.md`（`71f9ff5`，尚未合并进 acuven_crm_demo 的 master）。与本计划**无冲突**。契约没写密钥按什么字节进 HMAC：这里用 `CRM_EVENTS_SECRET` 字符串的 UTF-8 字节（`openssl rand -hex 32` 生成的是 ASCII，不会有歧义）——CRM-TASK-008 验签要用同一种，已在下面「留给 40.2 / CRM 侧」写明
+  - 与契约核对：读的是 `origin/docs/chatbot-inbound-design:docs/chatbot-events.md`（`71f9ff5`）。**更正（冷审指出）**：它已作为 `b5af458`（#17）合进 acuven_crm_demo 的 master，内容与 `71f9ff5` 逐字相同（`git diff` 为空）；但文档头仍写「状态：待 Kelvin 批准」——本实现所依据的契约本身还没批准，契约若改，40.1 跟着改。与本计划**无冲突**。契约没写密钥按什么字节进 HMAC：这里用 `CRM_EVENTS_SECRET` 字符串的 UTF-8 字节（`openssl rand -hex 32` 生成的是 ASCII，不会有歧义）——CRM-TASK-008 验签要用同一种，已在下面「留给 40.2 / CRM 侧」写明
   - 计划里没写死、我自己定的（审查可挑）：
     1. `enqueue` 多了一个关键字参数 `occurred_at`（Unix 秒，缺省 = 现在）：40.2 的 `customer_message` 要用 Meta 的 `timestamp`，现在加上省得 40.2 再改本模块的签名。一条测试钉住
     2. `visitor()` 收到 BSUID 形状的「号码」会挪到 `bsuid`（用 `phone.is_bsuid` 判断）——40.2 的 `delivery_status` 只有一个 `recipient_id`，计划要求「是 BSUID 形状就放 `bsuid`」，放在这里一处做。「两个都空不入队 + ERROR」放在 `enqueue` 里查，调用方绕不过去
@@ -2749,6 +2749,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 留给 40.2 / CRM 侧：
     - CRM-TASK-008 验签时密钥取 `CHATBOT_EVENTS_SECRET` 字符串的 UTF-8 字节，签名串 = `f"{ts}."` 的字节 + 原始请求体字节，与这里一致
     - `enqueue` 失败用 `logger.exception`，带完整 traceback；Redis 整个挂掉时每条消息一段 traceback。量级是 demo 的（一天几百条），先这样；嫌吵再改成节流
+    - ⚠️ **40.2 必须 `float(...)`**（冷审提醒，只读推测）：Meta 消息里的 `timestamp` 是**字符串**（如 `"1760000000"`）。原样传进 `enqueue(occurred_at=...)` 会在 `_utc()` 里 `TypeError`，被 `enqueue` 的 try 吞掉、记成「could not queue」——事件静默丢失。40.2 调用处转 `float`，并让一条测试用字符串时间戳走一遍
+  - **冷审第 1 轮（`d66dff6`，print 模式，手工起——side session 里没等 Stop hook）**：verdict **clean**，报 0 条、进队列 0 条。核过不是假通过：`integrity.txt` dirty none；审查方自己做了真 Redis + 真线程 + 按契约原文独立验签的端到端（`round-1/e2e/e2e_real_redis.py`），结果与上面手工验收一致；另试了 Redis 挂起 / 不可路由时 `enqueue` 的阻塞时长，约 1.2 秒，与注释一致，因为是绿的所以没报、文件删了（`repro/` 里只剩那条的 pyc）。它跑全套是 `2 failed, 1169 passed`，两条红就是 40.0 记录过的 `CRM_EMAIL` 环境依赖。第二阶段指出的两处：契约已合并但未批准（已更正在上面）；「infra_redis 有多于 16 个库」是从 `user_store` 在用 16 号库推出来的、没直接看配置（接受，上线步骤 1 部署后 `LLEN` 那步自然会暴露）
 
 - [ ] 🔍 **任务 40.2（C2）：四处入队 + 送达状态转推**（依赖 40.1）
   文件：`backend/app/routers/whatsapp_webhook.py`、`backend/app/services/notify.py`、`backend/app/services/handover.py`；测试 `backend/tests/test_crm_events_wiring.py`（新增）

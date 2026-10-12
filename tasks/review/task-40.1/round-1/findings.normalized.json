@@ -1,0 +1,20 @@
+{
+  "task": "40.1",
+  "round": "1",
+  "commit": "d66dff6918b4cf0ae4087c3cd528fd7b1dd66ff9",
+  "base": "c701ebc23874929a5c176acc52e388b28e17f400",
+  "verdict": "clean",
+  "suite_result": "2 failed, 1169 passed, 10 skipped（pytest_docker.sh，未改动的 d66dff6）。两条失败是 tests/test_seed_console.py::test_an_unreachable_erp_clears_nothing / test_an_unreachable_erp_clears_no_crm_rows：容器里没有 CRM_EMAIL/CRM_PASSWORD，main() 提前返回 2（期望 1）。40.1 的 diff 没碰 seed_console 及其测试，40.0 的记录里已写明这是既有的环境依赖问题，不算本任务的问题。test_crm_events.py 全绿。",
+  "findings": [],
+  "phase2": {
+    "rebuttals": "大部分理由成立，我在冷审里独立得到了相同结论（e2e 顺序、验签、退避、补齐、时间戳取投递时刻）。不成立或不准确的有两处，都不影响代码：1）『契约读的是 origin/docs/chatbot-inbound-design（71f9ff5），尚未合并进 acuven_crm_demo 的 master』——已经不对了，b5af458『docs: design the chatbot event intake for phase one (#17)』已在 origin/master，我读的就是 origin/master:docs/chatbot-events.md，内容与开发方依据的一致；但文档头仍写『状态：待 Kelvin 批准』，也就是说这份实现所依据的契约本身还没批准，开发方说『与本计划无冲突』没错，却没有提这个前提。2）『线上 user_store 早就在用 infra_redis 的 16 号库，说明 infra_redis 配了多于 16 个库，不是问题』——推理本身合理，但它是从别的服务的行为推出来的，不是直接看过 infra_redis 的 databases 配置；作为不重要的附注可以接受。第 3 条（401 也节流，偏离计划表『401 打 ERROR』）理由成立：退避封顶 300 秒，不节流就是每小时 12 行同样的 ERROR，计划想避免的正是这个，而且 401 的文案仍然点名 CRM_EVENTS_SECRET。变异 1 里连接错误 / 超时仍绿的解释也成立（那是另一个分支）。",
+    "blind_spot": "开发方主动承认、我第一阶段没写出来的：1）契约没规定密钥按什么字节进 HMAC（这里用 UTF-8 字节），CRM-TASK-008 必须用同一种——我只对照了签名串格式，没注意到契约在密钥编码上留了空白；2）enqueue 失败用 logger.exception，Redis 整个挂掉时每条消息一段 traceback，与 deliver 那侧的告警节流不对称——我只看了它不抛，没看日志量；3）他的 e2e 额外发了一个不带签名的 POST 证明接收端真的在拒，我的接收端会对坏签名回 401，但我没实际打一次坏签名去证明这一点，所以我那句『sig-ok』只证明了『验签代码判通过』，没证明『验签代码会判不通过』——正是 REVIEW.md 说的『一条好断言写完就该抓到点什么』，我在自己的探针上漏了这一步。盲区归纳：我把注意力放在『代码会不会做错事』上，对『跨仓库契约里没写清楚的地方』和『运行时的可观测性成本（日志量）』看得少；对自己写的验证工具也没有做反向检查。"
+  },
+  "self_check": {
+    "spec_coverage": "逐条对过规格的测试清单：开关关零调用 Redis / 不起线程、缺密钥或缺 REDIS_URL 按关处理并打 ERROR、事件形状（uuid4、Z 结尾、仅 BSUID 时 phone=None、两者皆空不入队）、签名独立重算 + 字节逐一相等 + 拨钟 400 秒后时间戳取投递时刻、A/B/C 顺序且 A 失败期间 B 从未出现、200/422/401/503/500/404/连接错/超时各返回码、退避 2→4→…→300 与复位、Redis 写失败不抛、lifespan 调 start，全部有测试。两条变异检查按测试写法会变红：签名测试用 hmac 独立重算而不是调模块的 _sign；顺序测试断言 crm.event_ids()==[a,a] 和最终 [a,a,a,b,c]，失败也出队会让 b 提前出现。没有发现同义反复：FakeRedis 的 lindex/lpop 语义与真 Redis 一致，Crm 用的是真 httpx.MockTransport，异常是真 httpx 异常类型（ConnectError/ReadTimeout）。",
+    "e2e": "自己做了一次规格要求的端到端（脚本在 round-1/e2e/e2e_real_redis.py）：docker 网络里起 redis:7-alpine，python:3.13-slim 挂被审 backend（只读），用 _default_client 建的真 redis-py 客户端 + 真 httpx + 真后台线程（crm_events.start()），接收端按 acuven_crm_demo docs/chatbot-events.md 的原文独立验签（HMAC(secret, ts + '.' + 原始字节)、±300 秒）。结果：三条含中文/重音/符号的事件按 A、B、C 顺序到达且全部 sig-ok，队列归零；关掉接收端再入队 D、E → 第一次 ERROR『could not reach the CRM』，之后只有 INFO 级『retrying in 2/4/8 seconds』（没刷屏）、LLEN=2；重开接收端 → D、E 按序补齐、『delivering again after 3 failed attempts』、LLEN 0、DEAD 0。另外用一个只 accept 不应答的 TCP 端口（挂起的 Redis）和一个不可路由地址测了 enqueue 的阻塞时长，两种都约 1.2 秒，与代码注释『must cost a second』一致——这条试探是绿的，所以没进 findings，文件已删。没验：真 uvicorn 进程下 lifespan 起线程（只有 TestClient + patch 的测试覆盖了『调用了 start』）；真 CRM 接口（CRM-TASK-008 尚未实现，只有设计文档，无法对接）；线上 infra_redis 的 db 16（本地 Redis 只有 16 个库，用的是 db 1）。",
+    "security": "新增的 CRM_EVENTS_SECRET 在 config.py 和 .env.example 里都是空默认值，diff 里没有任何密钥；CRM_EVENTS_URL 默认是 Docker 内网容器名，不是秘密。签名用 hmac.new + sha256，请求体用 content= 原样发送，签的和发的是同一串字节（e2e 里独立验签通过）。死信里存的是对话正文，与 user_store 已存历史同一类数据，规格已说明。没有新的公开仓库泄露面（AR-2 不受影响）。",
+    "spec_deviation": "没有发现无正当理由的偏离。几处与规格字面不同但等价或更严：enqueue 签名是 enqueue(event_type, who, *, occurred_at=None, **fields)，多了一个 occurred_at 关键字参数，是 40.2 用 Meta 时间戳要的；visitor() 把形如 BSUID 的 phone 挪到 bsuid，用的是 phone.is_bsuid，符合『不另写规则』；『至少一个非空』的检查放在 enqueue 而不是 visitor，调用方绕不过去。留给 40.2 的提醒（只读推测，不算 finding）：Meta 消息里的 timestamp 是字符串，若 40.2 原样传进 occurred_at，_utc() 会抛 TypeError，被 enqueue 的 try 吞掉，记成『could not queue』，事件静默丢失——40.2 调用方需要 float(...)。"
+  },
+  "queued_count": 0
+}
