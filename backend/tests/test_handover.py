@@ -799,6 +799,68 @@ def test_once_it_has_lapsed_the_console_has_to_take_it_over_again(_console_token
     sent.assert_not_called()
 
 
+def test_asking_for_a_person_again_after_it_lapsed_gets_one():
+    """Task 40.0. A lapsed takeover still carries its `handover_since`, and
+    `begin` used to read that as "already in a person's hands" and do nothing:
+    the customer was told a colleague was coming and the bot answered the very
+    next message."""
+    phone = "60129998044"
+    _customer(phone)
+    _take_over(phone)
+    _idle_for(phone, settings.handover_idle_seconds + 60)
+
+    with patch.object(llm, "get_reply", return_value="(the bot should not answer)") as get_reply:
+        sent = dispatch_message(_said(phone, "can I speak to a human please", seq=44))
+        assert sent[0]["text"]["body"] == handover.HANDED_OVER_MESSAGE.en
+
+        sent = dispatch_message(_said(phone, "hello?", seq=45))
+
+    assert sent == []
+    get_reply.assert_not_called()
+
+
+def test_once_it_has_lapsed_the_console_can_take_it_over_again(_console_token):
+    """The other half of the test above: "has to take it over again" is only
+    fair if taking it over again works."""
+    phone = "60129998045"
+    _customer(phone)
+    _take_over(phone)
+    _idle_for(phone, settings.handover_idle_seconds + 60)
+
+    taken = client.post(
+        "/console/handover",
+        json={"key_id": phone, "active": True},
+        headers={"X-Console-Token": TOKEN},
+    )
+    assert taken.status_code == 200
+
+    with patch.object(notify, "send_now"):
+        response = client.post(
+            "/console/reply",
+            json={"key_id": phone, "text": "sorry for the wait"},
+            headers={"X-Console-Token": TOKEN},
+        )
+
+    assert response.status_code == 200
+
+
+def test_asking_again_before_it_lapses_still_changes_nothing():
+    """The fix for the two tests above must not turn a customer who asks twice
+    into a second takeover -- including late in the idle window, where a fresh
+    one would quietly hand the person a whole new idle window."""
+    phone = "60129998046"
+    _customer(phone)
+    _take_over(phone)
+    _idle_for(phone, settings.handover_idle_seconds - 60)
+    before = user_store.get(phone)
+
+    _take_over(phone)
+
+    after = user_store.get(phone)
+    assert after.handover_since == before.handover_since
+    assert after.handover_active_at == before.handover_active_at
+
+
 def test_a_customer_typing_into_the_silence_does_not_keep_it_alive():
     """Only the person's own actions count. Somebody still writing to a
     conversation nobody is reading is the failure this ceiling exists for, not

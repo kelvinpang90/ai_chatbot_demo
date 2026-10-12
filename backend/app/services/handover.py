@@ -83,11 +83,14 @@ def begin(profile, reason: str = "") -> bool:
 
     Already in a person's hands is not an error and not a second event: a
     customer who asks twice while waiting has not asked for anything new.
+    A takeover that has lapsed is not in anybody's hands, though, even with
+    `handover_since` still on the record (see `active`): asking again starts a
+    new one. Task 40.0 -- the old check read the stale field and did nothing.
     """
     if profile is None:
         logger.warning("asked to hand over a customer who is not on file")
         return False
-    if profile.handover_since:
+    if active(profile):
         return True
 
     key_id = profile.key_id

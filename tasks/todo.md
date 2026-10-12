@@ -2650,7 +2650,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 **顺序**：40.0 → 40.1 → 40.2，一个 session 一个。40.0 和 40.1 互不依赖，40.2 依赖两者。
 
-- [ ] **任务 40.0：接管空闲到期后能重新接管**（既有 bug，与 CRM 无关；先于 40.2）
+- [x] **任务 40.0：接管空闲到期后能重新接管**（既有 bug，与 CRM 无关；先于 40.2）
   文件：`backend/app/services/handover.py`、`backend/tests/test_handover.py`
   问题：见上面侦察最后一条——`begin` 的早退看的是 `handover_since` 而不是 `active()`，到期的记录再也接管不回来
   做法：早退条件改成 `active(profile)`。已到期的记录按**一次新的接管**处理：`handover_since`、`handover_active_at` 都重置为现在，照常存盘、照常发 TOOL_START。未到期时重复 `begin` 仍然什么都不做（保住「问两次不算两次」）
@@ -2660,6 +2660,20 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 未到期时再次 `begin` → `handover_since` 不变
   验收：容器里全套 pytest 通过（报数字）；把改动退回 → 前两条变红
   不标 🔍：一行条件 + 三条测试
+
+  **结果（2026-10-12）**：
+  - 做了什么：`handover.begin` 的早退从 `if profile.handover_since` 改成 `if active(profile)`，docstring 补一句为什么。已到期的记录走下面原有的接管路径——`handover_since` / `handover_active_at` 重置为现在、存盘、发 TOOL_START，没加新分支
+  - 新测试（`test_handover.py`，紧跟 `test_once_it_has_lapsed_the_console_has_to_take_it_over_again`）：
+    - `test_asking_for_a_person_again_after_it_lapsed_gets_one`：到期后说「can I speak to a human please」→ 收到转接那句；下一条 `hello?` → 不发任何东西、`llm.get_reply` 没被调
+    - `test_once_it_has_lapsed_the_console_can_take_it_over_again`：到期后 `POST /console/handover` 接管 → `/console/reply` 200
+    - `test_asking_again_before_it_lapses_still_changes_nothing`：空闲到「上限减 60 秒」时再 `begin` → `handover_since` 和 `handover_active_at` 都不变（比计划多查了 `handover_active_at`：未到期时重复接管若刷新它，等于白送一整段空闲窗口）。这条在旧代码下本来就绿，是护栏不是复现
+  - 偏离：无
+  - 验证：
+    - 先写测试、旧代码下跑：恰好前两条红（`2 failed, 86 passed`，`test_handover.py`）
+    - 修完全套（`python:3.13-slim` 容器）：**1142 passed, 10 skipped**
+    - 退回检查：把 `handover.py` 换回 HEAD 版再跑 `test_handover.py` → 恰好前两条红，失败原因就是 bug 本身（第一条是 bot 照答了 `(the bot should not answer)`，第二条是 `409 == 200`）；换回修复后恢复全绿
+    - 没验：线上 / 真机。到期要等两小时（或把 `HANDOVER_IDLE_SECONDS` 调小），本任务没上手机走一遍
+  - ⚠️ 跑全套的坑：worktree 里没有 `backend/.env`（被 gitignore），不带 `CRM_EMAIL` / `CRM_PASSWORD` 时 `test_seed_console.py` 的两条 `*unreachable*` 会因为 `main()` 提前返回 2 而红（预期 1）——**与本改动无关**，容器加 `-e CRM_EMAIL=x@example.com -e CRM_PASSWORD=x` 即全绿。测试依赖环境变量这件事本身算待清理项，不在本任务范围
 
 - [ ] 🔍 **任务 40.1（C1）：事件队列 + 顺序投递 + 签名 + 死信，开关默认关**
   文件：`backend/app/config.py`、`backend/app/services/crm_events.py`（新增）、`backend/app/main.py`、`backend/.env.example`；测试 `backend/tests/test_crm_events.py`（新增）
