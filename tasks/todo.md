@@ -2864,6 +2864,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 ### 上线步骤（40.0、40.1、40.2 都合并后）
 
 1. **合并到 master（推送即自动部署），`CRM_EVENTS_ENABLED` 不设 = 关**。部署后核对：日志里有「crm events off」，真机发一条后 `docker exec infra_redis redis-cli -n 16 LLEN chat:crm_events` 是 0。这一步对线上零行为变化
+   - ✅ **已做（2026-10-12，只读上 VPS 核对）**：`ai_chatbot_backend` 启动于 06:04:34Z，与 `4f7849b` 那次部署的 `backend Started` 同一刻；`docker logs` 有 `INFO:app.services.crm_events:crm events off`；`/opt/ai_chatbot/backend/.env` 里没有任何 `CRM_EVENTS_*` 键（即开关关）；用一次性 `redis:7-alpine` 容器连 `infra_redis`（没有 `docker exec`，权限策略会拦）查 16 号库：`LLEN chat:crm_events` = 0、`LLEN chat:crm_events:dead` = 0；顺带看到 `infra_redis` 的 `databases` = 256（40.1 记录里「16 号库可用」从推断变成核实）
+   - 没做：「真机发一条后」再查 `LLEN`——没人拿手机发。开关关时 `enqueue` 在碰 Redis 之前就返回（`test_switched_off_a_whole_conversation_queues_nothing` 钉着），所以发不发 `LLEN` 都应是 0；真机那一下留到第 6 步一起看
+   - ⚠️ 核对时我用 `grep -i sha` 筛容器环境变量想找构建版本，误把 `INTERNAL_SHARED_SECRET`（已停用网关调 `/internal/whatsapp/inbound` 的密钥）的值打印进了会话记录。没写进仓库或任何文件。是否轮换 / 清空**待 Kelvin 定**；清空则该入口拒绝一切请求（网关已停用，无影响）
 2. **等 CRM 侧 CRM-TASK-006 → 007 → 008 → 009 合并部署**（那时接口已上线、密钥未配，一律 503）
 3. Kelvin 在 VPS 上生成一把密钥（`openssl rand -hex 32`），**同一个值**写进 CRM 的 `CHATBOT_EVENTS_SECRET` 和 `/opt/ai_chatbot/backend/.env` 的 `CRM_EVENTS_SECRET`；**先重启 CRM**
 4. 连通性预检（不发事件）：从 chatbot 容器发一个不带签名的 POST，**期望 401**（说明网络通、CRM 已配密钥）；503 = CRM 还没读到密钥；连接错误 = 容器名不对，先停下核对 `docker ps`
