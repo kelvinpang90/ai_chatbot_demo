@@ -2895,6 +2895,174 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
+## 批次 09：demo 号多客服第 2 阶段 C3「CRM 客服消息经 chatbot 发到 WhatsApp」（2026-10-20 新增，计划与下面 8 条自定取舍同日 Kelvin 批准）
+
+> **接口与行为契约**：`acuven_crm_demo` 的 `docs/chatbot-replies.md` **第四、五节**（已批准，Kelvin 2026-10-13；PR #28 / #31）。读的是 `origin/master`（`fdfd8e7`，该文件最后一次改动 `ff81d57`）：
+> `git -C E:\projects\acuven_crm_demo show origin/master:docs/chatbot-replies.md`
+> 第 1 阶段契约 `docs/chatbot-events.md` 不变，本批只在它上面加 `agent_reply` 一种事件。契约若改，以它为准，本计划跟着改。
+>
+> **范围**：只做 C3（`POST /internal/crm/send`）。**不做** C4（`/internal/crm/handback`、`HANDOVER_IDLE_SECONDS` 改 86400）——另开批次；不改 CRM 仓库；不部署、不调真实 Meta / VPS。
+> 沿用 P5 / Q6：人工会话做，不登记进 OpenClaw。直接在 master 开发。
+>
+> **上线顺序里的位置**（契约第十节）：第 1 阶段上线且事件开关已开 → CRM-012 → **C3、C4 部署（未配 `CRM_SEND_SECRET`，一律 503）** → CRM-013 … 所以 41.1–41.3 推上去时线上永远是 503，半成品接口对线上零影响。
+
+### 现状侦察（2026-10-20，读代码，未跑）
+
+- `whatsapp.send_raw` 对 4xx / 5xx 一律抛 `WhatsAppSendError`，**只带拼好的文字、不带状态码**；网络错误 / 超时是 httpx 自己的异常。C3 要区分「Meta 明确拒绝（4xx）」和「结果不明（5xx / 网络 / 超时）」，现有异常分不出来
+- 控制台回复（`notify._send`）**吞掉 Meta 拒绝、照样返回 200**——契约第十三节点名 C3 **不能照搬**；所以 C3 不走 `notify.send_now`，自己调 `send_raw`
+- `handover.begin` 在已接管时直接返回、不续期 → C3 按「`active()` 为假调 `begin`，否则 `touch`」（契约第五节第 4.3 步）
+- `handover._tell_crm` 入队时 `occurred_at` 由 `crm_events.enqueue` **自己再取一次** `_now()`，与 `handover_active_at` 是两次取时钟——跨秒时两者的秒数不同。契约要求响应里的 `occurred_at` 与 `handover_changed` 事件**同一个值**，所以要把「变化那一刻」从 `handover` 传进 `enqueue`
+- 访客档案只按一个键存（号码或 BSUID）、7 天滑动；`user_store` Redis 挂了退回内存。没有任何基于 Redis 的幂等工具，C3 新建 `chat:crm_send:` 键
+- 审计 `chat_messages.source` 是 `VARCHAR(16)`，没有「是谁」的列；`tool_calls.input` 是 JSON
+- `frontend/nginx.conf` 没有 `/internal/` 的 location（只有 `/api/`、`/webhook/`、若干 `/console/*`、`/`），与契约第五节「前端 nginx 不转发 `/internal/`」一致；边缘 nginx 在 vps_infra，未核
+- 每日条数上限只在入站 `dispatch_message` 里计，出站本来不计——C3 不碰它即满足契约
+
+### 配置项（41.1 加进 `config.py` 和 `backend/.env.example`）
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `CRM_SEND_SECRET` | 空 | CRM → chatbot 验签密钥，与 CRM 的 `CHATBOT_SEND_SECRET` 同值；**必须与 `CRM_EVENTS_SECRET` 不同**（Kelvin 生成时保证，代码不比较）。空 = 两个 `/internal/crm/*` 接口一律 503，不另设开关。**永远不写进仓库** |
+| `CRM_SEND_SECRET_PREVIOUS` | 空 | 轮换用，任一把过即可 |
+
+幂等键要 `REDIS_URL`（已有）。
+
+### 计划里我自己定的（契约没写死；2026-10-20 Kelvin「8 条自定取舍都按建议」）
+
+1. **Redis 不可用 → 503 `{"result": "unavailable"}`，不发送**。没有幂等键就保证不了「重试不重发」；CRM 把 503 归「明确没发出」，删掉那条、文字留在输入框，客服再发一次——比冒重复发送的险好
+2. **Meta 200 却没有 `messages[0].id` → 504 `unknown`**，占位留到过期，打 ERROR。Meta 收下了但我们拿不到 id，属于「结果不明」
+3. **请求到达 Meta 之前就出错**（例如拼消息体抛 `UnsendableMessage`）→ 删掉占位、500。CRM 归「结果不明」、可重试，而占位已删，重试会真的再发——这正是对的，因为第一次确实没发
+4. **「标 CRM 客服与显示名」落在哪**：对话历史（喂给模型的）只存正文，记为 `assistant`，和控制台回复一样——不把员工名字喂给模型；审计消息行 `source = "crm_agent"`（新常量，≤16 字符）；员工 id 与显示名记进审计 `tool_calls` 一行（工具名 `crm.reply`，`input` 里是 `agent_id` / `agent_name` / `request_id`，`output` 是 `wa_message_id`），控制台同名 span 也带名字——不改表结构
+5. **`handover_changed` 的 `occurred_at` 改由 `handover` 传入「变化那一刻」**（`begin` / `touch` 用 `handover_active_at`，`end` 用结束那一刻）。会顺带改变 40.2 现有三处事件的取值来源（从「入队时刻」变成「状态里记的那一刻」，相差不到 1 毫秒），形状不变
+6. **请求体校验从严**：`request_id` 必须能解析成 UUID（键里用规范小写形式）；`visitor.phone` 必须 8–15 位纯数字（CRM 规范化后的形状）；`visitor.bsuid` 为 null 或 `phone.is_bsuid` 认得的形状；`text` 去首尾空白后 1–4096 字符；`agent.id`、`agent.name` 非空字符串。多出来的键忽略。不合法 = CRM 的 bug，422 让它当场暴露
+7. **鉴权顺序**：未配密钥 503 → 验签 401 → 请求体 422。验签在解析 JSON **之前**、对原始字节做（签的就是原始字节；也不让没签名的人用 422 探出请求体结构）——所以路由自己读 `request.body()`，不用 FastAPI 的请求模型自动校验
+8. **🔍**：41.2、41.3 走双 agent 冷审（幂等状态机、真实发送、接管与历史）；41.1 只有验签与校验，不标 🔍，靠变异检查兜底
+
+---
+
+**顺序**：41.1 → 41.2 → 41.3，一个 session 一个，后者依赖前者。
+
+- [x] **任务 41.1（C3a）：`/internal/crm/send` 入口——配置、验签、请求体校验**
+  文件：`backend/app/config.py`、`backend/.env.example`、`backend/app/routers/internal_crm.py`（新增）、`backend/app/main.py`（挂载一行）；测试 `backend/tests/test_internal_crm.py`（新增）
+  目标：只有带着正确签名、时间戳在 300 秒内、请求体合法的请求能走到处理函数；其余在门口按契约的状态码挡掉
+  做法：
+  - `config.py`：`crm_send_secret`、`crm_send_secret_previous`，默认空
+  - `internal_crm.py`：`APIRouter(prefix="/internal/crm")`；一个验签函数（C4 的 `/handback` 直接复用）：先看 `CRM_SEND_SECRET`，空即 503；`X-Acuven-Timestamp` 必须是整数、与当前时间相差 ≤ 300 秒；`X-Acuven-Signature` 必须是 `sha256=<hex>`；对每把已配的密钥算 HMAC-SHA256(密钥的 UTF-8 字节, `f"{ts}.".encode() + 原始请求体字节`)，`hmac.compare_digest` 比较，任一把过即可；否则 401（打 WARNING，不打密钥、不打签名值）。时钟经模块函数 `_now` 注入，测试可拨
+  - 请求体：pydantic 模型按「自己定的」第 6 条校验，不合法 422
+  - 处理函数本任务只返回 **501 `{"result": "not_implemented"}`**——41.2 接上。线上未配密钥，到不了这一步
+  测试（签名在测试里**独立**重算，不调被测模块的函数）：
+  - 未配密钥 → 503，且不看签名（带对的签名也是 503）
+  - 缺任一请求头 / 时间戳不是数字 / 签名不带 `sha256=` / 签名错 → 401
+  - 时间戳差 300 秒 → 过；差 301 秒（过去、未来各一）→ 401
+  - 用 `CRM_SEND_SECRET_PREVIOUS` 签 → 过；只配了主密钥时用旧密钥签 → 401
+  - 签名是对的、但请求体被改了一个字节 → 401；只签 body 不签时间戳 → 401
+  - 签名对、请求体不是 JSON → 422；各字段不合法（参数化：`request_id` 非 UUID、`phone` 空 / 带 `+` / 7 位 / 16 位、`bsuid` 形状不对、`text` 全空白 / 4097 字符、`agent` 缺 id / 缺 name）→ 422；**签名错 + 请求体不合法 → 401 而不是 422**
+  - 合法 → 501；`text` 恰好 4096 字符（去空白后）→ 501
+  验收：容器里全套 pytest 通过（报数字）；变异检查——去掉时间戳窗口 → 窗口测试变红；改成只签 body → 签名测试变红；把验签挪到请求体校验之后 → 「401 而不是 422」那条变红
+  不标 🔍
+
+  **结果（2026-10-20）**：
+  - 做了什么：
+    - `config.py`：`crm_send_secret`、`crm_send_secret_previous`，默认空；`.env.example` 一段（同值对应 CRM 的 `CHATBOT_SEND_SECRET`、必须不同于 `CRM_EVENTS_SECRET`、生成命令、空 = 503）
+    - `routers/internal_crm.py`（新增）：`_verified_body(request)`（C4 的 `/handback` 直接复用）按 503 → 401 → 422 的顺序把门；`SendRequest` / `Visitor` / `Agent` 三个 pydantic 模型按「自己定的」第 6 条校验；`POST /internal/crm/send` 过了门返回 501 `{"result": "not_implemented"}`
+    - `main.py`：挂载一行
+  - 计划里没写死、我自己定的（审查可挑）：
+    1. 时间戳只认 1–12 位 ASCII 数字（`1760000000.0`、负数都 401）；窗口是 `abs(now - ts) > 300` 才拒，恰好 300 秒放行（契约「相差超过 300 秒拒绝」）
+    2. 签名比较用**字节**：`compare_digest` 碰到非 ASCII 的 `str` 会抛 `TypeError` 变成 500；头部是 Starlette 按 latin-1 解出来的，按 latin-1 编回去必然成功。一条测试发非 ASCII 签名钉住 401
+    3. 先查时间戳与 `sha256=` 前缀、再读请求体：坏请求不必读 body
+    4. 401 打 WARNING、说原因（缺头 / 时钟差 / 签名对不上，最后一种点名查 `CRM_SEND_SECRET`），不打密钥、签名值；422 打 ERROR（契约：CRM 的 bug），只列字段位置与原因，**不回显输入**（里面是号码和客服写的字）——响应体的 `detail` 也是同样的精简形状，不是 FastAPI 默认带 `input` 的那种
+    5. 号码用 `[0-9]` 而不是 `\d`：`\d` 会放过阿拉伯-印度数字，一条测试钉住
+    6. `bsuid` 去首尾空白后存；`agent.id` / `agent.name` 只拒全空白，不改值
+    7. 路由是 `async`（要 `await request.body()`）。**41.2 的 Redis / Graph 调用是同步阻塞的，要经 `run_in_threadpool` 调**，否则卡住事件循环
+  - 测试 `tests/test_internal_crm.py`，42 条，签名全部由测试按契约原文独立计算：
+    - 未配密钥 → 503；只配了旧密钥、用旧密钥签对 → 仍 503
+    - 401（参数化 8 条）：没头 / 没签名 / 没时间戳 / 时间戳带小数 / 时间戳不是数字 / 签名缺 `sha256=` / 密钥错 / 签名非 ASCII
+    - 窗口：±300 过、±301 拒；旧密钥配着时新旧都过、没配时旧的 401；签名后改一个字节 401；只签 body 401
+    - 422：不是 JSON；参数化 18 条（`request_id` 非 UUID / 缺失，`phone` 空 / null / 带 `+` / 7 位 / 16 位 / 是数字类型 / 非 ASCII 数字，`bsuid` 形状不对，`visitor` 缺，`text` 全空白 / 4097 / null，`agent` 缺 id / 缺 name / id 全空白 / name 空）；**签名错 + 请求体不合法 → 401**
+    - 放行：正常请求 501；去空白后恰好 4096 字 501；带 BSUID 和多余键 501；`request_id` 大写进来规范成小写、`text` 去空白
+  - 验证：
+    - 先写测试、模块不存在时跑：收集阶段 `ImportError`（红在预期处）；实现后第一跑 41 过 1 红——红的是非 ASCII 签名那条，原因是 httpx 测试客户端自己拒绝编码非 ASCII 的 `str` 头，改成以 latin-1 字节发送后全绿（不是被测代码的问题）
+    - 全套（本地 `python:3.13-slim` 装好依赖的镜像，带 `CRM_EMAIL` / `CRM_PASSWORD`）：**1252 passed, 10 skipped**（40.2 冷审后 1210 + 本任务 42）
+    - 变异（脚本在容器里逐个改 `internal_crm.py`、跑本测试文件、还原，`restored: True`）：
+      - 去掉时间戳窗口 → **2 failed**（±301 两条）
+      - 只签 body → **26 failed**，含 `test_a_signature_over_the_body_alone_is_401`
+      - 先解析请求体再验签 → **1 failed**，正是 `test_a_bad_signature_on_an_invalid_body_is_401_not_422`
+      - 自加：签名按 `str` 比较 → **1 failed**（非 ASCII 签名那条）；忽略旧密钥 → **1 failed**（轮换那条）
+    - 没验：线上（**未推送**——推 master 即部署，本轮用户说不部署）；边缘 nginx（vps_infra）是否转发 `/internal/` 仍只读了本仓库 `frontend/nginx.conf`，未上 VPS
+  - 偏离：无。文件就是计划列的 4 个 + 1 个测试
+
+- [ ] 🔍 **任务 41.2（C3b）：幂等键 + Graph 发送 + 结果分类**（依赖 41.1）
+  文件：`backend/app/services/crm_send.py`（新增）、`backend/app/services/whatsapp.py`（`WhatsAppSendError` 带上状态码与 Meta 的错误体）、`backend/app/routers/internal_crm.py`（接上）；测试 `backend/tests/test_crm_send.py`（新增）
+  目标：同一个 `request_id` 无论被调多少次，访客最多收到一条；CRM 拿到的状态码能准确区分「明确没发出」与「结果不明」
+  做法（契约第五节第 2、3 步，第 4 步只做 4.1）：
+  - `whatsapp.py`：`WhatsAppSendError` 加 `status_code` 与 `response` 属性，`send_raw` 抛的时候带上；文字消息不变（现有调用方只看 `str(e)`，不受影响）
+  - `crm_send.py`：
+    - Redis 客户端与 `crm_events` 同样 1 秒超时、经模块变量 `_client_factory` 注入
+    - 键 `chat:crm_send:<request_id>`。值是 JSON：占位 `{"state": "sending"}`，发出后 `{"wa_message_id": "..."}`
+    - 先 `GET`：已有 `wa_message_id` → 200 `{"result": "duplicate", "wa_message_id", "handover": null}`，**不发、不动接管**；是占位 → 409 `{"result": "in_progress"}`
+    - 没有 → `SET NX EX 120` 写占位；`NX` 没抢到（并发的同一请求）→ 再读一次按上面分流
+    - 上面任何一步 Redis 出错 → 503 `{"result": "unavailable"}`，**不发送**（自己定的第 1 条）
+    - 发：`whatsapp.build_text_message(phone, text)` → `whatsapp.send_raw`
+      | 结果 | 占位 | 响应 |
+      |---|---|---|
+      | 200 且有 `messages[0].id` | 改存 `wa_message_id`，`EX 172800`（48 小时）；写失败只打 ERROR、响应照旧 | 200 `{"result": "sent", "wa_message_id", "handover": null}`（`handover` 由 41.3 填） |
+      | `WhatsAppSendError` 且 4xx | `DEL`（删失败只打 ERROR） | 502 `{"result": "rejected", "error_code", "error_title"}`：取 Meta 错误体 `error.code`；`error_title` 依次取 `error.error_user_title` / `error.title` / `error.message`，截 300 字；取不到为 null |
+      | `WhatsAppSendError` 且 5xx | 留到过期 | 504 `{"result": "unknown"}` |
+      | httpx 的超时 / 网络错误 | 留到过期 | 504 `{"result": "unknown"}` |
+      | 200 但没有 id | 留到过期，打 ERROR | 504 `{"result": "unknown"}`（自己定的第 2 条） |
+      | 请求离开之前就出错 | `DEL` | 500（自己定的第 3 条） |
+    - 每条 ERROR / WARNING 带 `request_id`，不带正文、不带号码全文（号码只留后 4 位）
+    - 不调 `notify`、不计每日上限、不推 `console_reply`
+  测试（假 Redis 支持 `get` / `set(nx, ex)` / `delete` 并记下 TTL；Meta 在 `app.services.whatsapp.httpx.post` 打桩，让 `send_raw` 的真实分类路径跑到）：
+  - 成功：200 `sent`，Meta 收到的 `to` 是 `phone`、正文是 `text`；键里是 `wa_message_id`、TTL 172800
+  - 同一 `request_id` 再来 → 200 `duplicate`、同一个 `wa_message_id`、`handover` 为 null，**Meta 总共只被调一次**
+  - 占位在 → 409，Meta 没被调；`NX` 没抢到的并发分支 → 409
+  - Meta 400（带 131026 的错误体）→ 502、错误码与标题对、键已删；**同一 `request_id` 重试会真的再发一次**
+  - Meta 500 / 超时 / 连接错误（参数化）→ 504、占位还在、TTL 120；**紧接着重试 → 409，Meta 没被再调**
+  - Meta 200 无 id → 504、占位还在
+  - Redis 读 / 写占位失败 → 503，Meta 没被调
+  - 写 `wa_message_id` 失败 → 仍 200 `sent`、有 ERROR
+  - 每日计数在调用前后不变
+  验收：容器里全套 pytest 通过（报数字）；变异检查——5xx 分支也删占位 → 「5xx 后重试是 409」那条变红；4xx 归成 `unknown` → 拒绝那条变红；去掉先 `GET` 的 `duplicate` 分支 → 「Meta 只被调一次」变红。**再在本地 Docker 起一个真 `redis:7-alpine`**，用真 redis-py 客户端把成功 / 重复 / 占位 / 4xx 删键四种情形跑一遍（脚本放 scratchpad，不进仓库），钉住假 Redis 与真 `SET NX EX` 语义一致
+
+- [ ] 🔍 **任务 41.3（C3c）：发出之后——`agent_reply`、接管、历史与审计，按契约顺序**（依赖 41.2）
+  文件：`backend/app/services/crm_send.py`、`backend/app/services/handover.py`、`backend/app/services/audit.py`（只加一个来源常量）；测试 `backend/tests/test_crm_send.py`（追加）
+  目标：Graph 返回成功之后，按契约第五节第 4 步的顺序做完四件事；后两件任何一件出错都不改变「已发出」这个响应
+  做法：
+  - 4.1 键改存 `wa_message_id`（41.2 已做）
+  - 4.2 入队 `agent_reply`：`crm_events.enqueue("agent_reply", crm_events.visitor(phone, bsuid, None), message={"wa_message_id", "body": text}, crm_message_id=request_id)`。紧跟 4.1，**在找档案之前**（契约「第一件事」；`visitor` 契约写明 CRM 不用，所以不需要先读档案）
+  - 4.3 找档案：`user_store.get(phone)` → `get(bsuid)`（有 bsuid 时）→ 都没有就 `get_or_create(phone)`。`handover.active(profile)` 为假 → `handover.begin(profile, reason=f"replied from the CRM by {agent.name}")`，否则 `handover.touch(profile)`。响应 `handover = {"active": true, "expires_at": utc(handover_active_at + 空闲秒数), "occurred_at": utc(handover_active_at)}`。这一步任何异常 → `handover: null` + ERROR
+  - `handover.py`：`_tell_crm(profile, at)` 带上变化那一刻，`enqueue(..., occurred_at=at)`；`begin` / `touch` 传 `handover_active_at`，`end` 传结束那一刻（自己定的第 5 条）。不改 `begin` / `end` / `touch` 的其他行为
+  - 4.4 写历史与审计：同一个 `profile` 对象 `add_message("assistant", text)` 再 `save`（**不重新读档案**——`handover.begin` 的 docstring 写过两份副本互相覆盖的教训）；`audit.begin_for(profile, WHATSAPP)` → `record_message("assistant", text, audit.CRM_AGENT)` → `record_tool_call(tool="crm.reply", input={agent_id, agent_name, request_id}, output=wa_message_id)` → `audit.close()`；控制台发一对 `crm.reply` span（`input` 带员工名），`key_id` 点名。任何异常 → ERROR，响应不变
+  - 不推 `console_reply`（契约第四节第 2 条）
+  测试：
+  - 新访客（从没来过）：建出最小档案、开始接管；响应 `handover.active` 真、`expires_at` = `occurred_at` + 空闲秒数
+  - **同一个 `occurred_at`**：把 `handover` 的时钟设在 `x.999`、`crm_events._now` 设在 `x+1.0`（跨秒），响应里的 `occurred_at` 与队列里 `handover_changed` 的 `occurred_at` 仍逐字相同；`expires_at` 也相同
+  - 已在接管中 → `touch`：`expires_at` 后移、`handover_since` 不变；接管已空闲到期 → `begin`（重新开始）
+  - 档案按号码找不到、按 BSUID 找到 → 用那份档案（不新建按号码的）
+  - **顺序**：键写 `wa_message_id` 先于入队；队列里恰好 `agent_reply`、`handover_changed` 两条、这个顺序；`agent_reply` 带 `crm_message_id` = `request_id`、`message.wa_message_id`、`body` = 原文；**没有 `console_reply`**
+  - 历史：档案最后一条是 `assistant` + 原文；审计（打桩的 `audit_store`）消息行 `source == "crm_agent"`、`tool_calls` 一行带员工 id 与名字
+  - `duplicate` 那次：不入队、不动接管、不写历史
+  - 发送被拒（502）/ 结果不明（504）：不入队、不动接管、不写历史
+  - 故障隔离：`user_store.get` 抛错 → 200 `sent`、`handover` null、`agent_reply` 已入队；审计抛错 → 200 `sent`、`handover` 非空
+  - 与控制台共用接管（D8）：CRM 发出后 `/console/handover` 列出这位访客、`/console/reply` 200
+  - 事件开关关：照样发出、照样接管、队列为空
+  - 40.2 现有接管事件测试全绿（`occurred_at` 改由 `handover` 传入后不回归）
+  验收：容器里全套 pytest 通过（报数字）；变异检查——`_tell_crm` 不传 `occurred_at`（回到 `enqueue` 自己取时钟）→ 跨秒那条变红；把 `agent_reply` 入队挪到接管之后 → 顺序测试变红；4.4 改成重新读档案再写 → 历史或接管测试变红
+  收尾：在本批「上线步骤」补 C3 那几行（部署后 `/internal/crm/send` 无密钥 → 503 的核对方法）；C4 另开
+
+### 边缘情况（已想过的）
+
+- **Meta 结果不明后重发**：占位 120 秒过期后重试会再发一次，访客可能收到两条——契约第十三节已接受（WhatsApp 发送没有幂等键）
+- **发出后、写键前进程被杀**：占位过期后重试会再发；`agent_reply` 也没入队——契约第十三节同类接受
+- **同一 `request_id` 并发两次**：`SET NX` 只有一个抢到，另一个 409
+- **CRM 用同一 `request_id` 换了正文**：按键返回 `duplicate`，不看正文——幂等键的定义就是这样，CRM 重试用同样的正文（契约第六节）
+- **只有 BSUID 的访客**：CRM 不会调（`phone` 必填，D10）；若档案只按 BSUID 存，按 bsuid 找到并在那份档案上接管；消息仍发给 `phone`
+- **Redis 挂了**：发送前 503（不发）；发送后 `user_store` 退回内存——接管与历史只活到容器重启，与现状同一种降级
+- **Markdown 转换**：`build_text_message` 会把 `**x**` 变成 `*x*`、`` `x` `` 变成 ```` ```x``` ````，与控制台回复同一扇门；后者会变长，4096 字的正文可能被截成带「…」的——CRM 拒收 >4096，但转换后的边界只有极端正文会碰到，接受并记录
+- **窗口外**：24 小时窗口由 CRM 发送前查（契约 R2），chatbot 不查；漏网的会被 Meta 异步报 131047，走 `delivery_status`
+
+---
+
 ## 运维教训：2026-09-13 —— 一条少了 `-f` 的 compose 命令把线上打挂了
 
 **没改一行代码，线上后端死了十几分钟。** 起因是执行阻塞项 I 的最后一步（改完 `.env` 重建容器），

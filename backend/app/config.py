@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     # The HMAC key, the same value as the CRM's CHATBOT_EVENTS_SECRET. This
     # repository is public: never give it a default.
     crm_events_secret: str = ""
+    # The other direction (task 41.1): the CRM asking us to send its agents'
+    # replies, `routers/internal_crm.py`. Checks the CRM's CHATBOT_SEND_SECRET,
+    # which must be a different value from the one above. Empty means every
+    # /internal/crm/* request is refused with 503 -- there is no separate switch.
+    # The previous key is only for rotating: either one passes while both are set.
+    crm_send_secret: str = ""
+    crm_send_secret_previous: str = ""
 
     # The shared infra_redis, where customer profiles live. Empty on purpose:
     # unset means "keep everything in memory", which is how this service ran
