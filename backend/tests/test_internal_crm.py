@@ -4,11 +4,14 @@ they are turned away.
 The contract is `docs/chatbot-replies.md` section 5 in acuven_crm_demo. Every
 signature here is computed by the test itself from that text -- never by the
 module under test -- so a wrong rule in the module cannot agree with itself.
+
+What lies past the door (`crm_send.send`, task 41.2) is stubbed here: these
+tests are about who reaches it, and with what. `test_crm_send.py` is the inside.
 """
 import hashlib
 import hmac
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -56,16 +59,30 @@ def _post(body: bytes, *, secret: str = SECRET, timestamp=NOW, headers: dict | N
     return client.post(URL, content=body, headers={"Content-Type": "application/json", **headers})
 
 
+REACHED = {"result": "reached the inside"}
+
+
 @pytest.fixture(autouse=True)
-def configured():
-    """A configured chatbot with its clock stopped at NOW."""
+def inside():
+    """A configured chatbot with its clock stopped at NOW, and the send stubbed."""
+    stub = MagicMock(return_value=(200, REACHED))
     with patch.object(settings, "crm_send_secret", SECRET), \
             patch.object(settings, "crm_send_secret_previous", ""), \
-            patch.object(internal_crm, "_now", lambda: NOW):
-        yield
+            patch.object(internal_crm, "_now", lambda: NOW), \
+            patch.object(internal_crm.crm_send, "send", stub):
+        yield stub
 
 
 # --- no secret configured -------------------------------------------------------
+
+
+def test_nothing_turned_away_reaches_the_inside(inside):
+    """Every refusal below is at the door: none of them may have sent anything."""
+    _post(_body(), secret="wrong")
+    _post(b"not json at all")
+    with patch.object(settings, "crm_send_secret", ""):
+        _post(_body())
+    inside.assert_not_called()
 
 
 def test_without_a_secret_everything_is_refused_with_503():
@@ -86,10 +103,18 @@ def test_without_a_secret_even_a_correct_signature_is_503():
 # --- the signature --------------------------------------------------------------
 
 
-def test_a_correctly_signed_valid_request_gets_through():
+def test_a_correctly_signed_valid_request_gets_through(inside):
     response = _post(_body())
-    assert response.status_code == 501
-    assert response.json() == {"result": "not_implemented"}
+    assert response.status_code == 200
+    assert response.json() == REACHED
+    inside.assert_called_once_with(
+        request_id="3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b",
+        phone="60123456789",
+        bsuid=None,
+        text="Hello from the CRM",
+        agent_id="user-7",
+        agent_name="Mei",
+    )
 
 
 @pytest.mark.parametrize(
@@ -127,7 +152,7 @@ def test_a_bad_or_missing_signature_is_401(headers):
 
 @pytest.mark.parametrize("offset", [-300, 300])
 def test_a_timestamp_300_seconds_off_is_still_accepted(offset):
-    assert _post(_body(), timestamp=NOW + offset).status_code == 501
+    assert _post(_body(), timestamp=NOW + offset).status_code == 200
 
 
 @pytest.mark.parametrize("offset", [-301, 301])
@@ -137,8 +162,8 @@ def test_a_timestamp_more_than_300_seconds_off_is_401(offset):
 
 def test_the_previous_secret_is_accepted_while_it_is_configured():
     with patch.object(settings, "crm_send_secret_previous", OLD_SECRET):
-        assert _post(_body(), secret=OLD_SECRET).status_code == 501
-        assert _post(_body(), secret=SECRET).status_code == 501
+        assert _post(_body(), secret=OLD_SECRET).status_code == 200
+        assert _post(_body(), secret=SECRET).status_code == 200
 
 
 def test_the_previous_secret_is_refused_once_it_is_not_configured():
@@ -211,19 +236,36 @@ def test_a_bad_signature_on_an_invalid_body_is_401_not_422():
 
 
 def test_text_of_exactly_4096_characters_after_trimming_is_accepted():
-    assert _post(_body(_request(text="  " + "x" * 4096 + "\n"))).status_code == 501
+    assert _post(_body(_request(text="  " + "x" * 4096 + "\n"))).status_code == 200
 
 
 def test_a_visitor_with_a_bsuid_and_extra_keys_is_accepted():
     request_body = _with_visitor(bsuid="MY.4f9a2c7e")
     request_body["something_new"] = "ignored"
-    assert _post(_body(request_body)).status_code == 501
+    assert _post(_body(request_body)).status_code == 200
 
 
 def test_the_parsed_request_is_normalised():
-    """What 41.2 will key and send on: the uuid in its canonical form, the text trimmed."""
+    """What the inside keys and sends on: the uuid in its canonical form, the text trimmed."""
     parsed = internal_crm.SendRequest.model_validate(
         _request(request_id="3F2B8C1E-5D4A-4E6F-9A7B-1C2D3E4F5A6B", text="  hi  ")
     )
     assert str(parsed.request_id) == "3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b"
     assert parsed.text == "hi"
+
+
+def test_the_inside_gets_the_normalised_request(inside):
+    request_body = _request(
+        request_id="3F2B8C1E-5D4A-4E6F-9A7B-1C2D3E4F5A6B",
+        visitor={"phone": "60123456789", "bsuid": " MY.4f9a2c7e "},
+        text="  hi  ",
+    )
+    _post(_body(request_body))
+    assert inside.call_args.kwargs == {
+        "request_id": "3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b",
+        "phone": "60123456789",
+        "bsuid": "MY.4f9a2c7e",
+        "text": "hi",
+        "agent_id": "user-7",
+        "agent_name": "Mei",
+    }

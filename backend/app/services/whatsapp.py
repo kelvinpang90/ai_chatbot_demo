@@ -61,7 +61,17 @@ class UnsendableMessage(ValueError):
 
 
 class WhatsAppSendError(RuntimeError):
-    """Meta refused to deliver a message. Carries what they said about it."""
+    """Meta refused to deliver a message. Carries what they said about it.
+
+    `status_code` and `response` are Meta's answer itself, for the one caller
+    that has to tell a refusal (4xx: it was not sent) from a failure on Meta's
+    side (5xx: it may have been) -- the CRM's sends, `services/crm_send.py`.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, response: httpx.Response | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = response
 
 
 def _headers() -> dict[str, str]:
@@ -320,7 +330,9 @@ def send_raw(payload: dict) -> httpx.Response:
     if response.is_error:
         raise WhatsAppSendError(
             f"WhatsApp refused a {payload.get('type', '?')} message "
-            f"(HTTP {response.status_code}): {response.text[:MAX_ERROR_CHARS]}"
+            f"(HTTP {response.status_code}): {response.text[:MAX_ERROR_CHARS]}",
+            status_code=response.status_code,
+            response=response,
         )
     return response
 

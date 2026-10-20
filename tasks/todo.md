@@ -2990,7 +2990,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - 没验：线上（**未推送**——推 master 即部署，本轮用户说不部署）；边缘 nginx（vps_infra）是否转发 `/internal/` 仍只读了本仓库 `frontend/nginx.conf`，未上 VPS
   - 偏离：无。文件就是计划列的 4 个 + 1 个测试
 
-- [ ] 🔍 **任务 41.2（C3b）：幂等键 + Graph 发送 + 结果分类**（依赖 41.1）
+- [x] 🔍 **任务 41.2（C3b）：幂等键 + Graph 发送 + 结果分类**（依赖 41.1）
   文件：`backend/app/services/crm_send.py`（新增）、`backend/app/services/whatsapp.py`（`WhatsAppSendError` 带上状态码与 Meta 的错误体）、`backend/app/routers/internal_crm.py`（接上）；测试 `backend/tests/test_crm_send.py`（新增）
   目标：同一个 `request_id` 无论被调多少次，访客最多收到一条；CRM 拿到的状态码能准确区分「明确没发出」与「结果不明」
   做法（契约第五节第 2、3 步，第 4 步只做 4.1）：
@@ -3023,6 +3023,43 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 写 `wa_message_id` 失败 → 仍 200 `sent`、有 ERROR
   - 每日计数在调用前后不变
   验收：容器里全套 pytest 通过（报数字）；变异检查——5xx 分支也删占位 → 「5xx 后重试是 409」那条变红；4xx 归成 `unknown` → 拒绝那条变红；去掉先 `GET` 的 `duplicate` 分支 → 「Meta 只被调一次」变红。**再在本地 Docker 起一个真 `redis:7-alpine`**，用真 redis-py 客户端把成功 / 重复 / 占位 / 4xx 删键四种情形跑一遍（脚本放 scratchpad，不进仓库），钉住假 Redis 与真 `SET NX EX` 语义一致
+
+  **结果（2026-10-20）**：
+  - 做了什么：
+    - `services/crm_send.py`（新增）：`send(request_id, phone, bsuid, text, agent_id, agent_name) -> (状态码, 响应体)`。键 `chat:crm_send:<request_id>`，值是 JSON（占位 `{"state": "sending"}` / 发出后 `{"wa_message_id": ...}`），常量照计划（占位 120 秒、发出后 172800 秒、错误标题截 300）。Redis 客户端与 `crm_events` 同样 1 秒超时、经模块变量 `_client_factory` 注入，`reset()` 给测试
+    - `services/whatsapp.py`：`WhatsAppSendError` 加关键字参数 `status_code` / `response`（默认 None，现有十来处 `WhatsAppSendError("...")` 的写法不受影响），`send_raw` 抛的时候带上
+    - `routers/internal_crm.py`：过了门之后 `await run_in_threadpool(crm_send.send, ...)`（41.1 记录第 7 条），按返回的状态码与体回 `JSONResponse`；501 去掉
+    - `tests/test_internal_crm.py`：门的测试里把 `crm_send.send` 打桩成固定返回，原来断言 501 的改成断言「调到了内部、参数是规范化后的」；新增「被门挡掉的请求一次都没调到内部」「内部拿到的是规范化后的请求（UUID 小写、bsuid 去空白、text 去空白）」两条
+  - **偏离计划（变异检查逼出来的，更简单）**：计划写的是「先 `GET`，没有再 `SET NX`」。按计划实现后做变异「去掉先 `GET` 的 duplicate 分支」，「Meta 只被调一次」**仍是绿的**——因为 `SET NX` 抢不到之后的再读已经覆盖了重复请求，先 `GET` 是多余的一次往返，还多出一个「读与写之间」的竞态窗口要讲。改成：**`SET NX EX 120` 一步就是检查**；抢不到 → 读出键里的东西决定回答（有 `wa_message_id` → 200 `duplicate`；占位或读不懂 → 409；抢不到但读时已过期 → 409，下一次重试才轮得到）。契约第五节第 2 步的三种结果原样不变，只是不再先读
+  - 计划里没写死、我自己定的（审查可挑）：
+    1. 4xx / 5xx 只看 `WhatsAppSendError.status_code`；`send_raw` 抛出的其他一切（httpx 的超时 / 连接错误 / 中途断开，以及意料之外的异常）都归「结果不明」504——契约「不能证明 Meta 没收下」
+    2. `error_code` 只收整数，不是整数就 null；`error_title` 依次取 `error_user_title` / `title` / `message`；Meta 的错误体不是 JSON、或 `error` 不是对象 → 两个都 null，仍 502
+    3. Meta 200 但 `messages[0].id` 不是非空字符串、或响应不是 JSON → 504（自己定的第 2 条的具体判法）
+    4. 500 的响应体是 `{"result": "error"}`
+    5. 日志：每行带 `request_id`；号码只留后 4 位（`...6789`）；不打正文；Meta 拒绝打 WARNING（契约里这是正常结果，CRM 会如实告诉客服），5xx / 无响应 / 无 id / Redis 不可用打 ERROR；发出打 INFO 带 `wa_message_id`
+    6. `REDIS_URL` 为空按「Redis 不可用」处理 → 503
+  - 测试 `tests/test_crm_send.py`，32 条（走签名过的真接口，Meta 在 `app.services.whatsapp.httpx.post` 打桩、让 `send_raw` 的真实分类跑到；假 Redis 记下值、TTL、调用顺序，可按操作弄坏）：
+    - 发出：200 `sent`、`to` 是 `phone`、正文是去空白后的 `text`、键里是 id、TTL 172800；调 Meta 那一刻键里已是占位、TTL 120；同一请求两次 → 第二次 `duplicate`、Meta 只调一次；UUID 大小写不同算同一个键；每日计数不变
+    - 占位：占位在 → 409 不发；键是一步 `SET NX` 拿的（第一个 Redis 调用就是它，没有先读）；`NX` 失败后读时已过期 → 409 不发；键里是读不懂的东西 → 409 不发
+    - Meta 拒绝：400 → 502、码与标题对、键已删；之后同一请求**真的再发一次**；优先 `error_user_title`；没有 `error` / `error` 不是对象 → 502 两个 null；标题截 300；删键失败 → 仍 502 + ERROR
+    - 结果不明（参数化 6 条：Meta 500 / 503、读超时、连接超时、连接错误、中途断开）→ 504、占位还在、TTL 120；之后马上重试 → 409、Meta 没被调；200 无 id（2 条）/ 200 非 JSON → 504、占位还在
+    - 请求离开前出错（`build_text_message` 抛）→ 500、键已删、Meta 没被调
+    - Redis：`SET` 坏 / 键已被占时 `GET` 坏 → 503、Meta 没被调；`REDIS_URL` 空 → 503；记 id 时写失败 → 仍 200 `sent` + ERROR
+    - 日志带 `request_id`、不含正文、不含完整号码
+  - 验证：
+    - 先写测试、跑红：收集阶段 `ImportError`（`crm_send` 不存在）。实现后第一跑就全绿，所以靠下面的变异证明它们抓得到错
+    - 全套（同 41.1 的容器与环境变量）：**1286 passed, 10 skipped**（41.1 时 1252 + 门的测试净增 2 + 本任务 32）
+    - 变异（脚本在容器里逐个改 `crm_send.py`、只跑 `test_crm_send.py`、还原；改前改后 `sha1sum` 相同）：
+      - 5xx 也删占位 → **3 failed**，含「结果不明后马上重试是 409」
+      - 4xx 归成结果不明 → **7 failed**，全是拒绝那组
+      - 键被占时不读、一律 409 → **3 failed**，含 `test_the_same_request_twice_reaches_the_visitor_once`（取代计划里那条「去掉先 GET」，理由见上面的偏离）
+      - 改回「先读再 NX」→ **12 failed**，含 `test_the_key_is_taken_in_one_atomic_step`
+      - 占位不带 `NX` → **7 failed**，含重复请求与占位那几条
+      - 网络错误归成「拒绝」→ **4 failed**
+      - Redis 坏了照样发 → **3 failed**
+    - **真 Redis 手工验收（做了）**：临时 Docker 网络里起 `redis:7-alpine`，测试镜像里用真 redis-py 客户端、Meta 打桩，脚本在 scratchpad（不进仓库），13 项全 PASS：发出 / 真 `TTL` 在 172790–172800 / 重复 / Meta 只调一次；5xx → 504、真 `TTL` 在 110–120、马上重试 409 且 Meta 没调；4xx → 502、`EXISTS` = 0、再发成功；**5 个线程同时发同一个 `request_id`、Meta 每次慢 0.5 秒 → Meta 只被调 1 次，结果是一个 200 四个 409**。收尾 `FLUSHDB`、容器与网络已删
+    - 没验：真 Meta（本轮不调）；线上（未推送）；Meta 真实 4xx 错误体里有没有 `error_user_title`——取法按 Graph API 的通用错误形状写，真机时看一眼
+  - 留给 41.3：`send` 已收下 `bsuid` / `agent_id` / `agent_name` 但还没用；成功分支 `return` 之前就是插 4.2–4.4 的地方，`handover` 现在恒为 null
 
 - [ ] 🔍 **任务 41.3（C3c）：发出之后——`agent_reply`、接管、历史与审计，按契约顺序**（依赖 41.2）
   文件：`backend/app/services/crm_send.py`、`backend/app/services/handover.py`、`backend/app/services/audit.py`（只加一个来源常量）；测试 `backend/tests/test_crm_send.py`（追加）

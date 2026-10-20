@@ -7,8 +7,8 @@ key of its own.
 
 Only reachable inside the shared Docker networks -- neither nginx in front of
 this service forwards `/internal/` -- but the signature is the gate, not the
-network. Task 41.1 is the gate alone; what happens once a request is through
-arrives in 41.2.
+network. This file is the gate (task 41.1); what a request that is through
+does is `services/crm_send.py`.
 """
 from __future__ import annotations
 
@@ -20,11 +20,12 @@ import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError, field_validator
 
 from app.config import settings
-from app.services import phone
+from app.services import crm_send, phone
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +166,18 @@ def _parsed(model: type[BaseModel], body: bytes) -> BaseModel:
 async def send(request: Request) -> JSONResponse:
     """Send one CRM agent's reply to a visitor. Contract section 5.
 
-    Task 41.1 stops at the door: what a request that gets through does --
-    idempotency, the send, the takeover -- is 41.2 and 41.3. Undeployable as a
-    half-built endpoint it is not: with CRM_SEND_SECRET unset, which it is on
-    the VPS until both sides are done, nothing gets past the 503.
+    Async only to read the raw body; the send itself -- Redis, then Meta, both
+    blocking -- runs on the threadpool so it cannot stall the event loop that
+    every other request is waiting on.
     """
-    _parsed(SendRequest, await _verified_body(request))
-    return JSONResponse(status_code=501, content={"result": "not_implemented"})
+    parsed = _parsed(SendRequest, await _verified_body(request))
+    status, body = await run_in_threadpool(
+        crm_send.send,
+        request_id=str(parsed.request_id),
+        phone=parsed.visitor.phone,
+        bsuid=parsed.visitor.bsuid,
+        text=parsed.text,
+        agent_id=parsed.agent.id,
+        agent_name=parsed.agent.name,
+    )
+    return JSONResponse(status_code=status, content=body)
