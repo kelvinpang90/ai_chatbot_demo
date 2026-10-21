@@ -3313,6 +3313,11 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
      "'
      ```
      有输出 → 先在控制台对它们点「交还」（会推 `handover_changed`，CRM 显示一致），再部署；没输出 → 直接部署
+   - ✅ **2026-10-21 已做一次（Kelvin 授权，只读，什么都没改）**：
+     - `/opt/ai_chatbot/backend/.env` **没有** `HANDOVER_IDLE_SECONDS`；运行中的 `ai_chatbot_backend` 容器环境变量里也没有（`docker inspect` 的 env 只 `grep` 这一个键，没打印别的变量）。所以线上现在是旧默认 7200，**部署后新默认 86400 直接生效，`.env` 不用改**（第 3 步可跳过）
+     - 扫描没用上面那条 `pip install` 的命令，改用线上已有的后端镜像 `ghcr.io/kelvinpang90/ai_chatbot_demo-backend:latest` 起一次性容器（自带 redis 库，不在 VPS 上装东西），`--network data_net` 连 `infra_redis` 16 号库，脚本经 stdin 传入、只读：**90 份访客档案，`handover_since` 非零的 0 份**——没有正在接管的，也**没有会被复活的**
+     - 只代表扫描那一刻：档案 7 天滑动过期、随时有新接管。**部署前（离扫描超过几小时的话）再扫一次**，同一条命令把开头的 `pip -q install redis && python -c` 换成上面这种「后端镜像 + stdin」更省事
+     - 顺带看到的：容器 `Up 5 days`、镜像 `:latest`，网络 `ai_chatbot_default` / `data_net` / `proxy_net`，与批次 08 记录一致
 2. 推 master（自动部署），`CRM_SEND_SECRET` 仍不设。核对：批次 09 上线步骤第 1 步（内网 503、公网 405 `text/html`）；`/internal/crm/handback` 同样两条
 3. 第 1 步若 `.env` 需要改：`.env` 改好后 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）
 4. 之后接批次 09 上线步骤第 2–5 步；真机验收加两项：CRM 点「交还 AI」→ CRM 立刻显示未接管、访客再发消息由 bot 回；控制台接管后到期时间是 24 小时后
