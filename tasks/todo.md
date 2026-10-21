@@ -3099,7 +3099,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     1. `audit.begin_for` 挪到 `save` **之前**：`begin_for` 会给没有 `conversation_id` 的档案现铸一个，先存才留得住（`notify._remember` 是先存后铸，铸出来的 id 不落盘——那是它的事，不在本任务范围，没动）。一条测试钉住审计行的 `conversation_id` 等于档案里存下的
     2. 控制台 span 在发出**之后**一次发 START + END（`notify._send` 是发之前 START）：CRM 发送不经控制台，发送前没有可看的「正在发」；失败的发送本来就不进控制台（CRM 自己会告诉客服）
     3. 控制台 span 的 `input.to` 用档案的 `key_id`（与 `notify` 一致用收件标识），`input.agent` 是显示名
-    4. 档案读失败直接返回、不尝试接管与写历史：没有档案就没有可写的对象，硬建一个最小档案会在 Redis 恢复后覆盖真档案
+    4. 档案读失败直接返回、不尝试接管与写历史：没有档案就没有可写的对象。~~硬建一个最小档案会在 Redis 恢复后覆盖真档案~~——**理由写错了（冷审第 1 轮指出）**：`user_store.get` 在 Redis 挂掉时不抛错，而是退回内存并返回 None，于是走的是正常路径——`get_or_create` 在内存里建空白档案，接管与历史都落在那里，Redis 恢复后 bot 读回的真档案没有这次接管。这正是批次「边缘情况」里已接受的「发送后 `user_store` 退回内存……同一种降级」。这个 except 分支只有 bug（或测试打桩）才走得到，留着当兜底，不另改
   - 测试 `tests/test_crm_send.py` 追加 18 条（同一文件，走签名过的真接口；事件队列的假 Redis 与幂等键的假 Redis **写进同一份调用日志**，顺序可以直接比）：
     - 新访客：建档、开始接管，响应 `handover` 三个字段对
     - **跨秒**：`handover` 的时钟在 `x.999`、队列时钟在 `x+1.0` → 响应与 `handover_changed` 的 `occurred_at` 逐字相同（都是 `x`），`expires_at` 也相同
@@ -3123,7 +3123,13 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
       - `_file` 的异常不兜住 → **1 failed**（审计失败那条）
       - 审计来源写成控制台的 `human` → **1 failed**
       - 还原核对：变异脚本在容器里以 LF 写回，`sha1sum` 因此与改前（我在 Windows 上编辑时写成的 CRLF）不同；`git diff` 只有本任务的改动，`core.autocrlf=true` 下换行不入库
-    - 没验：真 Meta、真 CRM、线上（未推送）；冷审待跑
+    - 没验：真 Meta、真 CRM、线上（未推送）
+  - **冷审第 1 轮（`d9cb7d8`，print 模式，手工起，同 41.2）**：verdict **clean**，报 0 条、进队列 0 条。核过不是假通过：`integrity.txt` dirty none；审查方**独立用真 `redis:7` 做了端到端**（只打桩 Meta 的 `httpx.post`）：签名请求经真路由 → 200 `sent`，键 TTL 172800，队列恰好 `[agent_reply, handover_changed]` 且 `occurred_at` / `expires_at` 与响应逐字相同，档案带接管与那句 assistant、`bot_id` 保留；同一 `request_id` 重试 → `duplicate`、Meta 0 次、队列不增；随后访客自己发一条经真 `dispatch_message` → bot 不答（`llm.get_reply` 被设成一调就抛）、历史是 user / assistant（CRM）/ user；第二次 CRM 回复续期、`handover_since` 不变。经共用入口全套是 `2 failed, 1302 passed`，两条红在 base `270fa7d` 上同样红（`test_seed_console.py` 的环境变量依赖，见 41.2 冷审记录）。第二阶段指出、不算 finding 的：
+    - 自定第 4 条的理由写错了——已在上面原地更正
+    - 计划里那条变异「4.4 改成重新读档案再写」照字面（在 `_file` 里、接管**之后**重读）几乎不红（只 1 条，且红得偶然），因为 `begin` 已经存过、按顺序重读不丢东西；我做的是「接管**之前**读出的另一份」，那才是真正的风险形状（8 条红）。它认可实质，记在这里免得以后有人照字面复现
+    - **已知、未处理**：`user_store` 没有 compare-and-set。同一访客的两次 CRM 发送若在 Meta 返回后的几毫秒里交错（两边都在对方 `save` 之前读了档案），可能丢一行历史或重复开始一次接管。控制台回复从任务 20 起就是同样的模式；demo 量级、同一访客两位客服同时回本就是契约 R6 接受的场景，不在本任务修
+    - 它对线上做了**只读探测**：公网 `POST https://chatbot.acuventech.com/internal/crm/send` → **405 `text/html`**；`POST /internal/whatsapp/inbound`（线上后端确实有这个路由）同样 405 `text/html`——若边缘转发了 `/internal/`，后者应回后端的 JSON。所以**边缘 nginx 今天不转发 `/internal/`**，41.1 只读配置得来的判断被线上印证。上线步骤第 1 步的期望已据此改严
+    - 故障隔离那几条测试（`user_store.get` / `handover.begin` / 审计抛错）测的是我自己的 try/except，不证明这类失败真会发生——接受，它们的作用就是兜底
   - 偏离：无。文件就是计划列的 3 个 + 测试
 
 ### 边缘情况（已想过的）
@@ -3145,7 +3151,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
    ```
    docker run --rm --network proxy_net curlimages/curl -s -o /dev/null -w "%{http_code}\n" -X POST http://ai_chatbot_backend:8000/internal/crm/send
    ```
-   容器名以 `docker ps` 为准。再从公网 `https://chatbot.acuventech.com/internal/crm/send` 打一次，**期望不是 503**（nginx 不转发 `/internal/`，应落到前端的 `location /`）——这一步同时核了边缘 nginx，41.1 记录里只读过本仓库的配置
+   容器名以 `docker ps` 为准。再从公网 `https://chatbot.acuventech.com/internal/crm/send` 打一次，**期望 405 `text/html`**（nginx 不转发 `/internal/`，由 nginx 自己回；若回的是后端的 JSON，说明 `/internal/` 被转发了，立刻停下）。2026-10-21 41.3 冷审在部署前已探过一次，就是 405 `text/html`，部署后再核一次
 2. **等 CRM-013–015 部署**（CRM 那边未配 `CHATBOT_SEND_SECRET`，发送 503）
 3. Kelvin 用 `openssl rand -hex 32` 生成**第二把**密钥（**不能**与 `CRM_EVENTS_SECRET` 同值），同值写进 CRM 的 `CHATBOT_SEND_SECRET` 与 `/opt/ai_chatbot/backend/.env` 的 `CRM_SEND_SECRET`；`docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）；CRM 也重启
 4. 预检：第 1 步那条请求此时**期望 401**（密钥已读到、签名不对）
