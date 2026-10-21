@@ -100,7 +100,7 @@ def begin(profile, reason: str = "") -> bool:
     # Taking it over is itself the first sign of life.
     profile.handover_active_at = now
     user_store.save(profile)
-    _tell_crm(profile)
+    _tell_crm(profile, now)
     events.emit(
         type=events.TOOL_START,
         tool=HANDOVER_TOOL,
@@ -126,11 +126,12 @@ def end(profile) -> bool:
         return False
 
     key_id = profile.key_id
-    held_for = max(0, int(time.time() - profile.handover_since))
+    now = time.time()
+    held_for = max(0, int(now - profile.handover_since))
     profile.handover_since = 0.0
     profile.handover_active_at = 0.0
     user_store.save(profile)
-    _tell_crm(profile)
+    _tell_crm(profile, now)
     events.emit(
         type=events.TOOL_END,
         tool=HANDOVER_TOOL,
@@ -155,23 +156,33 @@ def touch(profile) -> None:
         return
     profile.handover_active_at = time.time()
     user_store.save(profile)
-    _tell_crm(profile)
+    _tell_crm(profile, profile.handover_active_at)
 
 
-def _tell_crm(profile) -> None:
+def crm_state(profile) -> dict:
+    """This customer's takeover as the CRM is told it: `active` and `expires_at`."""
+    if profile.handover_since:
+        expires_at = crm_events.utc(profile.handover_active_at + settings.handover_idle_seconds)
+        return {"active": True, "expires_at": expires_at}
+    return {"active": False, "expires_at": None}
+
+
+def _tell_crm(profile, at: float) -> None:
     """Queue this customer's takeover state for the CRM (task 40.2).
 
     Called where the state really changes -- a takeover starting, being renewed,
     ending -- and nowhere else. A takeover that lapses is not pushed: nothing
     runs at that moment (see `active`), and the contract has the CRM read
     `expires_at` rather than wait to be told.
+
+    `at` is the moment of the change, the one already written on the record.
+    Letting the queue read its own clock instead was a second reading that
+    could land in the next second -- and a CRM send answers with this moment
+    and the event must carry the same one (task 41.3, contract section 5).
     """
-    if profile.handover_since:
-        expires_at = crm_events.utc(profile.handover_active_at + settings.handover_idle_seconds)
-        state = {"active": True, "expires_at": expires_at}
-    else:
-        state = {"active": False, "expires_at": None}
-    crm_events.enqueue("handover_changed", crm_events.visitor_for(profile), handover=state)
+    crm_events.enqueue(
+        "handover_changed", crm_events.visitor_for(profile), occurred_at=at, handover=crm_state(profile)
+    )
 
 
 def active(profile) -> bool:

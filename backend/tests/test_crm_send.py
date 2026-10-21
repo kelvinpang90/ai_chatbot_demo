@@ -14,7 +14,8 @@ same cases by hand (see the task record).
 import hashlib
 import hmac
 import json
-from unittest.mock import patch
+import time
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -23,7 +24,8 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.main import app
 from app.routers import internal_crm
-from app.services import crm_send
+from app.services import audit, crm_events, crm_send, handover
+from app.services.user_store import user_store
 from app.session_store import session_store
 
 client = TestClient(app)
@@ -108,10 +110,10 @@ def _meta(side_effect):
     return patch("app.services.whatsapp.httpx.post", side_effect=side_effect)
 
 
-def _post(text: str = "Hello from the CRM", request_id: str = REQUEST_ID):
+def _post(text: str = "Hello from the CRM", request_id: str = REQUEST_ID, bsuid: str | None = None):
     body = json.dumps({
         "request_id": request_id,
-        "visitor": {"phone": PHONE, "bsuid": None},
+        "visitor": {"phone": PHONE, "bsuid": bsuid},
         "text": text,
         "agent": {"id": "user-7", "name": "Mei"},
     }).encode()
@@ -134,7 +136,8 @@ def test_a_reply_is_sent_to_the_number_and_remembered_for_48_hours(redis):
         response = _post("  Hello from the CRM  ")
 
     assert response.status_code == 200
-    assert response.json() == {"result": "sent", "wa_message_id": "wamid.SENT1", "handover": None}
+    assert response.json()["result"] == "sent"
+    assert response.json()["wa_message_id"] == "wamid.SENT1"
     payload = meta.call_args.kwargs["json"]
     assert payload["to"] == PHONE
     assert payload["type"] == "text"
@@ -398,3 +401,246 @@ def test_the_logs_carry_the_request_id_but_not_the_text_or_the_whole_number(redi
     assert REQUEST_ID in logged
     assert "a private message" not in logged
     assert PHONE not in logged
+
+
+# === after the send (task 41.3) ===================================================
+#
+# Contract section 5 step 4, in this order: the key holds Meta's id, the
+# `agent_reply` event is queued, the takeover starts or is renewed (its
+# `handover_changed` and the response carrying the same moment), then the
+# history and the audit log. Nothing after the send may turn "sent" into
+# anything else.
+
+BSUID = "MY.4f9a2c7e"
+TOKEN = "console-token-for-tests"
+
+
+@pytest.fixture
+def queue(redis, monkeypatch):
+    """The CRM event queue switched on, writing into the same call log as the key's Redis."""
+    events_redis = MagicMock()
+    events_redis.rpush.side_effect = lambda key, value: redis.calls.append(("rpush", key, value))
+    crm_events.reset()
+    monkeypatch.setattr(crm_events, "_client_factory", lambda url: events_redis)
+    with patch.object(settings, "crm_events_enabled", True), \
+            patch.object(settings, "crm_events_secret", "test-events-secret"):
+        yield lambda: [json.loads(call[2]) for call in redis.calls if call[0] == "rpush"]
+    crm_events.reset()
+
+
+@pytest.fixture
+def audit_log():
+    """An audit store that keeps what it is given."""
+    store = MagicMock()
+    store.enabled = True
+    store.record_message.return_value = 1
+    with patch.object(audit, "audit_store", store):
+        yield store
+
+
+def _sent(**kwargs):
+    with _meta(ACCEPTED):
+        return _post(**kwargs)
+
+
+def _expiry(moment: float) -> str:
+    return crm_events.utc(moment + settings.handover_idle_seconds)
+
+
+def test_a_first_reply_to_a_visitor_never_seen_files_them_and_takes_over(redis, queue):
+    response = _sent()
+
+    profile = user_store.get(PHONE)
+    assert profile is not None and profile.phone == PHONE
+    assert handover.active(profile)
+    taken = profile.handover_active_at
+    assert response.json() == {
+        "result": "sent",
+        "wa_message_id": "wamid.SENT1",
+        "handover": {"active": True, "expires_at": _expiry(taken), "occurred_at": crm_events.utc(taken)},
+    }
+
+
+def test_the_response_and_the_event_carry_the_same_moment_even_across_a_second(redis, queue):
+    """Two clocks read a moment apart can straddle a second; the contract wants
+    one value. The takeover's own clock reads x.999, the queue's x+1."""
+    with patch("app.services.handover.time.time", return_value=NOW + 0.999), \
+            patch.object(crm_events, "_now", return_value=NOW + 1.0):
+        response = _sent()
+
+    (changed,) = [event for event in queue() if event["type"] == "handover_changed"]
+    assert response.json()["handover"]["occurred_at"] == changed["occurred_at"] == crm_events.utc(NOW)
+    assert response.json()["handover"]["expires_at"] == changed["handover"]["expires_at"]
+    assert changed["handover"]["active"] is True
+
+
+def test_a_reply_while_already_taken_over_renews_it(redis, queue):
+    # Near the real clock: patching `handover.time.time` moves `time.time` for
+    # everyone, and a record saved a year ago has expired from the store.
+    base = time.time()
+    profile = user_store.get_or_create(PHONE)
+    with patch("app.services.handover.time.time", return_value=base):
+        handover.begin(profile)
+    with patch("app.services.handover.time.time", return_value=base + 120):
+        response = _sent()
+
+    after = user_store.get(PHONE)
+    assert after.handover_since == base, "a renewal is not a new takeover"
+    assert after.handover_active_at == base + 120
+    assert response.json()["handover"] == {
+        "active": True, "expires_at": _expiry(base + 120), "occurred_at": crm_events.utc(base + 120),
+    }
+
+
+def test_a_reply_after_a_takeover_lapsed_starts_a_new_one(redis, queue):
+    base = time.time() - settings.handover_idle_seconds - 60
+    profile = user_store.get_or_create(PHONE)
+    with patch("app.services.handover.time.time", return_value=base):
+        handover.begin(profile)
+    later = time.time()
+    with patch("app.services.handover.time.time", return_value=later):
+        _sent()
+    after = user_store.get(PHONE)
+    assert after.handover_since == later
+    assert after.handover_active_at == later
+
+
+def test_a_visitor_filed_under_their_bsuid_is_found_by_it(redis, queue):
+    filed = user_store.get_or_create(BSUID)
+    filed.username = "ada"
+    user_store.save(filed)
+
+    _sent(bsuid=BSUID)
+
+    assert user_store.get(PHONE) is None, "no second record under the number"
+    assert handover.active(user_store.get(BSUID))
+    assert user_store.get(BSUID).history[-1].content == "Hello from the CRM"
+
+
+def test_the_number_wins_over_the_bsuid(redis, queue):
+    user_store.save(user_store.get_or_create(PHONE))
+    user_store.save(user_store.get_or_create(BSUID))
+    _sent(bsuid=BSUID)
+    assert handover.active(user_store.get(PHONE))
+    assert not handover.active(user_store.get(BSUID))
+
+
+def test_after_a_send_the_key_then_agent_reply_then_the_takeover_in_that_order(redis, queue):
+    response = _sent()
+
+    order = [call[0] if call[0] != "set" else f"set {json.loads(call[2])}" for call in redis.calls]
+    assert order == [
+        "set {'state': 'sending'}",
+        "set {'wa_message_id': 'wamid.SENT1'}",
+        "rpush",
+        "rpush",
+    ]
+    reply, changed = queue()
+    assert reply["type"] == "agent_reply"
+    assert reply["crm_message_id"] == REQUEST_ID
+    assert reply["message"] == {"wa_message_id": "wamid.SENT1", "body": "Hello from the CRM"}
+    assert reply["visitor"] == {"phone": PHONE, "bsuid": None, "profile_name": None}
+    assert changed["type"] == "handover_changed"
+    assert response.json()["handover"]["occurred_at"] == changed["occurred_at"]
+
+
+def test_no_console_reply_and_no_ai_reply_for_a_crm_send(redis, queue):
+    _sent()
+    assert {event["type"] for event in queue()} == {"agent_reply", "handover_changed"}
+
+
+def test_the_reply_is_in_the_history_and_the_audit_log_names_the_agent(redis, queue, audit_log):
+    _sent()
+
+    profile = user_store.get(PHONE)
+    assert (profile.history[-1].role, profile.history[-1].content) == ("assistant", "Hello from the CRM")
+    assert handover.active(profile), "the history write must not undo the takeover"
+
+    message = audit_log.record_message.call_args.kwargs
+    assert (message["role"], message["content"], message["source"]) == ("assistant", "Hello from the CRM", "crm_agent")
+    assert message["turn"].key_id == PHONE
+    assert message["turn"].conversation_id == profile.conversation_id, "a minted conversation id is saved"
+    tool = audit_log.record_tool_call.call_args.kwargs
+    assert tool["tool"] == "crm.reply"
+    assert tool["input"] == {"agent_id": "user-7", "agent_name": "Mei", "request_id": REQUEST_ID}
+    assert tool["output"] == "wamid.SENT1"
+    assert audit.current() is None, "the turn is closed afterwards"
+
+
+def test_the_console_shows_who_replied(redis, queue):
+    from app.console import events
+
+    events.clear()
+    _sent()
+    spans = [event for event in events.since(0) if event.tool == "crm.reply"]
+    assert [event.type for event in spans] == [events.TOOL_START, events.TOOL_END]
+    assert spans[0].input["agent"] == "Mei"
+    assert spans[0].key_id == PHONE
+
+
+def test_a_duplicate_queues_nothing_and_touches_nothing(redis, queue):
+    _sent()
+    before = user_store.get(PHONE)
+    queued = len(queue())
+    with patch("app.services.handover.time.time", return_value=before.handover_active_at + 60):
+        _sent()
+    after = user_store.get(PHONE)
+    assert len(queue()) == queued
+    assert after.handover_active_at == before.handover_active_at
+    assert len(after.history) == len(before.history)
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [pytest.param(UNDELIVERABLE, id="refused"), pytest.param(_meta_answers(500), id="unknown")],
+)
+def test_a_send_that_did_not_go_through_queues_and_files_nothing(redis, queue, meta):
+    with _meta(meta):
+        _post()
+    assert queue() == []
+    assert user_store.get(PHONE) is None
+
+
+def test_a_record_that_cannot_be_read_still_answers_sent(redis, queue, caplog):
+    with patch.object(user_store, "get", side_effect=RuntimeError("store down")):
+        response = _sent()
+    assert response.status_code == 200
+    assert response.json()["result"] == "sent"
+    assert response.json()["handover"] is None
+    assert [event["type"] for event in queue()] == ["agent_reply"]
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+
+
+def test_a_takeover_that_fails_still_files_the_reply(redis, queue):
+    with patch.object(handover, "begin", side_effect=RuntimeError("bug")):
+        response = _sent()
+    assert response.json()["result"] == "sent"
+    assert response.json()["handover"] is None
+    assert user_store.get(PHONE).history[-1].content == "Hello from the CRM"
+
+
+def test_an_audit_log_that_fails_does_not_change_the_answer(redis, queue, audit_log):
+    audit_log.record_message.side_effect = RuntimeError("mysql down")
+    response = _sent()
+    assert response.status_code == 200
+    assert response.json()["handover"] is not None
+    assert audit.current() is None
+
+
+def test_with_the_events_switched_off_it_still_sends_and_takes_over(redis):
+    """No `queue` fixture: CRM_EVENTS_ENABLED stays false."""
+    response = _sent()
+    assert response.json()["result"] == "sent"
+    assert response.json()["handover"]["active"] is True
+    assert handover.active(user_store.get(PHONE))
+
+
+def test_the_console_sees_a_crm_takeover_and_can_answer_in_it(redis, queue):
+    """One takeover for both (D8): what the CRM started, the console holds too."""
+    _sent()
+    headers = {"X-Console-Token": TOKEN}
+    with patch("app.routers.console.settings.console_token", TOKEN), _meta(ACCEPTED):
+        held = client.get("/console/handover", headers=headers).json()["customers"]
+        reply = client.post("/console/reply", json={"key_id": PHONE, "text": "me too"}, headers=headers)
+    assert [row["key_id"] for row in held] == [PHONE]
+    assert reply.status_code == 200

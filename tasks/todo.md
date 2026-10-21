@@ -3064,7 +3064,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - httpx 在**一个字节都没发出去之前**就抛的错（例如 `WHATSAPP_ACCESS_TOKEN` 配坏导致请求头非法的 `LocalProtocolError`、`UnsupportedProtocol`）被我归进「结果不明」504、占位留 120 秒，而自定第 3 条说「请求离开前出错 → 删占位 + 500」。**接受现状、不改**：两者对 CRM 都是「结果不明」（CRM 只认 502 / 401 / 422 / 503 为明确没发出），唯一代价是配置坏掉的部署上 CRM 重试会先吃两分钟 409；要精确区分就得逐个枚举 httpx 哪些异常保证没发出，往保守一侧错是对的。自定第 1 条的措辞（「`send_raw` 抛出的其他一切都归 504」）本来就覆盖它，第 3 条只指 `build_text_message` 那一步
     - 它经共用入口 `pytest_docker.sh` 跑全套是 `2 failed, 1284 passed`：两条红就是 40.0 起记录的 `test_seed_console.py` 依赖 `CRM_EMAIL` / `CRM_PASSWORD` 环境变量（该文件本任务未动）。我报的 1286 是带这两个变量跑的。「两边红绿同义」在这个套件上目前不成立，属 40.0 记的待清理项，不在本任务范围
 
-- [ ] 🔍 **任务 41.3（C3c）：发出之后——`agent_reply`、接管、历史与审计，按契约顺序**（依赖 41.2）
+- [x] 🔍 **任务 41.3（C3c）：发出之后——`agent_reply`、接管、历史与审计，按契约顺序**（依赖 41.2）
   文件：`backend/app/services/crm_send.py`、`backend/app/services/handover.py`、`backend/app/services/audit.py`（只加一个来源常量）；测试 `backend/tests/test_crm_send.py`（追加）
   目标：Graph 返回成功之后，按契约第五节第 4 步的顺序做完四件事；后两件任何一件出错都不改变「已发出」这个响应
   做法：
@@ -3090,6 +3090,42 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   验收：容器里全套 pytest 通过（报数字）；变异检查——`_tell_crm` 不传 `occurred_at`（回到 `enqueue` 自己取时钟）→ 跨秒那条变红；把 `agent_reply` 入队挪到接管之后 → 顺序测试变红；4.4 改成重新读档案再写 → 历史或接管测试变红
   收尾：在本批「上线步骤」补 C3 那几行（部署后 `/internal/crm/send` 无密钥 → 503 的核对方法）；C4 另开
 
+  **结果（2026-10-21）**：
+  - 做了什么：
+    - `crm_send.py`：发出且记下 `wa_message_id` 之后，依次 ① 入队 `agent_reply`（`message{wa_message_id, body}`、`crm_message_id` = `request_id`，`visitor` 用请求自己的 `phone` / `bsuid`）② `_record_for` 找档案（号码 → BSUID → 按号码新建）③ `_take_over`：`active()` 真 → `touch`，否则 `begin(reason="replied from the CRM by <名字>")`；响应 `handover = crm_state(profile) + occurred_at = utc(handover_active_at)` ④ `_file`：同一个档案对象 `add_message("assistant", text)` → `audit.begin_for` → `save` → 审计消息行 `source="crm_agent"` + `tool_calls` 一行 `crm.reply`（`input` = `agent_id` / `agent_name` / `request_id`，`output` = `wa_message_id`）→ 控制台一对 `crm.reply` span（`input` 带 `agent`）→ `finally audit.close()`。② 失败 → 200 `sent`、`handover` null、不写历史；③ 失败 → `handover` null、照写历史；④ 失败 → 只打 ERROR
+    - `handover.py`：抽出 `crm_state(profile)`（`_tell_crm` 与 C3 响应共用同一个形状）；`_tell_crm(profile, at)` 把变化那一刻传给 `enqueue(occurred_at=at)`：`begin` 传 `now`（= `handover_active_at`）、`touch` 传新的 `handover_active_at`、`end` 先取 `now` 再用它算 `held_for` 并传入（自定第 5 条）
+    - `audit.py`：`CRM_AGENT = "crm_agent"`
+  - 计划里没写死、我自己定的（审查可挑）：
+    1. `audit.begin_for` 挪到 `save` **之前**：`begin_for` 会给没有 `conversation_id` 的档案现铸一个，先存才留得住（`notify._remember` 是先存后铸，铸出来的 id 不落盘——那是它的事，不在本任务范围，没动）。一条测试钉住审计行的 `conversation_id` 等于档案里存下的
+    2. 控制台 span 在发出**之后**一次发 START + END（`notify._send` 是发之前 START）：CRM 发送不经控制台，发送前没有可看的「正在发」；失败的发送本来就不进控制台（CRM 自己会告诉客服）
+    3. 控制台 span 的 `input.to` 用档案的 `key_id`（与 `notify` 一致用收件标识），`input.agent` 是显示名
+    4. 档案读失败直接返回、不尝试接管与写历史：没有档案就没有可写的对象，硬建一个最小档案会在 Redis 恢复后覆盖真档案
+  - 测试 `tests/test_crm_send.py` 追加 18 条（同一文件，走签名过的真接口；事件队列的假 Redis 与幂等键的假 Redis **写进同一份调用日志**，顺序可以直接比）：
+    - 新访客：建档、开始接管，响应 `handover` 三个字段对
+    - **跨秒**：`handover` 的时钟在 `x.999`、队列时钟在 `x+1.0` → 响应与 `handover_changed` 的 `occurred_at` 逐字相同（都是 `x`），`expires_at` 也相同
+    - 已接管 → 续期（`handover_since` 不变、`handover_active_at` 后移、响应对）；已空闲到期 → 重新开始
+    - 档案只按 BSUID 存 → 用那份、不新建按号码的；号码与 BSUID 两份都在 → 用号码那份
+    - **顺序**：Redis 调用序列恰好是「占位 → 记 id → 入队 → 入队」，两条事件依次是 `agent_reply`、`handover_changed`；`agent_reply` 字段逐一对；全程只有这两种事件（没有 `console_reply` / `ai_reply`）
+    - 历史最后一条是 `assistant` + 原文且接管仍在；审计消息行 `source == "crm_agent"`、`key_id`、`conversation_id` 对；`crm.reply` 行带员工 id、名字、`request_id`、`output` = id；之后 `audit.current()` 为 None
+    - 控制台 `crm.reply` 恰好一对 START / END，带员工名、`key_id`
+    - `duplicate` 不入队、不续期、不写历史；被拒 / 结果不明（参数化 2 条）不入队、不建档
+    - 故障隔离：档案读失败 → 200 `sent`、`handover` null、只有 `agent_reply` 入队、有 ERROR；`begin` 抛错 → `handover` null、历史照写；审计抛错 → 200、`handover` 非空、turn 已关
+    - 事件开关关：照样发、照样接管
+    - 与控制台共用接管：CRM 发出后 `/console/handover` 列出这位访客、`/console/reply` 200
+  - 验证：
+    - 先写测试跑红：16 条红在预期处（功能未写），另有 1 条是我测试写错（`events.recent()` 不存在，应为 `events.since(0)`），改正。实现后 4 条红，全是测试自身问题：41.2 那条把 `handover` 钉成 null（本任务本来就要改它，改为只断言 `result` / id）；两条接管测试用一年前的固定时刻打桩 `handover.time.time`——它改的是全局 `time.time`，内存档案按 7 天过期判成已过期，改为以当前时间为基准；控制台事件环形缓冲里有前面测试的 span，测试开头 `events.clear()`
+    - 全套（同前的容器与环境变量）：**1304 passed, 10 skipped**（41.2 时 1286 + 本任务 18）。40.2 的 `test_crm_events_wiring.py`、40.0 的 `test_handover.py` 在 `_tell_crm` 改签名后全绿
+    - 变异（脚本在容器里逐个改、跑 `test_crm_send.py` + `test_crm_events_wiring.py` + `test_handover.py`、还原）：
+      - `_tell_crm` 不传 `occurred_at`（回到队列自己取时钟）→ **1 failed**，正是跨秒那条
+      - `agent_reply` 挪到接管之后 → **2 failed**，含顺序测试
+      - 历史写在接管**之前**读出的另一份档案上 → **8 failed**（接管被历史那次 `save` 盖掉）
+      - 只 `begin` 不 `touch` → **1 failed**（续期那条）
+      - `_file` 的异常不兜住 → **1 failed**（审计失败那条）
+      - 审计来源写成控制台的 `human` → **1 failed**
+      - 还原核对：变异脚本在容器里以 LF 写回，`sha1sum` 因此与改前（我在 Windows 上编辑时写成的 CRLF）不同；`git diff` 只有本任务的改动，`core.autocrlf=true` 下换行不入库
+    - 没验：真 Meta、真 CRM、线上（未推送）；冷审待跑
+  - 偏离：无。文件就是计划列的 3 个 + 测试
+
 ### 边缘情况（已想过的）
 
 - **Meta 结果不明后重发**：占位 120 秒过期后重试会再发一次，访客可能收到两条——契约第十三节已接受（WhatsApp 发送没有幂等键）
@@ -3100,6 +3136,21 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - **Redis 挂了**：发送前 503（不发）；发送后 `user_store` 退回内存——接管与历史只活到容器重启，与现状同一种降级
 - **Markdown 转换**：`build_text_message` 会把 `**x**` 变成 `*x*`、`` `x` `` 变成 ```` ```x``` ````，与控制台回复同一扇门；后者会变长，4096 字的正文可能被截成带「…」的——CRM 拒收 >4096，但转换后的边界只有极端正文会碰到，接受并记录
 - **窗口外**：24 小时窗口由 CRM 发送前查（契约 R2），chatbot 不查；漏网的会被 Meta 异步报 131047，走 `delivery_status`
+
+### 上线步骤（C3 部分；C4 另开批次时补它自己的）
+
+契约第十节的顺序：第 1 阶段上线且 `CRM_EVENTS_ENABLED=true` → CRM-012 → **C3、C4 部署（未配密钥）** → CRM-013 / 014 / 015 → … → 两边配第二把密钥 → 真机验收。
+
+1. **合并到 master（推送即自动部署），`CRM_SEND_SECRET` 不设**。部署后从 chatbot 容器所在网络发一个不带签名的请求（不能 `docker exec`，用一次性容器挂到 `proxy_net`），**期望 503**：
+   ```
+   docker run --rm --network proxy_net curlimages/curl -s -o /dev/null -w "%{http_code}\n" -X POST http://ai_chatbot_backend:8000/internal/crm/send
+   ```
+   容器名以 `docker ps` 为准。再从公网 `https://chatbot.acuventech.com/internal/crm/send` 打一次，**期望不是 503**（nginx 不转发 `/internal/`，应落到前端的 `location /`）——这一步同时核了边缘 nginx，41.1 记录里只读过本仓库的配置
+2. **等 CRM-013–015 部署**（CRM 那边未配 `CHATBOT_SEND_SECRET`，发送 503）
+3. Kelvin 用 `openssl rand -hex 32` 生成**第二把**密钥（**不能**与 `CRM_EVENTS_SECRET` 同值），同值写进 CRM 的 `CHATBOT_SEND_SECRET` 与 `/opt/ai_chatbot/backend/.env` 的 `CRM_SEND_SECRET`；`docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）；CRM 也重启
+4. 预检：第 1 步那条请求此时**期望 401**（密钥已读到、签名不对）
+5. **真机验收（Kelvin 拿手机，契约第十节）**：CRM 收件箱回复一位 24 小时内来过消息的访客 → 手机收到；CRM 显示已发出、接管中与到期时间；控制台看到这位访客在接管中、`crm.reply` span 带客服名字；再回一条 → 到期时间后延；`LLEN chat:crm_events` 回到 0、`chat:crm_events:dead` 为 0
+- **回滚**：清空 `CRM_SEND_SECRET` + 重建容器 → 一律 503，CRM 把它当「明确没发出」；已发出的不受影响
 
 ---
 

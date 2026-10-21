@@ -38,6 +38,10 @@ DOCUMENT = "document"
 # customer cannot tell the difference, which is the point of task 20 -- so this
 # column is the only place the difference is kept at all.
 HUMAN = "human"
+# The same, typed by an agent in the CRM's inbox rather than at the console
+# (task 41.3). Which agent is on the `crm.reply` tool row beside it: this column
+# is sixteen characters, and a name is not a kind of source.
+CRM_AGENT = "crm_agent"
 
 # The console's ring buffer holds 200 events and forgets them on restart; this is
 # the copy that outlives the demo. Long values are still capped, because one

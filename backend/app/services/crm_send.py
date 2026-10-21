@@ -21,8 +21,11 @@ console reports success, which is fine for a person watching the screen and
 wrong for a caller that has to decide whether to keep a message (contract
 section 13).
 
-Task 41.2 stops at "sent". What follows a send -- the `agent_reply` event, the
-takeover, the history -- is task 41.3.
+Once Meta has the message, contract section 5 step 4, in this order: the key
+holds Meta's id, the CRM's `agent_reply` is queued, the takeover starts or is
+renewed, and the reply goes into the history and the audit log. Each of the
+last two is caught on its own: by then the visitor has the message, and nothing
+that fails afterwards may make the answer anything but "sent".
 """
 from __future__ import annotations
 
@@ -32,7 +35,11 @@ import logging
 import httpx
 
 from app.config import settings
-from app.services import whatsapp
+import time
+
+from app.console import events
+from app.services import audit, crm_events, handover, whatsapp
+from app.services.user_store import user_store
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +54,10 @@ SENT_SECONDS = 48 * 60 * 60
 MAX_TITLE_CHARS = 300
 
 SENDING = {"state": "sending"}
+
+# What the console and the audit log call a reply typed in the CRM. Beside
+# `notify.HUMAN_TOOL` ("human.reply"), which is one typed at the console.
+CRM_REPLY_TOOL = "crm.reply"
 
 # Same reasoning as `user_store` and `crm_events`: Redis is one hop away, and a
 # Redis that is down must cost the CRM a second, not a default timeout.
@@ -143,7 +154,7 @@ def send(
     """Send one agent's reply. Returns the status code and body for the CRM.
 
     `request_id` arrives canonical (the door parses it as a UUID) and `text`
-    trimmed. `bsuid`, `agent_id` and `agent_name` are 41.3's.
+    trimmed. `bsuid` only helps find the visitor's record.
     """
     key = f"{KEY_PREFIX}{request_id}"
 
@@ -210,4 +221,101 @@ def send(
         logger.exception("crm send %s: sent as %s but could not record it", request_id, wa_message_id)
 
     logger.info("crm send %s: sent to %s as %s", request_id, _tail(phone), wa_message_id)
-    return 200, {"result": "sent", "wa_message_id": wa_message_id, "handover": None}
+
+    # First, before anything that reads a record: the event is what fills in
+    # the CRM's copy if this answer never reaches it. Its `visitor` is required
+    # by the contract and unused by the CRM, so the request's own is enough.
+    crm_events.enqueue(
+        "agent_reply",
+        crm_events.visitor(phone, bsuid, None),
+        message={"wa_message_id": wa_message_id, "body": text},
+        crm_message_id=request_id,
+    )
+
+    try:
+        profile = _record_for(phone, bsuid)
+    except Exception:
+        logger.exception("crm send %s: sent, but could not read the visitor's record", request_id)
+        return 200, {"result": "sent", "wa_message_id": wa_message_id, "handover": None}
+
+    taken = _take_over(profile, agent_name, request_id)
+    _file(profile, text, wa_message_id, request_id, agent_id, agent_name)
+    return 200, {"result": "sent", "wa_message_id": wa_message_id, "handover": taken}
+
+
+def _record_for(phone: str, bsuid: str | None):
+    """The visitor's record: by number, then by BSUID, else a new one by number.
+
+    Filed under one key only (the number where there is one), so a visitor who
+    first wrote with their number hidden is under the BSUID -- and should stay
+    one record rather than become two.
+    """
+    return (
+        user_store.get(phone)
+        or (user_store.get(bsuid) if bsuid else None)
+        or user_store.get_or_create(phone)
+    )
+
+
+def _take_over(profile, agent_name: str, request_id: str) -> dict | None:
+    """Start or renew the takeover; what changed, for the response. None if it failed.
+
+    `begin` alone would not do: on a conversation already in a person's hands it
+    returns without touching anything (asking twice is not a second takeover),
+    and a reply has to push the expiry out (contract section 13).
+    """
+    try:
+        if handover.active(profile):
+            handover.touch(profile)
+        else:
+            handover.begin(profile, reason=f"replied from the CRM by {agent_name}")
+        # The moment the record carries is the one `handover_changed` was
+        # queued with, so the CRM gets one value from both (contract R3).
+        return {**handover.crm_state(profile), "occurred_at": crm_events.utc(profile.handover_active_at)}
+    except Exception:
+        logger.exception("crm send %s: sent, but the takeover did not change", request_id)
+        return None
+
+
+def _file(profile, text: str, wa_message_id: str, request_id: str, agent_id: str, agent_name: str) -> None:
+    """Put the reply in the history, the audit log and on the console.
+
+    The same object the takeover was written on, never a fresh read: two copies
+    of one record saved one after the other is how a takeover silently vanishes
+    (see `handover.begin`).
+
+    The history gets the text alone, as the assistant's -- that is what the
+    model reads when the bot is back, and an agent's name in it would be
+    something for the model to copy. Who wrote it goes on the audit log's tool
+    row and on the console span, where a person reads it.
+    """
+    started = time.monotonic()
+    try:
+        profile.add_message("assistant", text)
+        # Before the save, so a conversation id minted for a record that had
+        # none is kept rather than filed once and forgotten.
+        audit.begin_for(profile, audit.WHATSAPP)
+        user_store.save(profile)
+        who = {"agent_id": agent_id, "agent_name": agent_name, "request_id": request_id}
+        audit.record_message("assistant", text, audit.CRM_AGENT)
+        audit.record_tool_call(tool=CRM_REPLY_TOOL, tool_use_id=request_id, input=who, output=wa_message_id)
+        events.emit(
+            type=events.TOOL_START,
+            tool=CRM_REPLY_TOOL,
+            tool_use_id=request_id,
+            input={"to": profile.key_id, "agent": agent_name},
+            key_id=profile.key_id,
+        )
+        events.emit(
+            type=events.TOOL_END,
+            tool=CRM_REPLY_TOOL,
+            tool_use_id=request_id,
+            output=text,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            status="ok",
+            key_id=profile.key_id,
+        )
+    except Exception:
+        logger.exception("crm send %s: sent, but could not file it in the history or the audit log", request_id)
+    finally:
+        audit.close()
