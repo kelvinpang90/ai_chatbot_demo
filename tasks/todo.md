@@ -3264,7 +3264,11 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
       - `crm_send._take_over` 改用 `hold`，返回假 → 响应 `handover: null`（契约本就写着「这一步失败时响应的 `handover` 为 `null`」）+ ERROR；`hand_back` 改用 `release`，任一份没写进去 → 503（取代第 2 轮那道事后查 `offline()` 的检查）；读之后那道 `offline()` 检查保留——读的一侧没有「单次结果」可问，且 `get()` 刚好在窗口边界的那一瞬是第 2 轮已记的微秒级窗口
     - 新测试 7 条：`test_user_store.py` 4 条（写进 Redis → 真；写失败退回内存 → 假；处在跳过窗口里写 → 假；没配 Redis → 真）；`test_crm_send.py` 2 条（`user_store` 写失败时首次接管 / 续期：200 `sent`、`handover` null、队列只有 `agent_reply`）；`test_crm_handback.py` 1 条（SET 成功后「别的请求」立刻把 `_offline_until` 拨到 30 秒后 → 仍 `ended`、推一条）。41.3 那条「接管失败仍写历史」的打桩目标从 `handover.begin` 改为 `handover.hold`（不改就桩不到）
     - 验证：三轮的 repro **全部绿**（第 3 轮的修前红在 `handover={'active': True, ...}`）；变异——send 不看 `hold` 的结果 → **3 failed**（我的 2 条 + 第 3 轮 repro）；`_tell_crm` 改回问 `offline()` → **1 failed**（P3-1 那条）；`hand_back` 不看 `release` 的结果 → **1 failed**（`save` 失败那条）；`save` 一律返回真 → **7 failed**。第 4 个变异第一次因 `user_store.py` 工作副本是 CRLF、模式写成 `\n` 没打上，脚本断言当场报出，改成只匹配语句本身重跑——**没打上的变异会读成「被抓住了」**，断言就是为这个留的。全部按字节还原。全套（共用入口）**1342 passed, 10 skipped**（1335 + 7）
-    - **这次修复没有人复审**：第 3 轮是 Kelvin 额外批的一轮，再开要再问
+    - ~~**这次修复没有人复审**：第 3 轮是 Kelvin 额外批的一轮，再开要再问~~——Kelvin 同日又批了第 4 轮，见下
+  - **冷审第 4 轮（`d161916`，Kelvin 2026-10-21 加开，`REVIEW_BASE=38556e7` 只复审这一个 commit，手工起法同第 3 轮）**：verdict **clean**，报 0 条。核过不是假通过：`integrity.txt` dirty none；审查方在自己的副本上（没动 worktree）做了 5 个变异、每个跑全套：`_tell_crm` 不看 `stored` → 4 红；`save` 退回内存仍答真 → 6 红；`release` 不用传入的 `at` → 2 红；`hand_back` 不看 `release` → 1 红；send 不看 `hold` → 2 红——与我的计数一致（我的把第 3 轮 repro 算在里面）。第 1–3 轮的 repro 在 `d161916` 上全绿。经共用入口全套 `2 failed, 1340 passed`，那 2 条仍是 worktree 没有 `backend/.env` 的 `test_seed_console`。它认可撤掉 `end(at)`、改用 `hold` / `release` 的拆法（`tools/human.py:67` 依赖 `begin` 在只写进内存时仍答真、让 bot 闭嘴，没被改动）。第二阶段记下、不算 finding 的：
+    - 「读的一侧没有单次结果可问，所以保留读后的 `offline()` 检查」是**选择**不是事实——`get()` 也可以像 `save()` 一样说出答案从哪来。可接受：它出错只有两种方向，另一线程在一次好的读之后跳闸 → 多一次 503（安全一侧，重试即好）；窗口边界的微秒级假 `not_active`（第 2 轮已记）
+    - **四轮都没有对着真的 `acuven_crm_demo` 消费端跑过端到端**：「CRM 先存同步响应」「`handover: null` 当作接管这一步失败」「交还非 200 归 `HANDOFF_FAILED`」都取自契约与前几轮对 CRM 代码的阅读。只有推送后的真机验收会核到它
+  - **42.1 收尾**：四轮冷审，第 1–3 轮各一条 P2，都修了且 repro 红转绿；第 4 轮 clean。全套 1342 passed, 10 skipped。代码最终形状：`UserStore.save` 返回本次写入是否落地、`offline()`；`handover.hold` / `release` 与内部 `_start` / `_renew` / `_finish`、`_tell_crm(profile, at, stored)`；`crm_send.hand_back`、`_take_over` 用 `hold`；路由 `/internal/crm/handback`
 
 - [ ] **任务 42.2（C4b）：接管时长默认 24 小时**
   文件：`backend/app/config.py`、`backend/.env.example`；测试 `backend/tests/test_handover.py`（追加）
