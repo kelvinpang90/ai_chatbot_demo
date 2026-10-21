@@ -1,0 +1,12 @@
+任务 42.1 / 第 3 轮 / commit 38556e71
+verdict: findings
+
+报了 2 条，进修复队列 1 条，降级 1 条。
+
+[MUST FIX] P2-1 P2  backend/app/services/crm_send.py:338
+    The round-2 fix only applies 'tell the CRM only what reached Redis' to the handover_changed event. crm_send.send still reports a takeover that reached memory only in its synchronous 200 answer (handover.active=true), and the CRM stores that answer first. Since 38556e7 that answer also has no matching event, which breaks contract R3 ('one value from both').
+    证据: repro repro/test_p2_1_send_reports_memory_only_takeover.py::test_a_send_does_not_report_a_takeover_that_never_reached_redis
+[降级] P3-1 P3  backend/app/services/handover.py:195
+    _tell_crm uses user_store.offline(), which is process-wide and based on time, as a stand-in for 'this save reached Redis'. Another thread's failure that lands between this save's successful SET and the check makes a change that did reach Redis go untold, and nothing ever re-sends it.
+    证据: read-only 
+    ! 只读代码推测，不进修复队列（可以作为线索）

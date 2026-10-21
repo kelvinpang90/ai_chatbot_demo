@@ -612,7 +612,7 @@ def test_a_record_that_cannot_be_read_still_answers_sent(redis, queue, caplog):
 
 
 def test_a_takeover_that_fails_still_files_the_reply(redis, queue):
-    with patch.object(handover, "begin", side_effect=RuntimeError("bug")):
+    with patch.object(handover, "hold", side_effect=RuntimeError("bug")):
         response = _sent()
     assert response.json()["result"] == "sent"
     assert response.json()["handover"] is None
@@ -644,3 +644,59 @@ def test_the_console_sees_a_crm_takeover_and_can_answer_in_it(redis, queue):
         reply = client.post("/console/reply", json={"key_id": PHONE, "text": "me too"}, headers=headers)
     assert [row["key_id"] for row in held] == [PHONE]
     assert reply.status_code == 200
+
+
+# --- a takeover that reaches memory only (task 42.1, round 3 of its cold review) --
+
+
+class _WriteFailingStore:
+    """A Redis for `user_store` whose writes fail and whose reads work."""
+
+    def __init__(self):
+        self.data = {}
+        self.fail_writes = False
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def set(self, key, value, ex=None):
+        if self.fail_writes:
+            raise ConnectionError("redis is down")
+        self.data[key] = value
+
+    def delete(self, key):
+        self.data.pop(key, None)
+
+
+@pytest.fixture
+def store_redis():
+    fake = _WriteFailingStore()
+    user_store.reset()
+    with patch.object(user_store, "_url", "redis://stand-in:6379/16"), \
+            patch.object(user_store, "_client_factory", lambda url: fake):
+        yield fake
+    user_store.reset()
+
+
+def test_a_takeover_that_reached_memory_only_is_not_reported_in_the_answer(redis, queue, store_redis):
+    """Neither channel tells the CRM about it: no `handover_changed`, and no
+    `handover` in the answer -- one value from both, or none (R3)."""
+    store_redis.fail_writes = True
+
+    response = _sent()
+
+    assert response.json()["result"] == "sent"
+    assert response.json()["handover"] is None
+    assert [event["type"] for event in queue()] == ["agent_reply"]
+
+
+def test_a_renewal_that_reached_memory_only_is_not_reported_in_the_answer(redis, queue, store_redis):
+    user_store.save(user_store.get_or_create(PHONE))
+    handover.begin(user_store.get(PHONE))
+    store_redis.fail_writes = True
+    queued = len(queue())
+
+    response = _sent()
+
+    assert response.json()["handover"] is None
+    assert [event["type"] for event in queue()[queued:]] == ["agent_reply"]

@@ -94,7 +94,7 @@ def _redis():
 
 
 def _now() -> float:
-    # The hand-back's moment, read once here and handed to `handover.end`. Its
+    # The hand-back's moment, read once here and handed to `handover.release`. Its
     # own clock so a test can tell this reading from any other.
     return time.time()
 
@@ -294,13 +294,14 @@ def hand_back(
         return 200, {"result": "not_active", "handover": None}
 
     at = _now()
-    for profile in held:
-        handover.end(profile, at=at)
-    # And if Redis failed under the save, the takeover ended in memory only:
-    # the copy in Redis is still held and comes back when it does. Not ended,
-    # as far as anybody should be told; a retry is harmless.
-    if user_store.offline():
-        logger.error("crm handback %s: the visitor store went offline while handing back %s", request_id, who)
+    # A list, not a generator in `all()`: every held record is released even
+    # if an earlier one did not reach Redis.
+    reached = [handover.release(profile, at) for profile in held]
+    # One that did not reach Redis ended in memory only: the copy in Redis is
+    # still held and comes back with it. Not ended, as far as anybody should be
+    # told -- and `handover` has not told the CRM either. A retry is harmless.
+    if not all(reached):
+        logger.error("crm handback %s: the hand-back of %s did not reach the visitor store", request_id, who)
         return 503, {"result": "unavailable"}
     logger.info("crm handback %s: %s handed back to the bot by %s (%s)", request_id, who, agent_name, agent_id)
     return 200, {
@@ -326,15 +327,15 @@ def _record_for(phone: str, bsuid: str | None):
 def _take_over(profile, agent_name: str, request_id: str) -> dict | None:
     """Start or renew the takeover; what changed, for the response. None if it failed.
 
-    `begin` alone would not do: on a conversation already in a person's hands it
-    returns without touching anything (asking twice is not a second takeover),
-    and a reply has to push the expiry out (contract section 13).
+    None too when the change reached memory only: `handover` did not queue an
+    event for it, and the answer must not tell the CRM what the event does not
+    -- one value from both, or none (contract R3; round 3 of task 42.1's cold
+    review). The contract's own word for this step failing is a null handover.
     """
     try:
-        if handover.active(profile):
-            handover.touch(profile)
-        else:
-            handover.begin(profile, reason=f"replied from the CRM by {agent_name}")
+        if not handover.hold(profile, reason=f"replied from the CRM by {agent_name}"):
+            logger.error("crm send %s: sent, but the takeover reached memory only; not reporting it", request_id)
+            return None
         # The moment the record carries is the one `handover_changed` was
         # queued with, so the CRM gets one value from both (contract R3).
         return {**handover.crm_state(profile), "occurred_at": crm_events.utc(profile.handover_active_at)}

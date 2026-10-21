@@ -379,3 +379,28 @@ def test_a_store_without_redis_is_never_offline():
     memory_only = UserStore("")
     memory_only.get("+60111222333")
     assert memory_only.offline() is False
+
+
+# --- what save() answers (task 42.1, round 3) -----------------------------------
+
+
+def test_a_save_that_reaches_redis_says_so(store):
+    assert store.save(store.get_or_create("+60111222333")) is True
+
+
+def test_a_save_that_falls_back_to_memory_says_so(store, fake):
+    """Redis still has whatever it had; that is what everyone reads next."""
+    fake.fail = True
+    assert store.save(store.get_or_create("+60111222333")) is False
+
+
+def test_a_save_while_redis_is_being_skipped_says_so(store, fake):
+    fake.fail = True
+    store.get("+60111222333")  # trips the retry window
+    fake.fail = False
+    assert store.save(store.get_or_create("+60111222333")) is False, "skipped Redis, so memory only"
+
+
+def test_without_redis_a_save_to_memory_is_the_whole_truth():
+    memory_only = UserStore("")
+    assert memory_only.save(memory_only.get_or_create("+60111222333")) is True

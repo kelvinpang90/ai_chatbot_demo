@@ -238,8 +238,17 @@ class UserStore:
             blank.phone = key_id
         return blank
 
-    def save(self, profile: UserProfile) -> None:
-        """Persist the profile and push its expiry seven days out from now."""
+    def save(self, profile: UserProfile) -> bool:
+        """Persist the profile and push its expiry seven days out from now.
+
+        Returns whether this write landed where the next read will look: Redis
+        when one is configured, memory when none is. False means it fell back to
+        memory, and Redis still has whatever it had -- which is what everyone
+        reads again once the store is back. Most callers need not care; one
+        that tells another system what changed does (task 42.1). Answered for
+        this call, not read off `offline()` afterwards, which another thread's
+        failure can flip in between.
+        """
         profile.last_seen = time.time()
         key = _key(profile.key_id)
         raw = _serialise(profile)
@@ -247,10 +256,11 @@ class UserStore:
         if client is not None:
             try:
                 client.set(key, raw, ex=self._ttl)
-                return
+                return True
             except Exception:
                 self._go_offline("write failed")
         self._memory[key] = (time.time() + self._ttl, raw)
+        return not self._url
 
     def delete(self, identifier: str) -> None:
         key = _key(identifier)

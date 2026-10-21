@@ -3254,6 +3254,17 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - 验证：第 2 轮 repro（真的 `redis.exceptions.TimeoutError` 打在 SET 上、真的 `crm_events.enqueue`）**修前红、修后绿**，第 1 轮 repro 仍绿；变异——去掉 `_tell_crm` 的检查 → **3 failed**（我的 2 条 + 第 2 轮 repro）；按字节还原。全套（共用入口 `pytest_docker.sh`）**1335 passed, 10 skipped**
     - 第二阶段另记、不算 finding 的：`get()` 刚好在 `_offline_until` 到期前一瞬跳过 Redis、`offline()` 紧接着读到 False，会在内存读上给出 `not_active`——窗口是微秒级，不修
     - **轮次已满**（上限 2）：这次修复带 trailer 提交会被 hook 判为第 3 轮、不再自动开审，按流程交 Kelvin 定
+  - **冷审第 3 轮（`38556e7`，Kelvin 2026-10-21 同意加开，只复审这一个 commit）**：删掉 `state.env` 后**没走 hook**——hook 会把它算成第 1 轮、写进已提交的 `round-1` 目录；改为手工 `REVIEW_MODE=print REVIEW_BASE=ef6aec2 run_review.sh 38556e7 3 42.1`，`state.env` 按 hook 的格式手写成 running。核过范围：审查方提示词里的 diff 就是 `ef6aec2..38556e7`。报 2 条，进队列 1 条——**P2-1 成立、P3-1（只读，降级）也成立，同一个根子，一起修了**
+    - P2-1：第 2 轮的规则「只告诉 CRM 写进 Redis 的状态」只管住了事件，**没管住 send 的同步响应**。接管只写进内存时，`crm_send.send` 仍回 `handover.active=true`，CRM 先存下这个响应——而自 `38556e7` 起对应的事件又被拦下，两路不一致，违反契约 R3「两路同一个值」。30 秒后 bot 从 Redis 读回「没人接管」、照常答访客，CRM 却显示客服接管中到 `expires_at`（42.2 后 24 小时）。续期同理
+    - P3-1：`_tell_crm` 用全局、按时间的 `user_store.offline()` 代替「**这一次**保存是否写进了 Redis」。另一个线程恰好在本次 SET 成功之后失败，会把一次真写进去的变化也拦下，且再也不补推
+    - **我错在哪（第三次同一种形状）**：commit message 写了「开始与续期同样适用」，我只改了事件这一路，没去找还有哪一路会把同一件事告诉 CRM；而 41.3 的 `_take_over` docstring 里自己就写着「CRM 从两路拿到同一个值」。另外用全局标志代替单次结果，是第 1 轮修法时图省事留下的
+    - 修法（不再打补丁，按每次调用回答）：
+      - `UserStore.save` 返回**这次写入**是否落在下次读会看的地方——配了 Redis 是 Redis，没配是内存；退回内存时 `False`。现有调用方都不看返回值，不受影响
+      - `handover`：开始 / 续期 / 结束的实际动作抽成 `_start` / `_renew` / `_finish`，各自把 `save` 的返回交给 `_tell_crm(profile, at, stored)`，`stored` 为假才不推。`begin` / `touch` / `end` 对现有调用方的语义与签名不变（42.1 给 `end` 加的 `at` 参数撤掉、回到原签名）。新增给要向别的系统报告结果的调用方用的 `hold(profile, reason) -> bool`（未接管则开始、已接管则续期，即 41.3 `_take_over` 里那段判断挪进来）与 `release(profile, at) -> bool`，返回这次变化是否写进了 Redis
+      - `crm_send._take_over` 改用 `hold`，返回假 → 响应 `handover: null`（契约本就写着「这一步失败时响应的 `handover` 为 `null`」）+ ERROR；`hand_back` 改用 `release`，任一份没写进去 → 503（取代第 2 轮那道事后查 `offline()` 的检查）；读之后那道 `offline()` 检查保留——读的一侧没有「单次结果」可问，且 `get()` 刚好在窗口边界的那一瞬是第 2 轮已记的微秒级窗口
+    - 新测试 7 条：`test_user_store.py` 4 条（写进 Redis → 真；写失败退回内存 → 假；处在跳过窗口里写 → 假；没配 Redis → 真）；`test_crm_send.py` 2 条（`user_store` 写失败时首次接管 / 续期：200 `sent`、`handover` null、队列只有 `agent_reply`）；`test_crm_handback.py` 1 条（SET 成功后「别的请求」立刻把 `_offline_until` 拨到 30 秒后 → 仍 `ended`、推一条）。41.3 那条「接管失败仍写历史」的打桩目标从 `handover.begin` 改为 `handover.hold`（不改就桩不到）
+    - 验证：三轮的 repro **全部绿**（第 3 轮的修前红在 `handover={'active': True, ...}`）；变异——send 不看 `hold` 的结果 → **3 failed**（我的 2 条 + 第 3 轮 repro）；`_tell_crm` 改回问 `offline()` → **1 failed**（P3-1 那条）；`hand_back` 不看 `release` 的结果 → **1 failed**（`save` 失败那条）；`save` 一律返回真 → **7 failed**。第 4 个变异第一次因 `user_store.py` 工作副本是 CRLF、模式写成 `\n` 没打上，脚本断言当场报出，改成只匹配语句本身重跑——**没打上的变异会读成「被抓住了」**，断言就是为这个留的。全部按字节还原。全套（共用入口）**1342 passed, 10 skipped**（1335 + 7）
+    - **这次修复没有人复审**：第 3 轮是 Kelvin 额外批的一轮，再开要再问
 
 - [ ] **任务 42.2（C4b）：接管时长默认 24 小时**
   文件：`backend/app/config.py`、`backend/.env.example`；测试 `backend/tests/test_handover.py`（追加）

@@ -93,14 +93,19 @@ def begin(profile, reason: str = "") -> bool:
         return False
     if active(profile):
         return True
+    _start(profile, reason)
+    return True
 
+
+def _start(profile, reason: str) -> bool:
+    """Take it over. Returns whether that reached the store (see `hold`)."""
     key_id = profile.key_id
     now = time.time()
     profile.handover_since = now
     # Taking it over is itself the first sign of life.
     profile.handover_active_at = now
-    user_store.save(profile)
-    _tell_crm(profile, now)
+    stored = user_store.save(profile)
+    _tell_crm(profile, now, stored)
     events.emit(
         type=events.TOOL_START,
         tool=HANDOVER_TOOL,
@@ -111,31 +116,31 @@ def begin(profile, reason: str = "") -> bool:
         key_id=key_id,
     )
     logger.info("handover started for %s: %s", key_id, reason or "(no reason given)")
-    return True
+    return stored
 
 
-def end(profile, at: float | None = None) -> bool:
+def end(profile) -> bool:
     """Give it back to the bot. False if it never left. See `begin` for why this
     takes the record rather than a key.
 
     The customer is told nothing. They were never told a robot had them in the
     first place, and "the machine is back now" is the one sentence that would
     turn a seamless handover into a visible one.
-
-    `at` is the moment it ends, for a caller that has to report that moment
-    itself: the record keeps nothing once it is cleared, and the CRM's hand-back
-    answers with the same moment the event carries (task 42.1). Now otherwise.
     """
     if profile is None or not profile.handover_since:
         return False
+    _finish(profile, time.time())
+    return True
 
+
+def _finish(profile, now: float) -> bool:
+    """Give it back as of `now`. Returns whether that reached the store."""
     key_id = profile.key_id
-    now = time.time() if at is None else at
     held_for = max(0, int(now - profile.handover_since))
     profile.handover_since = 0.0
     profile.handover_active_at = 0.0
-    user_store.save(profile)
-    _tell_crm(profile, now)
+    stored = user_store.save(profile)
+    _tell_crm(profile, now, stored)
     events.emit(
         type=events.TOOL_END,
         tool=HANDOVER_TOOL,
@@ -146,7 +151,7 @@ def end(profile, at: float | None = None) -> bool:
         key_id=key_id,
     )
     logger.info("handover ended for %s after %ss", key_id, held_for)
-    return True
+    return stored
 
 
 def touch(profile) -> None:
@@ -158,9 +163,38 @@ def touch(profile) -> None:
     """
     if profile is None or not profile.handover_since:
         return
+    _renew(profile)
+
+
+def _renew(profile) -> bool:
     profile.handover_active_at = time.time()
-    user_store.save(profile)
-    _tell_crm(profile, profile.handover_active_at)
+    stored = user_store.save(profile)
+    _tell_crm(profile, profile.handover_active_at, stored)
+    return stored
+
+
+def hold(profile, reason: str = "") -> bool:
+    """Start a takeover, or renew the one in progress, for a person replying
+    from outside the console -- the CRM (task 41.3).
+
+    `begin` alone would not do: on a conversation already in a person's hands it
+    returns without touching anything, and a reply has to push the expiry out.
+    Returns whether the change reached the store everyone reads. A caller that
+    reports the takeover to another system must not report one that did not:
+    it lives in this process's memory for thirty seconds and is then read back
+    from Redis as it was (task 42.1, round 3 of its cold review).
+    """
+    return _renew(profile) if active(profile) else _start(profile, reason)
+
+
+def release(profile, at: float) -> bool:
+    """Give a held conversation back as of `at`, for the CRM's hand-back.
+
+    `at` is the caller's: the record keeps nothing once it is cleared, and the
+    hand-back answers with the same moment the event carries (task 42.1).
+    Returns whether that reached the store, as `hold` does.
+    """
+    return _finish(profile, at)
 
 
 def crm_state(profile) -> dict:
@@ -171,7 +205,7 @@ def crm_state(profile) -> dict:
     return {"active": False, "expires_at": None}
 
 
-def _tell_crm(profile, at: float) -> None:
+def _tell_crm(profile, at: float, stored: bool) -> None:
     """Queue this customer's takeover state for the CRM (task 40.2).
 
     Called where the state really changes -- a takeover starting, being renewed,
@@ -184,15 +218,17 @@ def _tell_crm(profile, at: float) -> None:
     could land in the next second -- and a CRM send answers with this moment
     and the event must carry the same one (task 41.3, contract section 5).
 
-    Only what reached Redis is told. Called right after `user_store.save`, and
-    a save while the store is offline lands in memory alone: the copy in Redis
-    is unchanged and is what everyone reads again thirty seconds later. Telling
-    the CRM about the memory copy -- "handed back", say, for a visitor Redis
-    still holds -- leaves it showing a state the bot will not be in, with no
-    error anywhere to retry. The event queue has its own Redis client, so it can
-    succeed where the save failed. Found by round 2 of task 42.1's cold review.
+    Only what reached Redis is told: `stored` is `user_store.save`'s answer for
+    this very write. A save that fell back lands in memory alone; the copy in
+    Redis is unchanged and is what everyone reads again thirty seconds later.
+    Telling the CRM about the memory copy -- "handed back", say, for a visitor
+    Redis still holds -- leaves it showing a state the bot will not be in, with
+    no error anywhere to retry. The event queue has its own Redis client, so it
+    can succeed where the save failed. Found by round 2 of task 42.1's cold
+    review; round 3 had it asked of this write rather than of `offline()`,
+    which another thread's failure can flip after a write that did land.
     """
-    if user_store.offline():
+    if not stored:
         logger.error(
             "crm events: %s's takeover changed in memory only, Redis is offline; not telling the CRM",
             profile.key_id,

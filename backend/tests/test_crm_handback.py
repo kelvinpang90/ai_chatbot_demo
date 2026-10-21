@@ -384,3 +384,21 @@ def test_a_takeover_that_only_reached_memory_is_not_reported_to_the_crm(flaky, q
     handover.begin(user_store.get(PHONE))
 
     assert _changes(queue) == []
+
+
+def test_a_hand_back_that_reached_redis_is_told_even_if_the_store_trips_just_after(flaky, queue):
+    """Round 3 (P3-1): the answer is about this write, not about a process-wide
+    flag that another thread's failure can set a moment after it landed."""
+    _held()
+    queue.clear()
+    real_set = flaky.set
+
+    def set_then_someone_else_fails(key, value, ex=None):
+        real_set(key, value, ex=ex)
+        user_store._offline_until = time.time() + 30  # another request's failure
+
+    flaky.set = set_then_someone_else_fails
+    response = _post()
+
+    assert response.json()["result"] == "ended"
+    assert len(_changes(queue)) == 1
