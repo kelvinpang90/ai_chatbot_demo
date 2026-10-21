@@ -3246,6 +3246,14 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - 新测试：`test_crm_handback.py` 3 条（`user_store` 挂上可故障的 Redis：读失败 → 503、不推事件、恢复后仍是接管中；`save` 失败 → 503、恢复后仍接管中、重试 → `ended`；Redis 正常时查无此人仍是 `not_active`）；`test_user_store.py` 3 条（`offline()` 正常为假、读失败后在重试窗口内为真且过窗口恢复、没配 Redis 恒为假）
     - 验证：审查方 repro **修前红、修后绿**；变异——两处检查都去掉（即被审时的代码）→ 我的 2 条 + repro 共 **3 failed**；只去掉「结束之后」那处 → **1 failed**（`save` 失败那条）；按字节还原。全套 **1334 passed, 10 skipped**（1328 + 6），这次用共用入口 `pytest_docker.sh` 跑与带环境变量跑结果相同——主仓库有被 gitignore 的 `backend/.env`，审查方的 worktree 没有，所以它那边会多出 `test_seed_console` 那 2 条红
     - 第二阶段另记、不算 finding 的：与控制台交还相同的「读—改—存」竞态（被接管的访客恰好有一条入站消息在交还前读档案、交还后存档案，会把 `handover_since` 写回）。任务 20 起就有，窗口极小且 bot 此时不回话；不在本任务修
+  - **冷审第 2 轮（`ef6aec2`）**：报 1 条、进队列 1 条——**P2-1 成立，是第 1 轮修法引出来的，已修**
+    - 问题：`save` 失败那一支，`handover.end` 在回 503 之前**已经**把 `handover_changed {active: false}` 推进了 CRM 事件队列（`end` 里 `save` 之后无条件 `_tell_crm`；事件队列有自己的 Redis 客户端和断路器，`user_store` 的 SET 超时不妨碍它下一毫秒 RPUSH 成功）。CRM 的消费端按事件写 `wa_handover_active=False`、不看同步响应——于是 CRM 显示「已交还」，客服没东西可重试；而 Redis 里那份仍是接管中，30 秒窗口过后 bot 又对他闭嘴（最长 24 小时）。和第 1 轮同一个结局，换了条路
+    - **我错在哪**：那条测试拉了 `queue` fixture 却从没断言它；第 1 轮记录里读失败那一支写了「不推事件」，`save` 失败这一支漏了这句——审查方就是把这两句并排读出来的（与 REVIEW.md 任务 9 教训 3 同一形状）。「只去掉『结束之后』那处 → 1 failed」只证明了第二道检查改了状态码，没证明它对
+    - 修法：**放在唯一推接管事件的地方**——`handover._tell_crm` 在 `user_store.offline()` 时不推、打 ERROR。规则是「只告诉 CRM 真正写进 Redis 的状态」，开始 / 续期 / 结束都适用：只活在内存里的状态 30 秒后就被 Redis 那份盖回去，推给 CRM 只会让两边不一致；没配 Redis 时 `offline()` 恒为假，40.2 / 41.3 的行为与测试不变。`hand_back` 的两道 503 检查保留（第一道防「查无此人」的假结论，第二道让 CRM 拿到失败、客服重试）。控制台那条 `handover` 的 TOOL_END 仍会发——那 30 秒里内存确实是「已交还」、bot 确实在答，不改
+    - 新测试：`save` 失败那条补断言「队列里没有 `handover_changed`」；新增「`save` 失败时开始的接管不告诉 CRM」（`begin` 也守同一条规则）
+    - 验证：第 2 轮 repro（真的 `redis.exceptions.TimeoutError` 打在 SET 上、真的 `crm_events.enqueue`）**修前红、修后绿**，第 1 轮 repro 仍绿；变异——去掉 `_tell_crm` 的检查 → **3 failed**（我的 2 条 + 第 2 轮 repro）；按字节还原。全套（共用入口 `pytest_docker.sh`）**1335 passed, 10 skipped**
+    - 第二阶段另记、不算 finding 的：`get()` 刚好在 `_offline_until` 到期前一瞬跳过 Redis、`offline()` 紧接着读到 False，会在内存读上给出 `not_active`——窗口是微秒级，不修
+    - **轮次已满**（上限 2）：这次修复带 trailer 提交会被 hook 判为第 3 轮、不再自动开审，按流程交 Kelvin 定
 
 - [ ] **任务 42.2（C4b）：接管时长默认 24 小时**
   文件：`backend/app/config.py`、`backend/.env.example`；测试 `backend/tests/test_handover.py`（追加）

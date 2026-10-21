@@ -350,11 +350,16 @@ def test_a_visitor_store_that_cannot_be_read_is_503_not_nobody_held(flaky, queue
 
 def test_a_hand_back_whose_save_fails_is_503_and_can_be_retried(flaky, queue):
     _held()
+    queue.clear()
     flaky.fail_writes = True
 
     response = _post()
 
     assert response.status_code == 503
+    # Not "ended" by the back door either: the CRM stores whatever the queue
+    # says, and a 503 beside an `active=false` event is two answers, the
+    # second one false (round 2 of the cold review).
+    assert _changes(queue) == []
     _back_up(flaky)
     assert handover.active(user_store.get(PHONE)), "the copy in Redis is still held"
     retried = _post()
@@ -366,3 +371,16 @@ def test_with_redis_up_a_visitor_not_on_file_is_still_not_active(flaky, queue):
     """Offline is the exception: a clean read that finds nobody is a real answer."""
     response = _post()
     assert response.json() == {"result": "not_active", "handover": None}
+
+
+def test_a_takeover_that_only_reached_memory_is_not_reported_to_the_crm(flaky, queue):
+    """The same rule for every change, not just a hand-back: a takeover the
+    store could not write is gone again once Redis is read, so the CRM is not
+    told it began."""
+    profile = user_store.get_or_create(PHONE)
+    user_store.save(profile)
+    flaky.fail_writes = True
+
+    handover.begin(user_store.get(PHONE))
+
+    assert _changes(queue) == []

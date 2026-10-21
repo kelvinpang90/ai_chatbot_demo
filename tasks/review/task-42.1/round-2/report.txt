@@ -1,0 +1,8 @@
+任务 42.1 / 第 2 轮 / commit ef6aec20
+verdict: findings
+
+报了 1 条，进修复队列 1 条，降级 0 条。
+
+[MUST FIX] P2-1 P2  backend/app/services/crm_send.py:298
+    The round-1 fix's second branch (save failed, so answer 503 'unavailable') runs only after handover.end has already queued handover_changed {active:false} for the CRM, so the CRM is told 'ended' by the event and 'not ended, retry' by the response, while Redis still holds the visitor.
+    证据: repro repro/test_p2_1_handback_503_after_ended_event.py::test_a_503_hand_back_does_not_tell_the_crm_the_takeover_ended

@@ -183,7 +183,21 @@ def _tell_crm(profile, at: float) -> None:
     Letting the queue read its own clock instead was a second reading that
     could land in the next second -- and a CRM send answers with this moment
     and the event must carry the same one (task 41.3, contract section 5).
+
+    Only what reached Redis is told. Called right after `user_store.save`, and
+    a save while the store is offline lands in memory alone: the copy in Redis
+    is unchanged and is what everyone reads again thirty seconds later. Telling
+    the CRM about the memory copy -- "handed back", say, for a visitor Redis
+    still holds -- leaves it showing a state the bot will not be in, with no
+    error anywhere to retry. The event queue has its own Redis client, so it can
+    succeed where the save failed. Found by round 2 of task 42.1's cold review.
     """
+    if user_store.offline():
+        logger.error(
+            "crm events: %s's takeover changed in memory only, Redis is offline; not telling the CRM",
+            profile.key_id,
+        )
+        return
     crm_events.enqueue(
         "handover_changed", crm_events.visitor_for(profile), occurred_at=at, handover=crm_state(profile)
     )
