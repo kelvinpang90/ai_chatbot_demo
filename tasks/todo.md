@@ -3060,6 +3060,9 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - **真 Redis 手工验收（做了）**：临时 Docker 网络里起 `redis:7-alpine`，测试镜像里用真 redis-py 客户端、Meta 打桩，脚本在 scratchpad（不进仓库），13 项全 PASS：发出 / 真 `TTL` 在 172790–172800 / 重复 / Meta 只调一次；5xx → 504、真 `TTL` 在 110–120、马上重试 409 且 Meta 没调；4xx → 502、`EXISTS` = 0、再发成功；**5 个线程同时发同一个 `request_id`、Meta 每次慢 0.5 秒 → Meta 只被调 1 次，结果是一个 200 四个 409**。收尾 `FLUSHDB`、容器与网络已删
     - 没验：真 Meta（本轮不调）；线上（未推送）；Meta 真实 4xx 错误体里有没有 `error_user_title`——取法按 Graph API 的通用错误形状写，真机时看一眼
   - 留给 41.3：`send` 已收下 `bsuid` / `agent_id` / `agent_name` 但还没用；成功分支 `return` 之前就是插 4.2–4.4 的地方，`handover` 现在恒为 null
+  - **冷审第 1 轮（`72e1b58`，print 模式，手工起——这个桌面会话没触发 Stop hook，与 40.1 同样；用的是同一个 `hook_stop.sh`，所以 `state.env` 照常记账）**：verdict **clean**，报 0 条、进队列 0 条。核过不是假通过：`integrity.txt` dirty none；审查方**独立用真 Redis 跑了 8 线程并发同一 `request_id` → 一个 200、七个 409、Meta 只调一次**，与我的 5 线程手工验收一致；它认可「先 SET NX、去掉先 GET」的偏离。第二阶段指出、不算 finding 的两处：
+    - httpx 在**一个字节都没发出去之前**就抛的错（例如 `WHATSAPP_ACCESS_TOKEN` 配坏导致请求头非法的 `LocalProtocolError`、`UnsupportedProtocol`）被我归进「结果不明」504、占位留 120 秒，而自定第 3 条说「请求离开前出错 → 删占位 + 500」。**接受现状、不改**：两者对 CRM 都是「结果不明」（CRM 只认 502 / 401 / 422 / 503 为明确没发出），唯一代价是配置坏掉的部署上 CRM 重试会先吃两分钟 409；要精确区分就得逐个枚举 httpx 哪些异常保证没发出，往保守一侧错是对的。自定第 1 条的措辞（「`send_raw` 抛出的其他一切都归 504」）本来就覆盖它，第 3 条只指 `build_text_message` 那一步
+    - 它经共用入口 `pytest_docker.sh` 跑全套是 `2 failed, 1284 passed`：两条红就是 40.0 起记录的 `test_seed_console.py` 依赖 `CRM_EMAIL` / `CRM_PASSWORD` 环境变量（该文件本任务未动）。我报的 1286 是带这两个变量跑的。「两边红绿同义」在这个套件上目前不成立，属 40.0 记的待清理项，不在本任务范围
 
 - [ ] 🔍 **任务 41.3（C3c）：发出之后——`agent_reply`、接管、历史与审计，按契约顺序**（依赖 41.2）
   文件：`backend/app/services/crm_send.py`、`backend/app/services/handover.py`、`backend/app/services/audit.py`（只加一个来源常量）；测试 `backend/tests/test_crm_send.py`（追加）
