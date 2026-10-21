@@ -3322,7 +3322,8 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
      - chatbot：`/opt/ai_chatbot/backend/.env` 里 `CRM_` 开头的只有 `CRM_EMAIL` / `CRM_PASSWORD`，**没有 `CRM_EVENTS_ENABLED`、`CRM_EVENTS_SECRET`、`CRM_SEND_SECRET`**；容器环境变量同样没有；`docker logs` 只有 `crm events off`。即批次 08 上线步骤停在第 2 步之后，第 3–6 步（配事件密钥、开开关、真机验收）**都没做**
      - 事件队列（一次性 `redis:7-alpine` 连 `infra_redis` 16 号库）：`LLEN chat:crm_events` = 0、`chat:crm_events:dead` = 0、`chat:crm_send:*` 键 0 个
      - CRM：`crm_os-backend-1` / `-frontend-1` 跑的镜像标签是 `853b5adb…`（= 今天 fetch 的 `origin/master`），2026-10-21 06:43Z 启动、healthy。本地核过 `853b5ad` 祖先里有 CRM-TASK-012（`e4127bd`）、013（`845addf`）、014（`6dac0dc`）、015（`81b8201`）、016（`50dfad6`），迁移 `014_add_message_sent_by.py` 与 `chatbot_send_service.py` 都在。容器环境（compose 用 `env_file: .env`）里**没有任何 `CHATBOT_` 键**——两把密钥与 `CHATBOT_SEND_URL` 都没配，所以 CRM 的事件接口与发送都是 503，符合契约顺序
-     - 没验：CRM 库里迁移 014 是否已执行（`docker logs` 里没有 alembic 输出，查库要凭据，没查）
+     - 迁移 014：没直接查库（要凭据）。但 CRM 的 `deploy/deploy.sh` 在换容器**之前**跑 `alembic upgrade head`，失败即退出、不换容器；现在跑的是 `853b5ad`，所以迁移已执行——推断，不是读库所得
+     - 第 3–6 步的操作清单写在 `tasks/runbook-batch08-steps3-6.md`，Kelvin 自己在 VPS 上执行
 2. 推 master（自动部署），`CRM_SEND_SECRET` 仍不设。核对：批次 09 上线步骤第 1 步（内网 503、公网 405 `text/html`）；`/internal/crm/handback` 同样两条
 3. 第 1 步若 `.env` 需要改：`.env` 改好后 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）
 4. 之后接批次 09 上线步骤第 2–5 步；真机验收加两项：CRM 点「交还 AI」→ CRM 立刻显示未接管、访客再发消息由 bot 回；控制台接管后到期时间是 24 小时后
