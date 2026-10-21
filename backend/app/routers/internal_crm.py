@@ -22,7 +22,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from app.config import settings
 from app.services import crm_send, phone
@@ -55,8 +55,9 @@ class Visitor(BaseModel):
 
     @field_validator("phone")
     @classmethod
-    def _normalised_number(cls, value: str) -> str:
-        if not _PHONE.fullmatch(value):
+    def _normalised_number(cls, value: str | None) -> str | None:
+        # None only reaches here on a hand-back, where the number is optional.
+        if value is not None and not _PHONE.fullmatch(value):
             raise ValueError("phone must be 8-15 digits, as the CRM normalises it")
         return value
 
@@ -102,6 +103,29 @@ class SendRequest(BaseModel):
         if not 1 <= len(value) <= MAX_TEXT_CHARS:
             raise ValueError(f"text must be 1-{MAX_TEXT_CHARS} characters once trimmed")
         return value
+
+
+class HandbackVisitor(Visitor):
+    """A hand-back may name a visitor the CRM has no usable number for -- one
+    known only by BSUID can be handed back but not replied to (D10). One of the
+    two is still required: with neither there is nobody to look up."""
+
+    phone: str | None = None
+
+    @model_validator(mode="after")
+    def _someone(self) -> "HandbackVisitor":
+        if not (self.phone or self.bsuid):
+            raise ValueError("phone or bsuid is required")
+        return self
+
+
+class HandbackRequest(BaseModel):
+    """`POST /internal/crm/handback`. Unknown keys are ignored."""
+
+    # Only for the log: a hand-back is idempotent without a key.
+    request_id: uuid.UUID
+    visitor: HandbackVisitor
+    agent: Agent
 
 
 def _secrets() -> list[str]:
@@ -177,6 +201,25 @@ async def send(request: Request) -> JSONResponse:
         phone=parsed.visitor.phone,
         bsuid=parsed.visitor.bsuid,
         text=parsed.text,
+        agent_id=parsed.agent.id,
+        agent_name=parsed.agent.name,
+    )
+    return JSONResponse(status_code=status, content=body)
+
+
+@router.post("/handback")
+async def handback(request: Request) -> JSONResponse:
+    """Give a visitor's conversation back to the bot. Contract section 5.
+
+    Same door as `send`; sends nothing to the visitor. On the threadpool for
+    the same reason: the record is in Redis.
+    """
+    parsed = _parsed(HandbackRequest, await _verified_body(request))
+    status, body = await run_in_threadpool(
+        crm_send.hand_back,
+        request_id=str(parsed.request_id),
+        phone=parsed.visitor.phone,
+        bsuid=parsed.visitor.bsuid,
         agent_id=parsed.agent.id,
         agent_name=parsed.agent.name,
     )

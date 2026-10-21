@@ -3160,6 +3160,110 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
+## 批次 10：demo 号多客服第 2 阶段 C4「交还 AI + 24 小时接管」（2026-10-21 新增，计划与 7 条自定取舍同日 Kelvin 批准）
+
+> **契约**：同批次 09，`acuven_crm_demo` 的 `docs/chatbot-replies.md`——第五节「`POST /internal/crm/handback`」与「鉴权」、第四节第 3 条（`HANDOVER_IDLE_SECONDS` 改 86400）、第十二节 Q7（控制台接管同样 24 小时，已定）、第十三节（交还要两个键都试）、D2 / D8。读的是 `origin/master` `fdfd8e7`。
+> **范围**：只做 C4；不改 CRM 仓库；不部署、不调真实 Meta / VPS。依赖批次 09（41.1 的门、`crm_send.py`）——C3 还在本地未推，C4 接着在本地 master 上做，**两批一起推**（契约上线顺序里 C3、C4 本来就是同一步）。沿用 P5 / Q6、直接在 master 开发。
+
+### 现状侦察（2026-10-21，读代码，未跑）
+
+- 41.1 的 `_verified_body` 已写成路由共用，handback 直接用；503 / 401 / 422 的顺序同 send
+- `handover.end(profile)` 在函数里自己取 `now`，结束后把 `handover_since` / `handover_active_at` 清零——**档案上不留结束时刻**，响应拿不到与 `handover_changed` 同一个 `occurred_at`。41.3 已让 `_tell_crm(profile, at)` 带上时刻，`end` 现在传的是它内部的 `now`
+- `end` 的现有调用方（`console.py:635`、`whatsapp_webhook.py:768` 的 `menu`、3 处测试）都不看返回值以外的东西
+- `end` 的条件是 `handover_since` 非零，**含已空闲到期的接管**——正好就是契约「找到且 `handover_since` 非零就调 `end`」，到期的也会推一条 `active=false`，CRM 侧以事件时间写入，无害
+- 接管时长：`config.py:65` 默认 `2 * 60 * 60`；**`backend/.env.example:41` 写着 `HANDOVER_IDLE_SECONDS=7200`**——VPS 上的 `.env` 若是照它抄的，只改默认值线上不会变。所有测试都按 `settings.handover_idle_seconds` 取值，没有写死 7200
+- ⚠️ **改成 24 小时的瞬间会「复活」已到期的接管**：`active()` 是读时按 `handover_active_at` 现算的，到期后 `handover_since` 仍非零。部署时任何「最后活动在 2–24 小时前」的接管都会重新变成「接管中」，bot 对一个早已被 bot 接回、正在和 bot 聊的访客突然闭嘴；CRM 那边按旧 `expires_at` 显示「AI 在回」，两边不一致。demo 量级大概率一个都没有，但要在上线步骤里查（见 42.2）
+
+### 计划里我自己定的（契约没写死；2026-10-21 Kelvin「7 条自定取舍都按建议」）
+
+1. **`handover.end(profile, at=None)`**：多一个关键字参数，调用方给就用、不给仍取 `time.time()`；handback 先取 `at` 再传进去，响应的 `occurred_at` = `utc(at)`，与事件同一个值。现有调用方一行不改
+2. **两个键都试、有接管的都结束**：按 `phone` 找一份、按 `bsuid` 找一份（各自非空时），两份里 `handover_since` 非零的**都**用同一个 `at` 结束；任一结束了即 `ended`。只看第一份的话，号码那份没接管、BSUID 那份有接管时会误报 `not_active`（契约第十三节「交还要两个键都试」正是为此）
+3. **handback 请求体**：`request_id` 必须是 UUID（只进日志）；`visitor.phone` 可为 null，非空时同 send 的 8–15 位数字；`visitor.bsuid` 可为 null，非空时 `is_bsuid`；**两个都空 → 422**；`agent.id` / `agent.name` 非空。另写一个 `HandbackVisitor` 模型，不放宽 send 的 `Visitor`（send 的 `phone` 必填，D10）
+4. **交还不发消息、不写历史、不写审计**：与控制台交还一致；`end` 自己会在控制台发那条 `handover` 的 TOOL_END。日志一行 INFO：`request_id`、号码后 4 位、员工 id 与显示名、`ended` / `not_active`
+5. **`not_active` 也不建档**：找不到就是找不到，不像 send 那样 `get_or_create`
+6. **24 小时只改默认值和 `.env.example`**，不碰 `handover.py` 里那段讲「为什么要有上限」的历史注释（它举的「两小时零一分」是例子，不是配置）；`config.py` 那段注释改成说明 24 小时的来由（D2 / Q7）
+7. **🔍**：42.1 走冷审（改接管状态机的结束路径、CRM 据此写状态）；42.2 只是一个默认值 + 文档，不标
+
+⚠️ **已定、只提醒代价（Q7）**：24 小时作用于**所有**接管，包括访客自己说「转人工」而**没有任何人来接**的那种——过去 bot 闭嘴 2 小时，以后是 24 小时。第 2 阶段起 CRM 客服能在收件箱看到并回复这些访客，正是这条路能接受的前提；若演示时常有人随口说「转人工」又没人跟进，这个代价会被看见。不改，只记下
+
+---
+
+**顺序**：42.1 → 42.2，一个 session 一个，互不依赖（42.2 也可以先做）。
+
+- [x] 🔍 **任务 42.1（C4a）：`POST /internal/crm/handback`**
+  文件：`backend/app/routers/internal_crm.py`（路由 + `HandbackRequest`）、`backend/app/services/crm_send.py`（`hand_back`）、`backend/app/services/handover.py`（`end` 加 `at`）；测试 `backend/tests/test_crm_handback.py`（新增）
+  目标：CRM 点「交还 AI」后，访客下一条消息由 bot 回；CRM 立刻拿到与随后 `handover_changed` 同一时刻的接管状态
+  做法：
+  - 路由：`_verified_body` → `_parsed(HandbackRequest, ...)` → `run_in_threadpool(crm_send.hand_back, ...)`
+  - `crm_send.hand_back(request_id, phone, bsuid, agent_id, agent_name) -> (状态码, 体)`：按自定第 2 条找档案；有要结束的 → `at = time.time()`，逐份 `handover.end(profile, at=at)` → 200 `{"result": "ended", "handover": {"active": false, "expires_at": null, "occurred_at": utc(at)}}`；否则 200 `{"result": "not_active", "handover": null}`，不推事件
+  - `handover.end`：`at` 缺省 `time.time()`；`held_for` 与 `_tell_crm` 都用它
+  - 不给访客发任何消息；天然幂等，不要幂等键
+  测试（签名在测试里独立算；事件队列用假 Redis 读回；`whatsapp.send_raw` 打桩成一调就失败，证明交还不发消息）：
+  - 接管中 → 200 `ended`；档案 `handover_since` / `handover_active_at` 归零；队列恰好一条 `handover_changed`（`active=false`、`expires_at=null`）
+  - **跨秒**：`handover` 时钟 `x.999`、队列时钟 `x+1.0` → 响应 `occurred_at` 与事件逐字相同
+  - 交还后访客发一条 → 经真 `dispatch_message`，bot 照常回答（`llm.get_reply` 被调）
+  - 再交还一次 → `not_active`、不推事件；没有档案 → `not_active`、不建档；有档案但没接管 → `not_active`
+  - 已空闲到期（`handover_since` 仍非零）→ `ended`、推一条（契约原文）
+  - 只有 BSUID（`phone` 为 null）→ 按 BSUID 找到并结束；号码那份没接管、BSUID 那份有 → `ended`；两份都有接管 → 都结束、同一个 `occurred_at`
+  - 422：`phone` 与 `bsuid` 都空 / `phone` 形状不对 / `bsuid` 形状不对 / `request_id` 非 UUID / `agent` 缺字段；401：签名错、只签 body；503：未配密钥；**签名错 + 请求体不合法 → 401**
+  - 不发消息：全程 `send_raw` 零调用
+  - 与控制台共用：CRM 交还后 `/console/handover` 列表里没有这位访客、`/console/reply` 409
+  - 事件开关关：照样结束、队列为空
+  - 40.2 / 41.3 现有接管测试全绿（`end` 加参数不回归）
+  验收：容器里全套 pytest 通过（报数字）；变异——`end` 不用传入的 `at` → 跨秒那条变红；只看号码那份档案 → 「号码那份没接管、BSUID 那份有」变红；条件改成 `active()`（不含到期的）→ 到期那条变红；路由误用 send 的 `Visitor` 模型 → 「只有 BSUID」变红
+
+  **结果（2026-10-21）**：
+  - 做了什么：
+    - `routers/internal_crm.py`：`HandbackVisitor(Visitor)`（`phone` 可空 + `model_validator` 要求 `phone` / `bsuid` 至少一个）、`HandbackRequest`；`POST /internal/crm/handback` 走同一个 `_verified_body` → `_parsed` → `run_in_threadpool(crm_send.hand_back, ...)`。`Visitor` 的 `phone` 校验器改成先放过 None（send 的 `phone` 仍是必填 `str`，None 到不了那里）
+    - `services/crm_send.py`：`hand_back(request_id, phone, bsuid, agent_id, agent_name)`——两个键各读一份档案，`handover_since` 非零的全部用同一个 `at` 调 `handover.end(profile, at=at)`；有 → 200 `ended` + `handover{active: false, expires_at: null, occurred_at: utc(at)}`（前两项取自 `crm_state`）；无 → 200 `not_active` + `handover: null`。日志一行 INFO：`request_id`、号码后 4 位（只有 BSUID 时是 BSUID）、员工名与 id。新增模块函数 `_now()`（见下）
+    - `services/handover.py`：`end(profile, at=None)`，`held_for` 与 `_tell_crm` 都用这个时刻；现有调用方一行没改
+  - 计划里没写死、我自己定的（审查可挑）：
+    1. **`crm_send._now()`**：交还时刻从模块自己的时钟函数取，而不是直接 `time.time()`。不是为了好看——见下面「验证」第 2 条：`handover.time.time` 就是全局 `time.time`，测试若不能把「交还那一刻」与「其他代码自己读时钟」分开，就证明不了 `end` 真的用了传入的时刻。`crm_events`、`internal_crm` 已经是同样的 `_now` 做法
+    2. 响应的 `active` / `expires_at` 取自结束后的 `crm_state(held[0])`，而不是写死 `false` / `null`——与事件同一个来源
+    3. 档案读取不包 try：`user_store.get` 在 Redis 挂掉时退回内存、不抛（41.3 冷审已核）；真出了 bug 就是 500，CRM 按契约归「chatbot 其他错误」→ 502、不改状态，方向安全
+  - 测试 `tests/test_crm_handback.py`，24 条（签名在测试里独立算；`whatsapp.send_raw` 打桩成一调就失败；事件队列假 Redis 读回）：
+    - `ended`：档案两个时间清零、队列恰好一条 `active=false` / `expires_at=null`、`occurred_at` 与响应相同；**跨秒**（`crm_send._now` 在 `x.999`、队列时钟 `x+1`、全局时钟每读一次进一秒）响应与事件仍逐字相同；交还后访客发一条经真 `dispatch_message`，`llm.get_reply` 被调、回复发出；已空闲到期 → 仍 `ended` 且推一条
+    - 两个键：只有 BSUID（`phone` null）→ 按 BSUID 结束；号码那份没接管、BSUID 那份有 → `ended`；两份都有 → 都结束、两条事件同一个 `occurred_at`（全局时钟每读进一秒时仍相同）
+    - `not_active`：交还两次的第二次（不推事件）；有档案没接管；没有档案（不建档）
+    - 门：422（参数化 8 条：两个都 null / `visitor` 空 / 两个都空串 / `phone` 带 `+` / `bsuid` 形状不对 / `request_id` 非 UUID / `agent` 缺 name / `agent.id` 全空白，且接管不变、不推事件）；签名错 + 请求体不合法 → 401；只签 body → 401；未配密钥 → 503 且接管不变
+    - 控制台：交还后 `/console/handover` 为空、`/console/reply` 409；事件开关关 → 照样结束；全程 `send_raw` 零调用
+  - 验证：
+    - 先写测试跑红：路由不存在，404 / 断言失败，红在预期处
+    - 实现后相关 5 个测试文件 244 passed；全套（同前的容器与环境变量）：**1328 passed, 10 skipped**（41.3 时 1304 + 本任务 24）
+    - **变异第一轮抓到两个测试漏洞**：「`end` 不用传入的 `at`」与「每份档案各自取时刻」都**没变红**——跨秒测试打桩的是 `crm_send.time.time`，而它就是全局 `time.time`，`end` 自己读到的是同一个值；两份档案的测试里两次 `end` 落在同一秒。修法：`hand_back` 改从 `crm_send._now()` 取时刻（自定第 1 条），测试固定 `_now`、再让全局 `time.time` 每读一次进一秒（`_every_other_clock_runs_on`）——谁自己读时钟谁就落到别的秒
+    - 变异第二轮（脚本按**字节**读写还原，`restored byte for byte: True`；只跑 `test_crm_handback.py`）：
+      - `end` 不用传入的 `at` → **2 failed**（跨秒、两份同一时刻）
+      - 只试号码那份 → **2 failed**（「号码那份没接管」、两份都结束）
+      - 条件改成 `active()` → **1 failed**（到期那条）
+      - 路由用 send 的 `Visitor` → **1 failed**（只有 BSUID）
+      - 自加：`end(profile)` 不传 `at` → **2 failed**
+    - 没验：真 CRM、线上（未推送）；冷审待跑
+  - 偏离：无。文件就是计划列的 3 个 + 1 个测试
+
+- [ ] **任务 42.2（C4b）：接管时长默认 24 小时**
+  文件：`backend/app/config.py`、`backend/.env.example`；测试 `backend/tests/test_handover.py`（追加）
+  目标：不配 `HANDOVER_IDLE_SECONDS` 时，控制台与 CRM 的接管都在最后一次人工动作后 24 小时才到期（D2、Q7）
+  做法：`handover_idle_seconds` 默认 `24 * 60 * 60`，注释写明来由；`.env.example` 改成 `HANDOVER_IDLE_SECONDS=86400`、注释里「默认两小时」改掉，并加一句「线上 `.env` 若还写着 7200，以它为准——改默认值不会覆盖它」
+  测试：
+  - 不打桩设置时，默认值是 86400（读 `Settings.model_fields` 的默认，不受测试机环境变量影响）
+  - 用默认值：最后活动 23 小时 59 分前 → 仍在接管；24 小时整 → 已到期（`active()` 是 `<`，恰好 24 小时算到期，与 CRM「恰好 24 小时算关闭」的窗口口径一致）
+  - CRM 事件的 `expires_at` = 活动时刻 + 86400（经 `crm_state`）
+  验收：容器里全套 pytest 通过（报数字）；变异——默认值改回 7200 → 默认值那条与 23:59 那条变红
+  不标 🔍
+  收尾：在本批「上线步骤」写好下面三步，并把批次 09 + 10 合成一次推送的说明写进去
+
+### 上线步骤（C3 + C4 一起推；草稿，42.2 收尾时定稿）
+
+1. **推之前，只读查两件事**（不改任何东西）：
+   - `/opt/ai_chatbot/backend/.env` 里有没有 `HANDOVER_IDLE_SECONDS`、值是多少。是 7200 → 部署时改成 86400 或删掉这一行；不在 → 默认值生效
+   - **会被「复活」的接管**：一次性 `redis:7-alpine` 容器连 `infra_redis` 16 号库，扫 `chat:user:*`，列出 `handover_since > 0` 且 `handover_active_at` 在 2–24 小时前的档案（只列 key 与时间，不打印内容）。有的话先在控制台对它们点「交还」（会推 `handover_changed`，CRM 显示一致），再部署
+2. 推 master（自动部署），`CRM_SEND_SECRET` 仍不设。核对：批次 09 上线步骤第 1 步（内网 503、公网 405 `text/html`）；`/internal/crm/handback` 同样两条
+3. 第 1 步若 `.env` 需要改：`.env` 改好后 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）
+4. 之后接批次 09 上线步骤第 2–5 步；真机验收加两项：CRM 点「交还 AI」→ CRM 立刻显示未接管、访客再发消息由 bot 回；控制台接管后到期时间是 24 小时后
+- **回滚**：24 小时 → 把 `HANDOVER_IDLE_SECONDS=7200` 写回 `.env` 并重建容器（会让 2–24 小时间的接管立刻到期，方向是安全的）；handback → 同 send，清空 `CRM_SEND_SECRET` 即一律 503
+
+---
+
 ## 运维教训：2026-09-13 —— 一条少了 `-f` 的 compose 命令把线上打挂了
 
 **没改一行代码，线上后端死了十几分钟。** 起因是执行阻塞项 I 的最后一步（改完 `.env` 重建容器），

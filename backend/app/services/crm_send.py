@@ -26,6 +26,9 @@ holds Meta's id, the CRM's `agent_reply` is queued, the takeover starts or is
 renewed, and the reply goes into the history and the audit log. Each of the
 last two is caught on its own: by then the visitor has the message, and nothing
 that fails afterwards may make the answer anything but "sent".
+
+`hand_back` is the CRM's other request, `POST /internal/crm/handback` (task
+42.1): the same takeover, ended.
 """
 from __future__ import annotations
 
@@ -88,6 +91,12 @@ def _redis():
     if _client is None:
         _client = _client_factory(settings.redis_url)
     return _client
+
+
+def _now() -> float:
+    # The hand-back's moment, read once here and handed to `handover.end`. Its
+    # own clock so a test can tell this reading from any other.
+    return time.time()
 
 
 def reset() -> None:
@@ -241,6 +250,49 @@ def send(
     taken = _take_over(profile, agent_name, request_id)
     _file(profile, text, wa_message_id, request_id, agent_id, agent_name)
     return 200, {"result": "sent", "wa_message_id": wa_message_id, "handover": taken}
+
+
+def hand_back(
+    *,
+    request_id: str,
+    phone: str | None,
+    bsuid: str | None,
+    agent_id: str,
+    agent_name: str,
+) -> tuple[int, dict]:
+    """End this visitor's takeover for the CRM. Returns the status code and body.
+
+    Both keys are tried and every record held under either is ended (contract
+    section 13): a visitor filed under their BSUID before their number was known
+    is two records, and the one under the number having no takeover says nothing
+    about the other. One moment for all of them, so the answer carries the same
+    `occurred_at` as each `handover_changed` it queues.
+
+    "Held" is `handover_since` being set, lapsed or not -- the contract's own
+    test, and it puts the CRM's stored state right either way. Nothing is sent
+    to the visitor and nobody is filed: a visitor we do not know is simply not
+    held. Naturally idempotent; a second call finds nothing held.
+    """
+    held = [
+        profile
+        for profile in (user_store.get(identifier) for identifier in (phone, bsuid) if identifier)
+        if profile is not None and profile.handover_since
+    ]
+    who = _tail(phone) if phone else bsuid
+    if not held:
+        logger.info(
+            "crm handback %s: %s was not held; asked by %s (%s)", request_id, who, agent_name, agent_id
+        )
+        return 200, {"result": "not_active", "handover": None}
+
+    at = _now()
+    for profile in held:
+        handover.end(profile, at=at)
+    logger.info("crm handback %s: %s handed back to the bot by %s (%s)", request_id, who, agent_name, agent_id)
+    return 200, {
+        "result": "ended",
+        "handover": {**handover.crm_state(held[0]), "occurred_at": crm_events.utc(at)},
+    }
 
 
 def _record_for(phone: str, bsuid: str | None):

@@ -114,19 +114,23 @@ def begin(profile, reason: str = "") -> bool:
     return True
 
 
-def end(profile) -> bool:
+def end(profile, at: float | None = None) -> bool:
     """Give it back to the bot. False if it never left. See `begin` for why this
     takes the record rather than a key.
 
     The customer is told nothing. They were never told a robot had them in the
     first place, and "the machine is back now" is the one sentence that would
     turn a seamless handover into a visible one.
+
+    `at` is the moment it ends, for a caller that has to report that moment
+    itself: the record keeps nothing once it is cleared, and the CRM's hand-back
+    answers with the same moment the event carries (task 42.1). Now otherwise.
     """
     if profile is None or not profile.handover_since:
         return False
 
     key_id = profile.key_id
-    now = time.time()
+    now = time.time() if at is None else at
     held_for = max(0, int(now - profile.handover_since))
     profile.handover_since = 0.0
     profile.handover_active_at = 0.0
