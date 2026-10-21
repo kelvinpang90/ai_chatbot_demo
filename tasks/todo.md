@@ -3318,6 +3318,11 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
      - 扫描没用上面那条 `pip install` 的命令，改用线上已有的后端镜像 `ghcr.io/kelvinpang90/ai_chatbot_demo-backend:latest` 起一次性容器（自带 redis 库，不在 VPS 上装东西），`--network data_net` 连 `infra_redis` 16 号库，脚本经 stdin 传入、只读：**90 份访客档案，`handover_since` 非零的 0 份**——没有正在接管的，也**没有会被复活的**
      - 只代表扫描那一刻：档案 7 天滑动过期、随时有新接管。**部署前（离扫描超过几小时的话）再扫一次**，同一条命令把开头的 `pip -q install redis && python -c` 换成上面这种「后端镜像 + stdin」更省事
      - 顺带看到的：容器 `Up 5 days`、镜像 `:latest`，网络 `ai_chatbot_default` / `data_net` / `proxy_net`，与批次 08 记录一致
+   - **推送前提核对（2026-10-21 同日，Kelvin 授权，只读，什么都没改）**——**结论：CRM 侧已就绪，挡住推送的是第 1 阶段事件开关还没开**（契约第十节「第 1 阶段全部上线且事件开关已开」是 C3、C4 部署的前提）：
+     - chatbot：`/opt/ai_chatbot/backend/.env` 里 `CRM_` 开头的只有 `CRM_EMAIL` / `CRM_PASSWORD`，**没有 `CRM_EVENTS_ENABLED`、`CRM_EVENTS_SECRET`、`CRM_SEND_SECRET`**；容器环境变量同样没有；`docker logs` 只有 `crm events off`。即批次 08 上线步骤停在第 2 步之后，第 3–6 步（配事件密钥、开开关、真机验收）**都没做**
+     - 事件队列（一次性 `redis:7-alpine` 连 `infra_redis` 16 号库）：`LLEN chat:crm_events` = 0、`chat:crm_events:dead` = 0、`chat:crm_send:*` 键 0 个
+     - CRM：`crm_os-backend-1` / `-frontend-1` 跑的镜像标签是 `853b5adb…`（= 今天 fetch 的 `origin/master`），2026-10-21 06:43Z 启动、healthy。本地核过 `853b5ad` 祖先里有 CRM-TASK-012（`e4127bd`）、013（`845addf`）、014（`6dac0dc`）、015（`81b8201`）、016（`50dfad6`），迁移 `014_add_message_sent_by.py` 与 `chatbot_send_service.py` 都在。容器环境（compose 用 `env_file: .env`）里**没有任何 `CHATBOT_` 键**——两把密钥与 `CHATBOT_SEND_URL` 都没配，所以 CRM 的事件接口与发送都是 503，符合契约顺序
+     - 没验：CRM 库里迁移 014 是否已执行（`docker logs` 里没有 alembic 输出，查库要凭据，没查）
 2. 推 master（自动部署），`CRM_SEND_SECRET` 仍不设。核对：批次 09 上线步骤第 1 步（内网 503、公网 405 `text/html`）；`/internal/crm/handback` 同样两条
 3. 第 1 步若 `.env` 需要改：`.env` 改好后 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）
 4. 之后接批次 09 上线步骤第 2–5 步；真机验收加两项：CRM 点「交还 AI」→ CRM 立刻显示未接管、访客再发消息由 bot 回；控制台接管后到期时间是 24 小时后
