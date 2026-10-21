@@ -288,3 +288,81 @@ def test_nothing_is_sent_to_the_visitor(configured, queue):
 # Keeps the import honest: the bot registry is what `dispatch_message` answers
 # with, and a missing "retail" would make the bot-answers test pass vacuously.
 assert registry.get_bot("retail") is not None
+
+
+# --- a visitor store that cannot be read (cold review of 42.1, P2-1) -------------
+
+
+class FlakyRedis:
+    """A dict-backed Redis for `user_store` that can fail on reads or on writes."""
+
+    def __init__(self):
+        self.data = {}
+        self.fail_reads = False
+        self.fail_writes = False
+
+    def get(self, key):
+        if self.fail_reads:
+            raise ConnectionError("redis is down")
+        return self.data.get(key)
+
+    def set(self, key, value, ex=None):
+        if self.fail_writes:
+            raise ConnectionError("redis is down")
+        self.data[key] = value
+
+    def delete(self, key):
+        self.data.pop(key, None)
+
+
+@pytest.fixture
+def flaky():
+    """`user_store` on a Redis of its own, the way production runs it."""
+    fake = FlakyRedis()
+    user_store.reset()
+    with patch.object(user_store, "_url", "redis://stand-in:6379/16"), \
+            patch.object(user_store, "_client_factory", lambda url: fake):
+        yield fake
+    user_store.reset()
+
+
+def _back_up(flaky):
+    flaky.fail_reads = flaky.fail_writes = False
+    user_store._offline_until = 0.0
+
+
+def test_a_visitor_store_that_cannot_be_read_is_503_not_nobody_held(flaky, queue):
+    """`user_store.get` falls back to memory and answers None rather than
+    raising; not_active would tell the CRM, falsely and for good, that nobody
+    holds the visitor."""
+    _held()
+    queue.clear()
+    flaky.fail_reads = True
+
+    response = _post()
+
+    assert response.status_code == 503
+    assert response.json() == {"result": "unavailable"}
+    assert queue == []
+    _back_up(flaky)
+    assert handover.active(user_store.get(PHONE)), "still held, and the CRM was not told otherwise"
+
+
+def test_a_hand_back_whose_save_fails_is_503_and_can_be_retried(flaky, queue):
+    _held()
+    flaky.fail_writes = True
+
+    response = _post()
+
+    assert response.status_code == 503
+    _back_up(flaky)
+    assert handover.active(user_store.get(PHONE)), "the copy in Redis is still held"
+    retried = _post()
+    assert retried.json()["result"] == "ended"
+    assert not user_store.get(PHONE).handover_since
+
+
+def test_with_redis_up_a_visitor_not_on_file_is_still_not_active(flaky, queue):
+    """Offline is the exception: a clean read that finds nobody is a real answer."""
+    response = _post()
+    assert response.json() == {"result": "not_active", "handover": None}

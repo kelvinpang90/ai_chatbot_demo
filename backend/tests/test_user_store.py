@@ -355,3 +355,27 @@ def test_a_user_id_is_never_mistaken_for_a_phone_number():
     assert not phone.is_bsuid("+60 17-394 8123")
     assert not phone.is_bsuid("60173948123")
     assert not phone.is_bsuid("")
+
+
+# --- offline() (task 42.1) ------------------------------------------------------
+
+
+def test_a_store_that_reads_fine_is_not_offline(store):
+    store.get("+60111222333")
+    assert store.offline() is False
+
+
+def test_a_failed_read_makes_the_store_offline_for_the_retry_window(store, fake):
+    """A None read in this state means "not in memory", not "not on file"."""
+    fake.fail = True
+    assert store.get("+60111222333") is None
+    assert store.offline() is True
+    with patch("app.services.user_store.time.time", return_value=time.time() + us.RETRY_AFTER_SECONDS + 1):
+        assert store.offline() is False
+
+
+def test_a_store_without_redis_is_never_offline():
+    """Memory is the whole truth there; a None really is "not on file"."""
+    memory_only = UserStore("")
+    memory_only.get("+60111222333")
+    assert memory_only.offline() is False

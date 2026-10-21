@@ -301,6 +301,18 @@ class UserStore:
                 found.append(profile)
         return found
 
+    def offline(self) -> bool:
+        """Whether Redis is configured but being skipped after a failure.
+
+        While it is, a read that finds nothing means "not in memory", not "not
+        on file": the record may well be in Redis. Most callers do not care --
+        a customer forgotten for thirty seconds is the bargain this class makes
+        -- but one that reports "nobody holds this visitor" to another system
+        does (task 42.1, found by its cold review). Without a Redis at all,
+        memory is the whole truth and this is False.
+        """
+        return bool(self._url) and time.time() < self._offline_until
+
     def reset(self) -> None:
         """Forget everything held in memory and re-open the connection. Tests."""
         self._memory.clear()

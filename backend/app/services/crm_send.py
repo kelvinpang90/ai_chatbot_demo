@@ -279,6 +279,14 @@ def hand_back(
         if profile is not None and profile.handover_since
     ]
     who = _tail(phone) if phone else bsuid
+    # Read while Redis is being skipped, "nothing held" only means "nothing in
+    # memory": answering not_active would be a definite "nobody holds them" the
+    # CRM believes, and the bot would stay silent on someone still held. Say we
+    # cannot tell instead -- the CRM shows the agent a failure to retry, the way
+    # `send` answers without its key. Found by the cold review of task 42.1.
+    if user_store.offline():
+        logger.error("crm handback %s: the visitor store is offline, so not answering for %s", request_id, who)
+        return 503, {"result": "unavailable"}
     if not held:
         logger.info(
             "crm handback %s: %s was not held; asked by %s (%s)", request_id, who, agent_name, agent_id
@@ -288,6 +296,12 @@ def hand_back(
     at = _now()
     for profile in held:
         handover.end(profile, at=at)
+    # And if Redis failed under the save, the takeover ended in memory only:
+    # the copy in Redis is still held and comes back when it does. Not ended,
+    # as far as anybody should be told; a retry is harmless.
+    if user_store.offline():
+        logger.error("crm handback %s: the visitor store went offline while handing back %s", request_id, who)
+        return 503, {"result": "unavailable"}
     logger.info("crm handback %s: %s handed back to the bot by %s (%s)", request_id, who, agent_name, agent_id)
     return 200, {
         "result": "ended",

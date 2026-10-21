@@ -3237,8 +3237,15 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
       - 条件改成 `active()` → **1 failed**（到期那条）
       - 路由用 send 的 `Visitor` → **1 failed**（只有 BSUID）
       - 自加：`end(profile)` 不传 `at` → **2 failed**
-    - 没验：真 CRM、线上（未推送）；冷审待跑
-  - 偏离：无。文件就是计划列的 3 个 + 1 个测试
+    - 没验：真 CRM、线上（未推送）
+  - 偏离：计划列的 3 个文件 + 1 个测试；冷审第 1 轮之后多动了 `services/user_store.py`（加 `offline()`）与 `tests/test_user_store.py`，理由见下
+  - **冷审第 1 轮（`91b3271`，print 模式，手工起）**：报 1 条、进队列 1 条——**P2-1 成立，已修**
+    - 问题：Redis 读失败时 `user_store.get` 不抛，而是退回内存、返回 None；`hand_back` 把它当成「没人接管」，回 200 `not_active`。契约里这是明确结论，CRM 不报错、不改状态，**交还就这样无声地没发生**，bot 对这位仍被接管的访客一直闭嘴到接管到期（42.2 之后最长 24 小时）。send 没有 Redis 时回 503，两个接口对同一种故障说法不一。repro 用真的 `redis.exceptions.ConnectionError` 打在 `user_store` 的客户端上，修前红在 `200 not_active`
+    - **我错在哪**：自定第 3 条写「档案读取不包 try……真出了 bug 就是 500……方向安全」——前提（`get` 不抛）是对的，结论反了：正因为不抛，Redis 故障永远变不成那个「安全的 500」，而是变成 None。41.3 冷审已经告诉过我 `get` 不抛，我只用它证明了「不用包 try」，没往下想 None 在这里意味着什么
+    - 修法：`UserStore.offline()`——配了 Redis、而当前处在失败后的 30 秒跳过窗口里才为真（没配 Redis 时内存就是全部真相，恒为假）。`hand_back` 读完档案后 `offline()` → 503 `{"result": "unavailable"}`、不推事件；**结束之后再查一次**：Redis 若在 `save` 那一刻失败，结束只落在内存，Redis 里那份仍是接管中、恢复后就回来——同样 503，交还天然幂等，客服重试即可。CRM 侧（审查方读了 `chatbot_send_service.handback_to_ai`）把一切非 200 归 `HANDOFF_FAILED`、不改状态，正是要的效果；契约交还的错误码表本来就列了 503
+    - 新测试：`test_crm_handback.py` 3 条（`user_store` 挂上可故障的 Redis：读失败 → 503、不推事件、恢复后仍是接管中；`save` 失败 → 503、恢复后仍接管中、重试 → `ended`；Redis 正常时查无此人仍是 `not_active`）；`test_user_store.py` 3 条（`offline()` 正常为假、读失败后在重试窗口内为真且过窗口恢复、没配 Redis 恒为假）
+    - 验证：审查方 repro **修前红、修后绿**；变异——两处检查都去掉（即被审时的代码）→ 我的 2 条 + repro 共 **3 failed**；只去掉「结束之后」那处 → **1 failed**（`save` 失败那条）；按字节还原。全套 **1334 passed, 10 skipped**（1328 + 6），这次用共用入口 `pytest_docker.sh` 跑与带环境变量跑结果相同——主仓库有被 gitignore 的 `backend/.env`，审查方的 worktree 没有，所以它那边会多出 `test_seed_console` 那 2 条红
+    - 第二阶段另记、不算 finding 的：与控制台交还相同的「读—改—存」竞态（被接管的访客恰好有一条入站消息在交还前读档案、交还后存档案，会把 `handover_since` 写回）。任务 20 起就有，窗口极小且 bot 此时不回话；不在本任务修
 
 - [ ] **任务 42.2（C4b）：接管时长默认 24 小时**
   文件：`backend/app/config.py`、`backend/.env.example`；测试 `backend/tests/test_handover.py`（追加）

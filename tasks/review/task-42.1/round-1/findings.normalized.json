@@ -1,0 +1,38 @@
+{
+  "task": "42.1",
+  "round": "1",
+  "commit": "91b32711a83311d7d04fe51ff172140a6e927631",
+  "base": "270fa7d878a62b37caad501a6a2dcfbbe56ba6a1",
+  "verdict": "findings",
+  "suite_result": "2 failed, 1326 passed, 10 skipped (pytest_docker.sh on 91b3271). Both failures are tests/test_seed_console.py::test_an_unreachable_erp_clears_nothing and ::test_an_unreachable_erp_clears_no_crm_rows ('CRM_BASE_URL, CRM_EMAIL and CRM_PASSWORD must be set'). The 41.3 round-1 review already found them failing on base 270fa7d. That file is untouched in 270fa7d..91b3271, so they are not from this task.",
+  "findings": [
+    {
+      "id": "P2-1",
+      "severity": "P2",
+      "category": "correctness",
+      "file": "backend/app/services/crm_send.py",
+      "line": 276,
+      "summary": "During a Redis outage, hand_back reports 200 not_active (nobody held this visitor) for a visitor who is still held, because user_store.get never raises: on a read failure it quietly falls back to empty in-process memory and returns None.",
+      "failure": "Visitor held in Redis → Redis read fails (a restart, a blip, or any of the 30 s after one failure while user_store stays offline) → the CRM agent clicks 'hand back to AI' → chatbot answers 200 {result: not_active, handover: null}. Per the contract, not_active is a definite statement ('no record, or not taken over'). So the CRM changes nothing and shows no error, the hand-back never happens, and the bot stays silent on the visitor until the takeover lapses. That is up to HANDOVER_IDLE_SECONDS, which C4 raises to 86400. The sibling endpoint send answers 503 unavailable when it has no Redis. Contract section 13 accepts not_active only for 'profile lost (Redis data lost)', not for 'Redis unreachable right now'. The right answer there is a non-200, which the CRM already maps to CHATBOT_FAILED (502, nothing changed) so the agent can retry.",
+      "evidence": {
+        "kind": "repro",
+        "test": "repro/test_p2_1_handback_redis_outage.py::test_handback_during_a_redis_blip_does_not_claim_nobody_held_the_visitor",
+        "observed_failure": "E       AssertionError: held visitor reported as not held during a Redis outage: 200 {'result': 'not_active', 'handover': None}\nE       assert not (200 == 200 and 'not_active' == 'not_active'\n...\nWARNING  app.services.user_store:user_store.py:347 user store falling back to memory: read failed\n  File \"/app/app/services/user_store.py\", line 314, in _read\n    return client.get(key)\nredis.exceptions.ConnectionError: Error 111 connecting to infra_redis:6379. Connection refused.\nFAILED repro/test_p2_1_handback_redis_outage.py::test_handback_during_a_redis_blip_does_not_claim_nobody_held_the_visitor\n1 failed, 1 warning in 1.06s"
+      },
+      "queue": true,
+      "effective_severity": "P2",
+      "validator_notes": []
+    }
+  ],
+  "self_check": {
+    "spec_coverage": "Every clause of contract section 5 /handback has a test: the ended body and occurred_at equal to the event's (across a second boundary too), lapsed takeovers still ended, BSUID-only visitors, both keys tried, two held records ended at one moment, idempotent second call, unknown visitor neither filed nor held, 422, 401, 503 without a secret, nothing sent (send_raw wired to fail), the console no longer listing the visitor, and events switched off. I read the tests against the code. They assert real state (the record's fields and the queued events), so they are not tautologies. The one thing they do not cover is the store's failure path: every test uses the in-memory user_store, so a Redis failure is invisible to them (P2-1).",
+    "e2e": "Not done end to end. /internal/crm/handback is only reachable on the shared Docker network, and I was not going to touch the production chatbot or CRM. I checked the CRM's real caller (acuven_crm_demo backend/app/services/chatbot_send_service.py handback_to_ai) against the chatbot by reading it, not by running it. It sends phone=None when the number cannot be normalised (allowed by HandbackVisitor). It treats every non-200 as HANDOFF_FAILED and not_active as 'no change'. It rejects ended unless handover.active is False and expires_at is None, which the chatbot's body satisfies. No signed live request was made.",
+    "security": "Same signature door as /send (_verified_body): 503 without a secret, 401 before the body is parsed. The log lines carry the last 4 digits of the number, or the BSUID, and the agent's name and id; no secret. Nothing new is exposed by the public repo (AR-2).",
+    "spec_deviation": "None in the happy paths. On a Redis failure the code answers not_active rather than an error. The contract allows that only for lost data, not for an unreachable store (P2-1). I also noted, read-only and not reported: the same read-modify-save race the console hand-back already has. If an inbound turn for a held visitor loads the record before the hand-back and saves it after, it writes handover_since back. That predates this task and the window is tiny while the bot is silent."
+  },
+  "phase2": {
+    "rebuttals": "Choice 3 in the developer's result list, 'reads of the record are not wrapped in a try: user_store.get falls back to memory and does not raise when Redis is down (checked in the 41.3 cold review); a real bug is a 500, which the CRM files as another chatbot error → 502, state unchanged, a safe direction', does not hold. It states the premise correctly and draws the wrong conclusion. Because get does not raise, a Redis failure never becomes the 'safe' 500. It turns into None, which hand_back reports as the definite 200 not_active, so the CRM shows no error and the hand-back silently does not happen (P2-1, red in the repro). The 'safe direction' argument covers only the path that cannot happen. The contract's 'profile lost → not_active' edge case (section 13) is about data that is gone for good. It does not cover a store that is unreachable for 30 s. send already answers 503 when it has no Redis, so the two endpoints treat the same outage differently. The developer's other choices hold: end(at=...) together with crm_send._now(), the mutation-testing finding that the cross-second test had been passing for the wrong reason, two keys tried, lapsed takeovers ended, and no record created on not_active. I checked those against the contract and found nothing to contest.",
+    "blind_spot": "The developer flags two things in the plan, neither part of 42.1's code: switching the takeover timeout to 24 h brings back takeovers that had already lapsed (2–24 h old), and the Q7 cost (a visitor who asks for a person that nobody answers is now ignored for 24 h). Both belong to 42.2 / deployment, so missing them in phase 1 was not wrong, but I had not thought of the first one at all. In phase 1 I treated HANDOVER_IDLE_SECONDS=86400 only as an amplifier for P2-1. I did not ask what the change does to records already in Redis, because I review the code paths a diff touches and not the state already sitting in production that the next deployment will reinterpret. One more gap: the developer reports 1328 passed, while I got 1326 passed and 2 failed. The 2 are the pre-existing seed_console environment failures, so the developer's run evidently had the CRM_* variables set and mine did not. That does not affect this task, but the two sides' 'full suite' is not literally the same run."
+  },
+  "queued_count": 1
+}

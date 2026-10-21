@@ -1,0 +1,8 @@
+任务 42.1 / 第 1 轮 / commit 91b32711
+verdict: findings
+
+报了 1 条，进修复队列 1 条，降级 0 条。
+
+[MUST FIX] P2-1 P2  backend/app/services/crm_send.py:276
+    During a Redis outage, hand_back reports 200 not_active (nobody held this visitor) for a visitor who is still held, because user_store.get never raises: on a read failure it quietly falls back to empty in-process memory and returns None.
+    证据: repro repro/test_p2_1_handback_redis_outage.py::test_handback_during_a_redis_blip_does_not_claim_nobody_held_the_visitor
