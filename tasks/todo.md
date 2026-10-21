@@ -3270,7 +3270,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - **四轮都没有对着真的 `acuven_crm_demo` 消费端跑过端到端**：「CRM 先存同步响应」「`handover: null` 当作接管这一步失败」「交还非 200 归 `HANDOFF_FAILED`」都取自契约与前几轮对 CRM 代码的阅读。只有推送后的真机验收会核到它
   - **42.1 收尾**：四轮冷审，第 1–3 轮各一条 P2，都修了且 repro 红转绿；第 4 轮 clean。全套 1342 passed, 10 skipped。代码最终形状：`UserStore.save` 返回本次写入是否落地、`offline()`；`handover.hold` / `release` 与内部 `_start` / `_renew` / `_finish`、`_tell_crm(profile, at, stored)`；`crm_send.hand_back`、`_take_over` 用 `hold`；路由 `/internal/crm/handback`
 
-- [ ] **任务 42.2（C4b）：接管时长默认 24 小时**
+- [x] **任务 42.2（C4b）：接管时长默认 24 小时**
   文件：`backend/app/config.py`、`backend/.env.example`；测试 `backend/tests/test_handover.py`（追加）
   目标：不配 `HANDOVER_IDLE_SECONDS` 时，控制台与 CRM 的接管都在最后一次人工动作后 24 小时才到期（D2、Q7）
   做法：`handover_idle_seconds` 默认 `24 * 60 * 60`，注释写明来由；`.env.example` 改成 `HANDOVER_IDLE_SECONDS=86400`、注释里「默认两小时」改掉，并加一句「线上 `.env` 若还写着 7200，以它为准——改默认值不会覆盖它」
@@ -3282,11 +3282,37 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   不标 🔍
   收尾：在本批「上线步骤」写好下面三步，并把批次 09 + 10 合成一次推送的说明写进去
 
-### 上线步骤（C3 + C4 一起推；草稿，42.2 收尾时定稿）
+  **结果（2026-10-21）**：
+  - 做了什么：`config.py` 的 `handover_idle_seconds` 默认改为 `24 * 60 * 60`，注释写明来由（D2、Q7）；`.env.example` 改成 `HANDOVER_IDLE_SECONDS=86400`，注释写明「服务器 `.env` 里还写着 7200 的话以它为准」，生效命令改成带 `-f docker-compose.prod.yml` 的 `--force-recreate`（原文写的 `docker compose restart backend` 读不到新的 `.env`，与 2026-09-13 运维教训和批次 08 上线步骤第 5 步一致）；`handover.py` 里讲上限由来的历史注释没动（自定第 6 条）
+  - 测试（`test_handover.py` 追加 4 条，用类上的默认值 `Settings.model_fields[...].default`，不受本机 `.env` 影响；时长写死成 `A_DAY = 24 * 60 * 60`，不从默认值推，免得默认值滑回去时测试跟着滑）：默认值是 86400；默认值下空闲 23 小时 59 分仍在接管；空闲恰好 24 小时已到期（`active()` 用 `<`，与 CRM 回复窗口「恰好 24 小时算关闭」口径一致——这条钉的是比较符，默认值是多少它都绿）；`crm_state` 的 `expires_at` = 活动时刻 + 24 小时
+  - 验证：
+    - 先写测试跑红：3 条红（默认值、23:59、`expires_at`），第 4 条（恰好 24 小时）按上面说的本就该绿。第一版两条测试从 `DEFAULT_IDLE` 推时长，默认值是多少都会绿——跑红时看出来，改成写死 24 小时后才红在对的地方
+    - 全套（共用入口 `pytest_docker.sh`）：**1346 passed, 10 skipped**（42.1 收尾时 1342 + 4）
+    - 变异：默认值改回 `2 * 60 * 60` → **3 failed**（同上三条）；`cmp` 核过已还原
+    - 没验：线上 `.env` 的现值、Redis 里有没有会被「复活」的接管——都在上线步骤第 1 步，要上 VPS 只读查，本轮不碰 VPS
+  - 偏离：无。文件就是计划列的 2 个 + 1 个测试；上线步骤已定稿（下面）
+
+### 上线步骤（C3 + C4 一起推；2026-10-21 42.2 收尾时定稿）
+
+批次 09（41.1–41.3）与批次 10（42.1–42.2）的 commit 都在本地 master，**一次推送、一次部署**。契约上线顺序里 C3、C4 本就是同一步（「第 1 阶段上线且事件开关已开 → CRM-012 → C3、C4 部署（未配密钥）」），所以推送时机以那条为准；推之前先做第 1 步。
 
 1. **推之前，只读查两件事**（不改任何东西）：
-   - `/opt/ai_chatbot/backend/.env` 里有没有 `HANDOVER_IDLE_SECONDS`、值是多少。是 7200 → 部署时改成 86400 或删掉这一行；不在 → 默认值生效
-   - **会被「复活」的接管**：一次性 `redis:7-alpine` 容器连 `infra_redis` 16 号库，扫 `chat:user:*`，列出 `handover_since > 0` 且 `handover_active_at` 在 2–24 小时前的档案（只列 key 与时间，不打印内容）。有的话先在控制台对它们点「交还」（会推 `handover_changed`，CRM 显示一致），再部署
+   - `/opt/ai_chatbot/backend/.env` 里有没有 `HANDOVER_IDLE_SECONDS`、值是多少（`grep '^HANDOVER_IDLE_SECONDS' /opt/ai_chatbot/backend/.env`）。是 7200 → 部署时改成 86400 或删掉这一行；不在 → 默认值生效。**改默认值不会覆盖 `.env` 里写着的值**
+   - **会被「复活」的接管**：列出 `handover_since > 0`、且最后活动在「线上现值」到 24 小时之间的档案——这些现在已到期、bot 在答，部署后会重新变成「接管中」、bot 突然闭嘴。只打印号码后 4 位与空闲小时数，不打印内容（`data_net` 上一次性容器，只读）：
+     ```
+     docker run --rm --network data_net python:3.13-slim sh -c 'pip -q install redis && python -c "
+     import json, time, redis
+     r = redis.Redis(host=\"infra_redis\", db=16, decode_responses=True)
+     now, old = time.time(), 7200   # old = 线上现值
+     for key in r.scan_iter(\"chat:user:*\"):
+         p = json.loads(r.get(key) or \"{}\")
+         since = p.get(\"handover_since\") or 0
+         idle = now - (p.get(\"handover_active_at\") or since)
+         if since and old <= idle < 86400:
+             print(\"...\" + key[-4:], round(idle / 3600, 1), \"h\")
+     "'
+     ```
+     有输出 → 先在控制台对它们点「交还」（会推 `handover_changed`，CRM 显示一致），再部署；没输出 → 直接部署
 2. 推 master（自动部署），`CRM_SEND_SECRET` 仍不设。核对：批次 09 上线步骤第 1 步（内网 503、公网 405 `text/html`）；`/internal/crm/handback` 同样两条
 3. 第 1 步若 `.env` 需要改：`.env` 改好后 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）
 4. 之后接批次 09 上线步骤第 2–5 步；真机验收加两项：CRM 点「交还 AI」→ CRM 立刻显示未接管、访客再发消息由 bot 回；控制台接管后到期时间是 24 小时后

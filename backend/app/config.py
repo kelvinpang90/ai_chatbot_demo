@@ -58,11 +58,13 @@ class Settings(BaseSettings):
     push_delay_seconds: float = 30.0
     # How long a handover survives without the person doing anything (task 20).
     # A setting for the same reason the push delay is one: it is a judgement
-    # about how a room behaves, not a technical constant. Two hours suits a demo
-    # watched continuously; a real service desk that leaves conversations open
-    # over lunch would want longer, and a rehearsal where you want to watch it
-    # lapse wants about a minute.
-    handover_idle_seconds: float = 2 * 60 * 60
+    # about how a room behaves, not a technical constant. It was two hours, for
+    # a demo watched continuously. From task 42.2 it is a day: agents now answer
+    # these visitors from the CRM's inbox, and a reply there keeps the bot quiet
+    # for 24 hours after it (D2 of the CRM phase-two design). There is one
+    # takeover for the console and the CRM, so the console's is a day too (Q7).
+    # A rehearsal where you want to watch it lapse still wants about a minute.
+    handover_idle_seconds: float = 24 * 60 * 60
     # The number autoplay (task 29) talks as. Nobody's phone: it only ever goes
     # down the web chat, which sends nothing to a handset. The first run opens an
     # ERP account under it and every later run finds that account again, which

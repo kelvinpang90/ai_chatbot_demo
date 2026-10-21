@@ -14,11 +14,11 @@ from fastapi.testclient import TestClient
 
 from app.bots import registry
 from app.bots.registry import get_bot
-from app.config import settings
+from app.config import Settings, settings
 from app.console import events
 from app.main import app
 from app.routers.whatsapp_webhook import _asked_for_a_person, dispatch_message
-from app.services import audit, handover, llm, notify
+from app.services import audit, crm_events, handover, llm, notify
 from app.tools import human, local
 from app.services.user_store import user_store
 from app.session_store import session_store
@@ -960,3 +960,51 @@ def test_the_idle_ceiling_can_be_changed_without_a_deploy():
         assert handover.active(user_store.get(phone)) is False
     with patch.object(settings, "handover_idle_seconds", 600):
         assert handover.active(user_store.get(phone)) is True
+
+
+# -- the default ceiling is a day (task 42.2) ------------------------------------
+#
+# D2 / Q7 of the CRM phase-two design: a person replying from the CRM keeps the
+# conversation for 24 hours after their last reply, and there is one takeover
+# for the console and the CRM alike. Read off the class default rather than
+# `settings`, which a local .env may override.
+
+DEFAULT_IDLE = Settings.model_fields["handover_idle_seconds"].default
+# Spelled out, not read off DEFAULT_IDLE: these tests pin the number itself, and
+# a default that slid back to two hours must turn them red.
+A_DAY = 24 * 60 * 60
+
+
+def test_the_default_ceiling_is_24_hours():
+    assert DEFAULT_IDLE == A_DAY
+
+
+def test_with_the_default_a_takeover_holds_for_just_under_a_day():
+    phone = "60129998090"
+    _customer(phone)
+    _take_over(phone)
+    with patch.object(settings, "handover_idle_seconds", DEFAULT_IDLE):
+        _idle_for(phone, A_DAY - 60)
+        assert handover.active(user_store.get(phone)) is True
+
+
+def test_with_the_default_a_takeover_lapses_at_exactly_a_day():
+    """`<`, so the 24th hour itself is lapsed -- the CRM's reply window closes
+    at exactly 24 hours too (contract section 14, item 2)."""
+    phone = "60129998091"
+    _customer(phone)
+    _take_over(phone)
+    with patch.object(settings, "handover_idle_seconds", DEFAULT_IDLE), \
+            patch("app.services.handover.time.time", return_value=1_000_000.0 + A_DAY):
+        profile = user_store.get(phone)
+        profile.handover_active_at = 1_000_000.0
+        assert handover.active(profile) is False
+
+
+def test_with_the_default_the_crm_is_told_a_day_from_the_last_reply():
+    profile = _customer("60129998092")
+    _take_over("60129998092")
+    profile = user_store.get("60129998092")
+    with patch.object(settings, "handover_idle_seconds", DEFAULT_IDLE):
+        state = handover.crm_state(profile)
+    assert state == {"active": True, "expires_at": crm_events.utc(profile.handover_active_at + A_DAY)}
