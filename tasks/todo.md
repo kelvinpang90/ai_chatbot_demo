@@ -2871,6 +2871,13 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 3. Kelvin 在 VPS 上生成一把密钥（`openssl rand -hex 32`），**同一个值**写进 CRM 的 `CHATBOT_EVENTS_SECRET` 和 `/opt/ai_chatbot/backend/.env` 的 `CRM_EVENTS_SECRET`；**先重启 CRM**
 4. 连通性预检（不发事件）：从 chatbot 容器发一个不带签名的 POST，**期望 401**（说明网络通、CRM 已配密钥）；503 = CRM 还没读到密钥；连接错误 = 容器名不对，先停下核对 `docker ps`
 5. `/opt/ai_chatbot/backend/.env` 加 `CRM_EVENTS_ENABLED=true`，`docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**，见 2026-09-13 的运维教训；`restart` 读不到新环境变量）
+   - ✅ **第 3–5 步已做（2026-10-21，Kelvin 授权、Claude 按 `tasks/runbook-batch08-steps3-6.md` 执行）**：
+     - 第 0 步备份：`/opt/crm_os/.env.bak-20261021`、`/opt/ai_chatbot/backend/.env.bak-20261021`
+     - 第 3 步：一把 `openssl rand -hex 32` 同值写进 CRM 的 `CHATBOT_EVENTS_SECRET` 与 chatbot 的 `CRM_EVENTS_SECRET`（值没打印，哈希比对 SAME、64 位、各 1 行）；CRM 后端用正在跑的镜像重建，healthy，容器环境里有这个键。**偏离清单的一处**：重建前后端跑的已是 `3381b35`，不是早上看到的 `853b5ad`——CRM 自己的流水线约 2 小时前部署的，`853b5ad` 的直接后代，只登记 CRM-TASK-050–070（`tasks.yaml`），没有代码改动；重建没有换版本
+     - 第 4 步：不带签名 POST `crm_os-backend-1:8000/internal/chatbot/events` → **401**
+     - 第 5 步：本机 `:latest` 与运行中镜像同为 `sha256:57b5f11b…`；加 `CRM_EVENTS_ENABLED=true`，`-f docker-compose.prod.yml up -d --force-recreate backend`；日志 `crm events on, delivering to http://crm_os-backend-1:8000/internal/chatbot/events`，镜像未变
+     - 第 6 步基线：`LLEN chat:crm_events` = 0、`chat:crm_events:dead` = 0；`chatbot.acuventech.com` 与 `crm.acuventech.com` 都 200
+     - 未做：第 6 步真机验收，要 Kelvin 拿手机
 6. **真机验收（Kelvin 拿手机做）**：发文字 → CRM 收件箱出现联系人与消息；bot 回复显示「AI · 行业」；说「转人工」→ CRM 显示接管中与到期时间；控制台回复 → 显示为控制台回复、到期时间后延；控制台交还 → 接管结束；看送达对勾随手机已读变化。最后 `LLEN chat:crm_events` 回到 0、`LLEN chat:crm_events:dead` 为 0
 - **回滚**：`CRM_EVENTS_ENABLED=false` + 重建容器。已入队没送出的事件**留在 Redis 里不丢**，重新打开后接着送；真要丢弃就 `DEL chat:crm_events`
 - **不补历史**：打开开关之前的对话不会进 CRM
