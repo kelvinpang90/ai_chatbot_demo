@@ -3169,6 +3169,16 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 2. **等 CRM-013–015 部署**（CRM 那边未配 `CHATBOT_SEND_SECRET`，发送 503）
 3. Kelvin 用 `openssl rand -hex 32` 生成**第二把**密钥（**不能**与 `CRM_EVENTS_SECRET` 同值），同值写进 CRM 的 `CHATBOT_SEND_SECRET` 与 `/opt/ai_chatbot/backend/.env` 的 `CRM_SEND_SECRET`；`docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）；CRM 也重启
 4. 预检：第 1 步那条请求此时**期望 401**（密钥已读到、签名不对）
+   - ✅ **第 2–4 步已做（2026-10-22 16:0xZ，即本地 10-23 凌晨；Kelvin 授权、Claude 按 `tasks/runbook-batch09-steps3-5.md` 执行第 0–4 步）**：
+     - 第 2 步：CRM 跑 `8136032`（#142，收件箱一客户一行），`853b5ad` 的后代，含 CRM-TASK-013–016
+     - 第 0 步备份：`/opt/crm_os/.env.bak-20261023`、`/opt/ai_chatbot/backend/.env.bak-20261023`（清单里写的是 `-20261022`，按执行当天改了后缀）
+     - 第 3 步：CRM 加 `CHATBOT_SEND_URL=http://ai_chatbot_backend:8000` 与 `CHATBOT_SEND_SECRET`，chatbot 加 `CRM_SEND_SECRET`；一把 `openssl rand -hex 32` 同值（哈希比对 SAME、64 位、各 1 行），且与事件那把**不同值**（NOT_THE_EVENTS_KEY）。值没打印
+     - chatbot 重建：重建前 `:latest` 与运行中同为 `sha256:b5b062e4…`，重建后不变；容器环境有 `CRM_SEND_SECRET`；日志 `crm events on …`，无 ERROR
+     - 第 4 步预检：内网不带签名 `POST /internal/crm/send` → **401**，`/handback` → **401**；公网 `/internal/crm/send` → **405 `text/html`**
+     - CRM 重建（用正在跑的镜像，版本不变）：healthy；容器环境 `CHATBOT_SEND_URL=http://ai_chatbot_backend:8000`、`CHATBOT_SEND_SECRET` 1 个、`CHATBOT_EVENTS_SECRET` 仍在；新容器日志 ERROR 0；两站首页 200
+     - 第 5 步基线：`chat:crm_events` 0、死信 0、`chat:crm_send:*` 0
+     - 一处虚惊：开工时 chatbot 显示 `Up 48 minutes`，查明是 10-22 15:13:56Z 部署起的那个容器（重启 0 次、镜像未变），只是本地日期已跨到 10-23
+     - 未做：第 5 步真机（Kelvin）
 5. **真机验收（Kelvin 拿手机，契约第十节）**：CRM 收件箱回复一位 24 小时内来过消息的访客 → 手机收到；CRM 显示已发出、接管中与到期时间；控制台看到这位访客在接管中、`crm.reply` span 带客服名字；再回一条 → 到期时间后延；`LLEN chat:crm_events` 回到 0、`chat:crm_events:dead` 为 0
 - **回滚**：清空 `CRM_SEND_SECRET` + 重建容器 → 一律 503，CRM 把它当「明确没发出」；已发出的不受影响
 
