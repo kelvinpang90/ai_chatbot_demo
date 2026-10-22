@@ -2878,6 +2878,13 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
      - 第 5 步：本机 `:latest` 与运行中镜像同为 `sha256:57b5f11b…`；加 `CRM_EVENTS_ENABLED=true`，`-f docker-compose.prod.yml up -d --force-recreate backend`；日志 `crm events on, delivering to http://crm_os-backend-1:8000/internal/chatbot/events`，镜像未变
      - 第 6 步基线：`LLEN chat:crm_events` = 0、`chat:crm_events:dead` = 0；`chatbot.acuventech.com` 与 `crm.acuventech.com` 都 200
      - 未做：第 6 步真机验收，要 Kelvin 拿手机
+   - ✅ **第 6 步真机验收（2026-10-21 晚，Kelvin 拿手机做，报告「做完了」）+ 2026-10-22 Claude 只读核对**：
+     - 真机：手机、CRM 收件箱、控制台三张截图对过——CRM 与手机逐条一致（控制台回复标「Console」、bot 消息与菜单标「AI」、已读对勾）；**控制台少了交还后、选 demo 前的几条**，查明是菜单阶段按设计不写审计，已由**任务 43**修（本地，未推）。逐项结果以 Kelvin 的口头确认为准，Claude 只见过那三张截图
+     - 队列：`LLEN chat:crm_events` = 0、`chat:crm_events:dead` = 0
+     - chatbot（容器 2026-10-21 12:15:51Z 起，即第 5 步重建）：日志唯一一行 `crm events on, delivering to …`；POST 事件接口**全部 60 次 200**（12:15:54Z → 2026-10-22 04:47:44Z），没有 ERROR / Traceback
+     - CRM：期间被它自己的流水线又部署了一次——**2026-10-21 15:51:43Z 起跑 `c04bb5b`**（`3381b35` 之后的 #137 / #138，收件箱 SSE 推送），在验收（约 15:20–15:41Z）之后。容器环境里 `CHATBOT_EVENTS_SECRET` 仍在（`.env` 没动）。新容器的日志里事件接口 6 次全 200，没有 ERROR / Traceback，没有 `chatbot event rejected`
+     - 没能看：验收那段时间 **CRM 侧的日志**——那个容器已被 15:51Z 的部署换掉，日志随之没了；chatbot 侧那段的 60 次 200 是唯一的直接证据
+     - 第 1 阶段到此全部上线、开关已开——契约第十节里 C3、C4 部署的前提已满足
 6. **真机验收（Kelvin 拿手机做）**：发文字 → CRM 收件箱出现联系人与消息；bot 回复显示「AI · 行业」；说「转人工」→ CRM 显示接管中与到期时间；控制台回复 → 显示为控制台回复、到期时间后延；控制台交还 → 接管结束；看送达对勾随手机已读变化。最后 `LLEN chat:crm_events` 回到 0、`LLEN chat:crm_events:dead` 为 0
 - **回滚**：`CRM_EVENTS_ENABLED=false` + 重建容器。已入队没送出的事件**留在 Redis 里不丢**，重新打开后接着送；真要丢弃就 `DEL chat:crm_events`
 - **不补历史**：打开开关之前的对话不会进 CRM
