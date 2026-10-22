@@ -3339,6 +3339,14 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
      - 迁移 014：没直接查库（要凭据）。但 CRM 的 `deploy/deploy.sh` 在换容器**之前**跑 `alembic upgrade head`，失败即退出、不换容器；现在跑的是 `853b5ad`，所以迁移已执行——推断，不是读库所得
      - 第 3–6 步的操作清单写在 `tasks/runbook-batch08-steps3-6.md`，Kelvin 自己在 VPS 上执行
 2. 推 master（自动部署），`CRM_SEND_SECRET` 仍不设。核对：批次 09 上线步骤第 1 步（内网 503、公网 405 `text/html`）；`/internal/crm/handback` 同样两条
+   - ✅ **2026-10-22 已做（Kelvin 授权推送）**：
+     - 推前只读重扫（后端镜像 + stdin，同第 1 步）：**91 份档案，`handover_since` 非零 0 份**——没有接管中的，也没有会被复活的
+     - `git fetch` 后 origin 没动，`270fa7d..3c4c5ec` 快进推送 18 个 commit（批次 09、10、任务 43 及记录）。Deploy run `39802680400` 报 success
+     - 没信绿灯，上 VPS 核：`ai_chatbot_backend` 15:13:56Z 重建，镜像 `sha256:b5b062e4…`（原 `57b5f11b…`）；镜像里有 `crm_send.py`、`internal_crm.py`、`_menu`，`handover_idle_seconds` 默认 24h；启动日志 `crm events on …`，无 ERROR / Traceback
+     - 内网（一次性 curl 容器挂 `proxy_net`）：`POST /internal/crm/send` → **503** `{"detail":"CRM_SEND_SECRET is not configured"}`，`/internal/crm/handback` → **503**
+     - 公网：两条都 **405 `text/html`**（nginx 自己回，`/internal/` 未转发）；首页 200
+     - 队列 0、死信 0
+     - 第 3 步跳过（`.env` 里本来就没有 `HANDOVER_IDLE_SECONDS`）。下一步是批次 09 上线步骤第 2–5 步：CRM-013–015 已部署（`c04bb5b`）→ Kelvin 生成**第二把**密钥同值写进两边 → 预检 401 → 真机；任务 43 的真机核对（照 10-21 截图再打一遍）可以并进那一趟
 3. 第 1 步若 `.env` 需要改：`.env` 改好后 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）
 4. 之后接批次 09 上线步骤第 2–5 步；真机验收加两项：CRM 点「交还 AI」→ CRM 立刻显示未接管、访客再发消息由 bot 回；控制台接管后到期时间是 24 小时后
 - **回滚**：24 小时 → 把 `HANDOVER_IDLE_SECONDS=7200` 写回 `.env` 并重建容器（会让 2–24 小时间的接管立刻到期，方向是安全的）；handback → 同 send，清空 `CRM_SEND_SECRET` 即一律 503
