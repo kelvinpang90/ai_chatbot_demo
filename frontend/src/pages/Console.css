@@ -343,20 +343,21 @@
 }
 
 /* A bubble is as wide as its text, like on the phone -- up to 88% of the pane.
-   Without the start alignment the bot's and colleague's bubbles stretched to
-   that limit however short the message. */
+   Without the end alignment the bot's and colleague's bubbles stretched to
+   that limit however short the message. The business side sits on the right
+   and the customer on the left, as the operator reads it. */
 .cx-msg {
   display: flex;
   flex-direction: column;
-  align-self: flex-start;
-  align-items: flex-start;
+  align-self: flex-end;
+  align-items: flex-end;
   gap: 2px;
   max-width: 88%;
 }
 
 .cx-msg-cust {
-  align-self: flex-end;
-  align-items: flex-end;
+  align-self: flex-start;
+  align-items: flex-start;
 }
 
 .cx-msg-meta {
@@ -376,13 +377,13 @@
   white-space: pre-wrap;
   word-break: break-word;
   background: var(--console-raise);
-  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
 }
 
 .cx-msg-cust .cx-bubble {
   background: var(--console-bubble-cust);
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 3px;
+  border-bottom-right-radius: 12px;
+  border-bottom-left-radius: 3px;
 }
 
 .cx-msg-human .cx-bubble {
