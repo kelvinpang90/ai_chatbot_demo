@@ -507,7 +507,7 @@ def dispatch_message(message: dict, contact: dict | None = None) -> list[dict]:
         # `get`, never `get_or_create`: like "hi", it must leave no record.
         profile = user_store.get(sender.key)
         if not handover.active(profile) and (profile is None or profile.bot_id is None):
-            return _send_bot_list(sender.key)
+            return _menu(sender, _customer_message_body(message, ""), audit.TEXT)
         return _canned(sender, UNSUPPORTED_TYPE_MESSAGE)
 
     text = message.get("text", {}).get("body", "")
@@ -854,7 +854,7 @@ def _handle_text_message(
     if text.strip().lower() in MENU_KEYWORDS:
         logger.info("Menu reset requested by %s", sender.key)
         _start_over(sender)
-        return _send_bot_list(sender.key)
+        return _menu(sender, text, source)
 
     profile = user_store.get_or_create(sender.key)
     _remember_identity(profile, sender)
@@ -880,13 +880,13 @@ def _handle_text_message(
 
     if profile.bot_id is None:
         logger.info("No bot selected yet for %s, showing bot list", sender.key)
-        return _send_bot_list(sender.key)
+        return _menu(sender, text, source)
 
     bot = get_bot(profile.bot_id)
     if not bot:
         # A demo that was retired between one message and the next.
         _start_over(sender)
-        return _send_bot_list(sender.key)
+        return _menu(sender, text, source)
 
     # Opened around the whole exchange, not just the writes: the tool calls the
     # model makes in between are recorded off this same turn, and outside one
@@ -987,16 +987,22 @@ def _handle_interactive_reply(sender: Sender, interactive: dict) -> list[dict]:
     if profile.bot_id is None:
         bot = get_bot(selected_id)
         if not bot:
-            return _send_bot_list(sender.key)
+            return _menu(sender, str(selected.get("title") or selected_id), audit.INTERACTIVE)
         profile.bot_id = bot.id
-        # A new run of a demo is a new transcript.
-        profile.conversation_id = audit.new_conversation_id()
+        # A new run of a demo is a new transcript -- unless one is open already,
+        # which with no demo picked can only hold what led up to this pick: the
+        # menu, or a colleague who took them before they chose (task 43). `menu`
+        # and a retired demo both close the old one, so it is never a past demo's.
+        if not profile.conversation_id:
+            profile.conversation_id = audit.new_conversation_id()
         # Picking a demo off the menu is deliberate enough to file the record on;
         # the greeting that follows has to still be there on the next message.
         user_store.save(profile)
         logger.info("%s selected bot %s", sender.key, bot.id)
         audit.begin_for(profile, audit.WHATSAPP)
         try:
+            # Which demo they chose, and not only the greeting it led to.
+            audit.record_message("user", str(selected.get("title") or bot.menu_title), audit.INTERACTIVE)
             return _start_conversation(sender.key, bot)
         finally:
             audit.close()
@@ -1042,7 +1048,7 @@ def _handle_flow_reply(sender: Sender, nfm_reply: dict) -> list[dict]:
         # recovery, and the log line is there because this would mean something
         # is wrong upstream.
         logger.warning("%s submitted a form with no demo selected", sender.key)
-        return _send_bot_list(sender.key)
+        return _menu(sender, "[form]", audit.INTERACTIVE)
 
     # `_handle_text_message` opens the turn this belongs to, which is why the
     # write above it does not open one of its own.
@@ -1094,6 +1100,37 @@ def _start_conversation(to: str, bot: BotConfig) -> list[dict]:
         payloads.append(
             whatsapp.build_quick_reply_buttons(to, "Quick questions to get you started:", buttons)
         )
+    return payloads
+
+
+def _menu(sender: Sender, their_line: str, source: str) -> list[dict]:
+    """The demo list, with the exchange that led to it filed for the console.
+
+    Until task 43 nothing on this path was written down, so a customer handed
+    back before they had picked a demo lost every line from the hand-back to the
+    next pick -- on the console only, since the CRM is told about every message.
+
+    Customers on file only: a number that has only ever seen the menu still
+    leaves nothing behind (task 32; kept by Kelvin, 2026-10-21). And the audit
+    log only, not the history: the model has nothing to learn from the menu, and
+    a demo picked off it should not open with it.
+    """
+    payloads = _send_bot_list(sender.key)
+    profile = user_store.get(sender.key)
+    if profile is None:
+        return payloads
+    minted = not profile.conversation_id
+    audit.begin_for(profile, audit.WHATSAPP)
+    try:
+        if their_line:
+            audit.record_message("user", their_line, source)
+        # The line the CRM's inbox shows for it, so the two read the same.
+        audit.record_message("assistant", crm_events.outbound_body(payloads[0]))
+        if minted:
+            # So the demo picked off this list carries on in the same conversation.
+            user_store.save(profile)
+    finally:
+        audit.close()
     return payloads
 
 

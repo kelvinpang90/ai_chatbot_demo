@@ -15,8 +15,10 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app
+from app.models import HandoverReplyRequest, HandoverRequest
+from app.routers.console import reply_as_human, set_handover
 from app.routers.whatsapp_webhook import dispatch_message
-from app.services import audit, llm, transcribe, whatsapp_media
+from app.services import audit, crm_events, handover, llm, transcribe, whatsapp_media
 from app.services.audit import AuditStore, Turn
 from app.services.user_store import UserProfile, user_store
 
@@ -429,6 +431,175 @@ def test_tapping_a_product_off_the_list_is_recorded_as_a_tap(recording):
 
     rows = [params for _sql, params in recording.writes("chat_messages")]
     assert rows and rows[0][6] == "interactive"
+
+
+# --- the menu stage (task 43) ------------------------------------------------
+#
+# A customer who has not picked a demo is answered with the demo list. Until
+# task 43 that exchange was never written down, so the console's copy of a
+# conversation lost every line between a hand-back and the next pick, while the
+# phone and the CRM's inbox both had them.
+
+MENU_LINE = "[list] 欢迎！想试哪一种 AI 客服？\nWelcome! Which AI assistant would you like to try?"
+
+
+def _says(phone: str, body: str, seq: int) -> dict:
+    return {"id": f"wamid.menu-stage.{seq}", "from": phone, "type": "text", "text": {"body": body}}
+
+
+def _console_reply(phone: str, text: str) -> None:
+    with patch.object(whatsapp_media, "send_message"):
+        reply_as_human(HandoverReplyRequest(key_id=phone, text=text))
+
+
+def _console_holds(phone: str, active: bool) -> None:
+    set_handover(HandoverRequest(key_id=phone, active=active))
+
+
+def _chat_rows(recording) -> list[tuple]:
+    return [params for _sql, params in recording.writes("chat_messages")]
+
+
+def test_a_customer_handed_back_before_picking_a_demo_stays_on_the_console(recording):
+    """The 2026-10-21 phone run, replayed. The customer typed "1" rather than
+    tapping the list, so every hand-back put them back at the menu -- and the
+    console lost the four lines the phone and the CRM both showed."""
+    phone = "60173948123"
+    dispatch_message(_says(phone, "转人工", 1))
+    handed_over = handover.HANDED_OVER_MESSAGE.pick(user_store.get(phone).language)
+    _console_reply(phone, "你好")
+    dispatch_message(_says(phone, "你好", 2))
+    _console_reply(phone, "你好")
+    _console_holds(phone, False)
+    dispatch_message(_says(phone, "1", 3))
+    _console_holds(phone, True)
+    _console_reply(phone, "你好")
+    dispatch_message(_says(phone, "1", 4))
+    _console_reply(phone, "请问有什么可以帮你")
+    _console_holds(phone, False)
+    dispatch_message(_says(phone, "没有了", 5))
+
+    rows = _chat_rows(recording)
+    assert [(p[4], p[5]) for p in rows] == [
+        ("user", "转人工"),
+        ("assistant", handed_over),
+        ("assistant", "你好"),
+        ("user", "你好"),
+        ("assistant", "你好"),
+        ("user", "1"),
+        ("assistant", MENU_LINE),
+        ("assistant", "你好"),
+        ("user", "1"),
+        ("assistant", "请问有什么可以帮你"),
+        ("user", "没有了"),
+        ("assistant", MENU_LINE),
+    ]
+    assert len({p[0] for p in rows}) == 1, "one conversation, as on the phone"
+
+
+def test_the_menu_is_filed_as_the_line_the_crm_is_sent(recording):
+    """The console and the CRM's inbox are read side by side; the same message
+    must read the same in both."""
+    phone = "60173948124"
+    user_store.save(user_store.get_or_create(phone))
+
+    (sent,) = dispatch_message(_says(phone, "hello", 1))
+
+    assert _chat_rows(recording)[-1][5] == crm_events.outbound_body(sent) == MENU_LINE
+
+
+def test_a_stranger_at_the_menu_still_leaves_no_transcript(recording):
+    """Task 32's rule stands (Kelvin, 2026-10-21): a number that only ever saw
+    the menu leaves nothing behind -- not a record, and not a conversation on the
+    console either. The CRM, which is told about every message, still has it."""
+    stranger = "60173948125"
+
+    dispatch_message(_says(stranger, "hi", 1))
+    dispatch_message({**_says(stranger, "", 2), "type": "sticker", "sticker": {"id": "s"}})
+
+    assert _chat_rows(recording) == []
+    assert user_store.get(stranger) is None
+
+
+def test_a_known_customer_at_the_menu_who_sends_a_sticker_is_on_the_console(recording):
+    phone = "60173948126"
+    user_store.save(user_store.get_or_create(phone))
+
+    dispatch_message({**_says(phone, "", 1), "type": "sticker", "sticker": {"id": "s"}})
+
+    assert [(p[4], p[5]) for p in _chat_rows(recording)] == [
+        ("user", "[sticker]"),
+        ("assistant", MENU_LINE),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("bot_id", "message", "their_line", "source"),
+    [
+        (
+            None,
+            {"type": "interactive", "interactive": {"type": "list_reply", "list_reply": {"id": "gone", "title": "Old demo"}}},
+            "Old demo",
+            "interactive",
+        ),
+        (
+            None,
+            {"type": "interactive", "interactive": {"type": "nfm_reply", "nfm_reply": {"response_json": "{}"}}},
+            "[form]",
+            "interactive",
+        ),
+        ("a-retired-demo", {"type": "text", "text": {"body": "hello"}}, "hello", "text"),
+    ],
+    ids=["a list row that is no demo", "a form with no demo", "a demo retired under them"],
+)
+def test_every_other_way_back_to_the_menu_is_on_the_console(recording, bot_id, message, their_line, source):
+    phone = "60173948128"
+    profile = user_store.get_or_create(phone)
+    profile.bot_id = bot_id
+    user_store.save(profile)
+
+    dispatch_message({"id": "wamid.menu-stage.1", "from": phone, **message})
+
+    assert [(p[4], p[5], p[6]) for p in _chat_rows(recording)] == [
+        ("user", their_line, source),
+        ("assistant", MENU_LINE, "text"),
+    ]
+
+
+def test_menu_opens_a_new_transcript_that_the_demo_picked_from_it_continues(recording):
+    """`menu` still starts a new conversation (2026-09-15); it now opens with the
+    word that started it, and the demo picked off the list carries on in it
+    rather than in a third one. What they tapped is a line of its own."""
+    phone = "60173948127"
+    profile = user_store.get_or_create(phone)
+    profile.bot_id = "retail"
+    user_store.save(profile)
+    with _a_reply():
+        dispatch_message(_says(phone, "ada stock?", 1))
+    before = _chat_rows(recording)[0][0]
+
+    dispatch_message(_says(phone, "menu", 2))
+    dispatch_message(
+        {
+            "id": "wamid.menu-stage.3",
+            "from": phone,
+            "type": "interactive",
+            "interactive": {
+                "type": "list_reply",
+                "list_reply": {"id": "hotel", "title": "Hotel 酒店"},
+            },
+        }
+    )
+
+    after = _chat_rows(recording)[2:]
+    assert [(p[4], p[5], p[6]) for p in after][:3] == [
+        ("user", "menu", "text"),
+        ("assistant", MENU_LINE, "text"),
+        ("user", "Hotel 酒店", "interactive"),
+    ]
+    assert after[3][4] == "assistant", "then the hotel greeting"
+    assert {p[0] for p in after} == {user_store.get(phone).conversation_id}
+    assert before not in {p[0] for p in after}
 
 
 def test_the_demo_still_answers_when_mysql_is_down():

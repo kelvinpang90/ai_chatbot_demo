@@ -190,8 +190,12 @@ def visitor_for(profile) -> dict:
 _INTERACTIVE_MARKERS = {"list": "[list]", "button": "[buttons]", "flow": "[form]"}
 
 
-def _outbound_body(payload: dict, text: str | None) -> str:
-    """What one message we sent says, as the line the CRM's inbox shows."""
+def outbound_body(payload: dict, text: str | None = None) -> str:
+    """What one message we sent says, as the line the CRM's inbox shows.
+
+    Public because the console files the demo list with it too (task 43): the
+    two are read side by side, and the same message should read the same.
+    """
     if text is not None:
         return text
     kind = payload.get("type")
@@ -233,7 +237,7 @@ def outbound(kind: str, payload: dict, response, text: str | None = None) -> Non
         to = str(payload.get("to") or payload.get("recipient") or "")
         profile = user_store.get(to) if to else None
         who = visitor_for(profile) if profile else visitor(to, None, None)
-        fields = {"message": {"wa_message_id": wa_message_id, "body": _outbound_body(payload, text)}}
+        fields = {"message": {"wa_message_id": wa_message_id, "body": outbound_body(payload, text)}}
         if kind == "ai_reply":
             fields["bot_id"] = profile.bot_id if profile else None
         enqueue(kind, who, **fields)
