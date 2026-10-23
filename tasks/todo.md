@@ -3407,6 +3407,34 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
+## 任务 44：导演台把 CRM 客服的回复显示成客服（带名字）（2026-10-23 新增，**计划待 Kelvin 确认**）
+
+**起因（批次 09 第 5 步真机时发现）**：导演台「Customer's phone」里，CRM 客服 Alex Turner 13:08 回的「下午好」排成了 bot 的样子——没有标签、bot 的气泡色。导演台自己的人工回复是「Colleague · 时间」+ 人工气泡色。
+
+**原因**：`frontend/src/pages/Console.tsx` 第 922 行只认两种：`source === 'human'`（导演台回复）当人工，其余 assistant 一律当 bot。C3（41.3）给 CRM 客服的回复记的是 `source = crm_agent`，前端没跟上。
+
+**客服名字已经在接口里，不用动后端**：41.3 写审计时，先写 `crm_agent` 那条消息、再写 `crm.reply` 工具行，工具行挂在这条消息上（`turn.message_id`），`input` 里有 `agent_name`。`GET /console/history/{id}` 已经把它放在这条消息的 `tool_calls` 里返回。
+
+**改法（只动 `frontend/src/pages/Console.tsx`，约十行）**：
+1. 气泡分类加一种：`source === 'crm_agent'` 也走人工气泡（`cx-msg-human`，同一套颜色），不再当 bot
+2. 标签：`CRM · <客服名字> · 13:08`；名字取这条消息 `tool_calls` 里 `tool === 'crm.reply'` 那一行的 `input.agent_name`
+3. 名字拿不到（那一行没写进去，例如 MySQL 当时写失败）时显示 `CRM · 13:08`，不留空、不报错
+4. 导演台自己的回复照旧 `Colleague · 13:08`，bot、顾客、语音的显示都不变
+
+**需要你定的（附建议）**：
+1. **标签写法**：建议 `CRM · Alex Turner`——一眼分出是 CRM 收件箱回的还是导演台回的。备选：`Colleague · Alex Turner`（两种人工统一叫 Colleague，只多一个名字）
+2. **范围**：右栏「What the system is doing」里那张 `crm.reply` 卡片现在只有一个标题，没写谁回了什么。建议**这次不动**，只修左边的气泡；要一起做就说（同一个文件，多十来行）
+3. 冷审：建议**不走**，纯显示改动
+
+**验证**：
+- 前端没有测试框架，按惯例用 `frontend/Dockerfile` 跑 `tsc -b && vite build`（类型和构建）+ `oxlint`
+- 本地看一眼：前端 dev server 接一个返回固定对话的假接口（含 `crm_agent` 有名字、没名字、`human`、bot、顾客各一条），在浏览器面板截图对照；假数据只放 scratchpad，不进仓库
+- 上线后真机：CRM 回一句，导演台显示 `CRM · 名字`
+
+**上线**：推 master 即部署（前端镜像会重建，后端代码不变）；本地 master 上还有几条只改文档的 commit，会一起推上去。
+
+---
+
 ## 运维教训：2026-09-13 —— 一条少了 `-f` 的 compose 命令把线上打挂了
 
 **没改一行代码，线上后端死了十几分钟。** 起因是执行阻塞项 I 的最后一步（改完 `.env` 重建容器），
