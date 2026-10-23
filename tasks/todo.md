@@ -3462,6 +3462,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - 全套（Docker，`python:3.13-slim`）**1358 passed, 10 skipped**（1354 → 1358）。⚠️ worktree 里没有 `backend/.env`，直接用 `pytest_docker.sh` 跑时 `test_an_unreachable_erp_clears_nothing` / `test_an_unreachable_erp_clears_no_crm_rows` 两条会红——它们不 patch CRM 凭据、靠 `.env` 提供；补上假的 `CRM_BASE_URL` / `CRM_EMAIL` / `CRM_PASSWORD` 环境变量后全绿。与本任务无关，没动
     - 没验：对真 CRM 发请求（CRM 侧 `deals.source` 还没上线）；线上播种后 Pipeline / 联系人列表的显示——由 CRM 会话两边都部署后统一做
   - 没做：没在生产跑 seed 或 cleanup（重新播种由 CRM 会话在两边都部署后统一做）；CRM 旧版本会忽略未知字段，所以本 PR 先合后合都行
+  - **上线（2026-10-23，Kelvin 授权）**：部署前核 VPS `backend/.env` 有 `CRM_EMAIL` / `CRM_PASSWORD` / `ERP_EMAIL` / `ERP_PASSWORD`（只看键名；`CRM_BASE_URL` 用代码默认 `crm.acuventech.com`）。PR #2 以 merge commit `f441953` 合进 master，Deploy run `39914045434` success（06:52:37Z）。VPS 核：两个容器 06:52:18Z 重建，后端镜像 `sha256:b9ef2218…`（原 `c4d42bf9…`）；临时容器里 grep 到 `initial_source`、`def bot_id`、`source=local.bot_id()`、种子的 `source=source`；启动日志 `Application startup complete`、`crm events on`。外部探针：首页 200、`/console/tools` 401、webhook 错 token 403、`/api/bots` 200。CRM 侧 #146、#147 当时都已合进 master，它的部署流水线正在跑。没验：真机留一条 lead 看 CRM 卡片上的来源；重新播种仍由 CRM 会话做
 
 ---
 
