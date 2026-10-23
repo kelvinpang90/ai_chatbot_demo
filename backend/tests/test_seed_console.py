@@ -632,7 +632,7 @@ class FakeCrm:
         if self.down:
             raise ApiClientError("crm api: failed: connection refused")
 
-    def create_contact(self, *, name, phone, title, amount, notes):
+    def create_contact(self, *, name, phone, title, amount, notes, source):
         self._up()
         contact = {"id": self._id("contact"), "name": name, "phone": phone, "notes": notes}
         self.contacts.append(contact)
@@ -644,6 +644,7 @@ class FakeCrm:
                     "title": title,
                     "amount": amount,
                     "status": "lead",
+                    "source": source,
                 }
             )
         return contact
@@ -700,6 +701,18 @@ def test_every_viewing_and_two_retail_customers_a_language_leave_an_enquiry(erp,
     batch = _crm_batch(erp, crm)
     assert Counter(c.bot_id for c, _, _ in _lead_rows(batch)) == {"realestate": 9, "retail": 6}
     assert len(crm.contacts) == 15 and len(crm.deals) == 15 and len(crm.activities) == 15
+
+
+def test_every_seeded_card_names_the_bot_its_conversation_was_with(erp, crm):
+    """The board is wiped of cards without a source and reseeded from this, so a
+    seeded card has to say which demo it came from, the way a live one does."""
+    batch = _crm_batch(erp, crm)
+    sources = {deal["id"]: deal["source"] for deal in crm.deals}
+    filed = [(c.bot_id, json.loads(row.values["output"])["deal_id"]) for c, _, row in _lead_rows(batch)]
+    assert {bot_id for bot_id, _ in filed} == {"realestate", "retail"}
+    assert all(sources[deal_id] == bot_id for bot_id, deal_id in filed)
+    # Beside the tool's input, not in it: the console shows what the model sent.
+    assert not any("source" in row.values["input"] for _, _, row in _lead_rows(batch))
 
 
 def test_a_retail_enquiry_is_priced_off_the_catalogue(erp, crm):
@@ -802,9 +815,14 @@ def _two_kinds(crm):
         title=crm_client.marked("10 fans"),
         amount=100.0,
         notes=crm_tools.NEW_CONTACT_NOTES,
+        source="retail",
     )
     seed_crm.Leads(crm).lead(
-        name="Seeded", phone=seed_crm.phone_for("ZZ.SEED0007"), requirement="2 fans", amount=50.0
+        name="Seeded",
+        phone=seed_crm.phone_for("ZZ.SEED0007"),
+        requirement="2 fans",
+        amount=50.0,
+        source="retail",
     )
 
 

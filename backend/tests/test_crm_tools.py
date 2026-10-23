@@ -5,7 +5,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from app.bots.registry import get_bot
+from app.bots.registry import get_bot, list_bots
 from app.config import settings
 from app.services import api_client, crm_client
 from app.services.api_client import ApiClientError
@@ -67,7 +67,7 @@ A_HIDDEN_NUMBER = "US.13491208655302741918"
 
 
 @contextmanager
-def messaging_from(number: str | None):
+def messaging_from(number: str | None, bot=RETAIL):
     """A conversation whose number the channel established -- or has not.
 
     `None` is the customer who has hidden their number behind a username. There
@@ -78,7 +78,7 @@ def messaging_from(number: str | None):
         profile = UserProfile(key_id=A_HIDDEN_NUMBER, user_id=A_HIDDEN_NUMBER)
     else:
         profile = UserProfile(key_id=identity(number), phone=identity(number))
-    with local.serving(RETAIL, profile):
+    with local.serving(bot, profile):
         yield
 
 
@@ -385,6 +385,7 @@ def test_a_new_customer_leaves_one_card_on_the_board_not_two():
         "initial_status": "lead",
         "initial_title": MARKED_ENQUIRY,
         "initial_amount": VALUE,
+        "initial_source": "retail",
     }
     assert payload["deal_id"] == "d-9"
     assert payload["title"] == MARKED_ENQUIRY
@@ -411,6 +412,7 @@ def test_a_returning_customer_gets_another_card_not_another_copy_of_themselves()
         "status": "lead",
         "title": MARKED_ENQUIRY,
         "amount": VALUE,
+        "source": "retail",
     }
     assert payload["contact_id"] == "c-1"
 
@@ -847,3 +849,26 @@ def test_a_hidden_number_opens_a_new_contact_rather_than_claiming_one():
     assert payload["contact_id"] == "c-9"
     # The board was not even asked who is on it: nothing here could answer it.
     assert [path for path, _ in fake.gets if path == "/api/contacts"] == []
+
+
+@pytest.mark.parametrize("bot_id", ["retail", "realestate"])
+def test_the_card_names_the_bot_the_customer_is_talking_to(bot_id):
+    """`deals.source` is the industry demo the lead came in through, on both
+    write paths: the card a new contact gets, and another card for somebody
+    already on the board. Taken from the turn, so nothing the model says can
+    file a retail lead as real estate."""
+    with messaging_from(AHMAD_NUMBER, get_bot(bot_id)), fake_crm(existing=[]) as fake:
+        crm.crm_create_lead("Ahmad Faizal", "", ENQUIRY, VALUE)
+    with messaging_from(TAN_NUMBER, get_bot(bot_id)), fake_crm(existing=[TAN]) as returning:
+        crm.crm_create_lead("Tan Wei Ming", "", ENQUIRY, VALUE)
+
+    assert fake.body("/api/contacts")["initial_source"] == bot_id
+    assert returning.body("/api/deals")["source"] == bot_id
+
+
+def test_every_bot_that_files_leads_is_a_source_the_crm_accepts():
+    """A bot given `crm_create_lead` under an id outside the agreed list would
+    write cards the CRM cannot label."""
+    filing = [bot.id for bot in list_bots() if "crm_create_lead" in bot.tools]
+    assert filing
+    assert set(filing) <= crm_client.SOURCES
