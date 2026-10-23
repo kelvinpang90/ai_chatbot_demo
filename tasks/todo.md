@@ -3407,7 +3407,18 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
-## 任务 44：导演台把 CRM 客服的回复显示成客服（带名字）（2026-10-23 新增，**计划待 Kelvin 确认**）
+## 任务 44：导演台把 CRM 客服的回复显示成客服（带名字）（2026-10-23 新增；计划同日 Kelvin 批准：标签「CRM · 名字」、右栏卡片不动、不走冷审）
+
+- [x] **任务 44**——**2026-10-23 完成，本地提交未推**
+  - 做了什么：`frontend/src/transcript.ts` 加 `crmAgentLabel(message)`（取这条消息 `tool_calls` 里 `crm.reply` 的 `input.agent_name`，有名字给 `CRM · 名字 · `，没有给 `CRM · `）；`Console.tsx` 气泡分类把 `crm_agent` 也归到人工（`cx-msg-human`），标签按 source 分开：`human` → `Colleague · `，`crm_agent` → `crmAgentLabel`
+  - 偏离计划：helper 放进了 `transcript.ts` 而不是写在 `Console.tsx` 里——组件文件只导出组件（oxlint `only-export-components`，同文件里 `toolUseIds` 也是这么放的）。所以是 2 个文件，不是计划写的 1 个
+  - 验证到什么程度：
+    - `node:22-alpine` 里 `npm ci && npm run build`（`tsc -b && vite build`）通过；`oxlint` 0 warnings 0 errors
+    - 本地假接口（scratchpad 里一个只回固定对话的 Python 服务 + 构建出的 dist，不进仓库）在浏览器面板截图对过：`CRM · Alex Turner · 13:03` 人工气泡；`Colleague · 13:04` 照旧；没名字的 `crm_agent` 显示 `CRM · 13:06`；bot、顾客、`Voice ·`、菜单行不变
+    - 前端没有测试框架，所以**没有自动化测试**；没验：线上真机（部署后 CRM 回一句看导演台）
+  - 边缘情况：一条 `crm_agent` 消息只会挂一行 `crm.reply`（41.3 每次发送写一行）；名字前后空白会被去掉，全空白按「没名字」处理
+
+**以下是原计划（保留）**
 
 **起因（批次 09 第 5 步真机时发现）**：导演台「Customer's phone」里，CRM 客服 Alex Turner 13:08 回的「下午好」排成了 bot 的样子——没有标签、bot 的气泡色。导演台自己的人工回复是「Colleague · 时间」+ 人工气泡色。
 

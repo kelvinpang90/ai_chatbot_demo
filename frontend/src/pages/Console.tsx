@@ -37,7 +37,7 @@ import {
   type Call,
   type Card,
 } from '../consoleCards'
-import { toolUseIds } from '../transcript'
+import { crmAgentLabel, toolUseIds } from '../transcript'
 
 // How many times to let a stream that has never opened fail before giving up on
 // it. Once it has opened, failures are the backend's, not the token's.
@@ -918,13 +918,19 @@ export default function Console() {
                 const previous = shown.messages[i - 1]
                 // A time on the first bubble of each minute, like the phone does.
                 const stamp = !previous || klTime(klEpoch(previous.at)).slice(0, 5) !== at.slice(0, 5)
+                // A person either way: typed here, or in the CRM's inbox (task 44).
                 const who =
-                  message.role === 'user' ? 'cust' : message.source === 'human' ? 'human' : 'bot'
+                  message.role === 'user'
+                    ? 'cust'
+                    : message.source === 'human' || message.source === 'crm_agent'
+                      ? 'human'
+                      : 'bot'
                 return (
                   <div key={message.id} className={`cx-msg cx-msg-${who}`}>
                     {(stamp || who === 'human') && (
                       <span className="cx-msg-meta">
-                        {who === 'human' && 'Colleague · '}
+                        {message.source === 'human' && 'Colleague · '}
+                        {message.source === 'crm_agent' && crmAgentLabel(message)}
                         {message.source === 'voice' && 'Voice · '}
                         {at.slice(0, 5)}
                       </span>
