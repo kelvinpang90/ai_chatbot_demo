@@ -3417,6 +3417,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
     - 本地假接口（scratchpad 里一个只回固定对话的 Python 服务 + 构建出的 dist，不进仓库）在浏览器面板截图对过：`CRM · Alex Turner · 13:03` 人工气泡；`Colleague · 13:04` 照旧；没名字的 `crm_agent` 显示 `CRM · 13:06`；bot、顾客、`Voice ·`、菜单行不变
     - 前端没有测试框架，所以**没有自动化测试**；没验：线上真机（部署后 CRM 回一句看导演台）
   - 边缘情况：一条 `crm_agent` 消息只会挂一行 `crm.reply`（41.3 每次发送写一行）；名字前后空白会被去掉，全空白按「没名字」处理
+  - **上线（2026-10-23，Kelvin 授权）**：推前 fetch，origin 在 `7eaa667`（别的会话推的「导演台聊天左右互换」），本地 3 个 commit 接在它后面，`7eaa667..432b430` 快进。Deploy run `39905796951` success。VPS 核：两个容器 05:27:58Z 重建，前端镜像 `sha256:0e905caa…`（原 `9da6058d…`），后端 `sha256:c4d42bf9…`（流水线两个一起重建，代码没变）；后端仍读到 `CRM_SEND_SECRET`、`crm events on`。线上 `/console` 引用 `assets/index-Dg4-TVKb.js`，与本地构建同一个哈希，文件里有 `CRM · `；首页与 `/console` 都 200。没验：真机（CRM 回一句看导演台），并进批次 09 第 5 步
 
 **以下是原计划（保留）**
 
