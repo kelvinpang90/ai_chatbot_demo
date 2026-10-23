@@ -3358,7 +3358,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
      - 队列 0、死信 0
      - 第 3 步跳过（`.env` 里本来就没有 `HANDOVER_IDLE_SECONDS`）。下一步是批次 09 上线步骤第 2–5 步：CRM-013–015 已部署（`c04bb5b`）→ Kelvin 生成**第二把**密钥同值写进两边 → 预检 401 → 真机；任务 43 的真机核对（照 10-21 截图再打一遍）可以并进那一趟
 3. 第 1 步若 `.env` 需要改：`.env` 改好后 `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）
-4. 之后接批次 09 上线步骤第 2–5 步；真机验收加两项：CRM 点「交还 AI」→ CRM 立刻显示未接管、访客再发消息由 bot 回；控制台接管后到期时间是 24 小时后
+4. 之后接批次 09 上线步骤第 2–5 步；真机验收加两项：CRM 点「交还 AI」→ CRM 立刻显示未接管、访客再发消息由 bot 回；控制台接管后到期时间是 24 小时后（**看 CRM 收件箱**：导演台不显示到期时间，2026-10-23 更正）
 - **回滚**：24 小时 → 把 `HANDOVER_IDLE_SECONDS=7200` 写回 `.env` 并重建容器（会让 2–24 小时间的接管立刻到期，方向是安全的）；handback → 同 send，清空 `CRM_SEND_SECRET` 即一律 503
 
 ---
