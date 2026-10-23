@@ -345,14 +345,18 @@ def _tool_output(bot, name: str, tool_input: dict, caller: UserProfile | None = 
     return output
 
 
-def _lead(leads: seed_crm.Leads, lead_input: dict) -> str:
+def _lead(leads: seed_crm.Leads, lead_input: dict, source: str) -> str:
     """The card `crm_create_lead` would have answered with (task 39.4).
 
     Rebuilt from what the write returns, the way the food order's reply is,
     because the tool itself cannot be called here: it marks what it writes
     `[DEMO]`, and the between-demos cleanup deletes every row carrying that.
+
+    `source` travels beside `lead_input` rather than in it: the input is what
+    the console shows the tool being called with, and the live tool takes its
+    source from the turn, not from the model.
     """
-    return json.dumps(leads.lead(**lead_input), ensure_ascii=False, default=str)
+    return json.dumps(leads.lead(**lead_input, source=source), ensure_ascii=False, default=str)
 
 
 def _ordinary(bot, customer: Customer, rng: random.Random, *, topics: int) -> list[Exchange]:
@@ -588,7 +592,7 @@ def _realestate_deal(
             "requirement": text["lead_requirement"].format(**words),
             "amount": float(listing["price_rm"]),
         }
-        steps.append(Step("crm_create_lead", lead_input, lambda at: _lead(leads, lead_input)))
+        steps.append(Step("crm_create_lead", lead_input, lambda at: _lead(leads, lead_input, bot.id)))
 
     return [
         Exchange(
@@ -685,7 +689,7 @@ def _retail_lead(bot, customer: Customer, rng: random.Random, leads: seed_crm.Le
         search,
         Exchange(
             text["ask_lead"].format(**words),
-            [Step("crm_create_lead", lead_input, lambda at: _lead(leads, lead_input))],
+            [Step("crm_create_lead", lead_input, lambda at: _lead(leads, lead_input, bot.id))],
             lambda outputs: text["lead_reply"].format(**words),
         ),
     ]

@@ -24,6 +24,12 @@ MAX_PHONE_CHARS = 30
 # `deals.amount` is DECIMAL(15, 2), so this is the first value it cannot hold.
 MAX_AMOUNT = 10**13
 
+# What `deals.source` may hold: the industry bot a lead came in through, so the
+# pipeline card and the contact list can say which demo the customer was in.
+# The same ids as this project's bots; banking is retired here but stays in the
+# list agreed with the CRM side.
+SOURCES = frozenset({"banking", "food", "hotel", "realestate", "retail", "saas"})
+
 # Every row this bot writes to crm_os carries this, and the cleanup deletes
 # nothing without it. crm_os has no demo reset of its own and its seed data is
 # what the demo is shown against, so the mark is the only thing standing between
@@ -110,7 +116,7 @@ class CrmClient(JsonApiClient):
     # -- writes --------------------------------------------------------------
 
     def create_contact(
-        self, *, name: str, phone: str, title: str, amount: float, notes: str
+        self, *, name: str, phone: str, title: str, amount: float, notes: str, source: str
     ) -> dict:
         """A new person on the books, plus the lead card crm_os makes alongside them.
 
@@ -127,6 +133,10 @@ class CrmClient(JsonApiClient):
         `notes` is required rather than optional because it carries the mark the
         cleanup deletes by. A contact written without one is a contact nobody
         can ever clear out.
+
+        `source` (one of `SOURCES`) is required for the same kind of reason: it
+        lands on the auto-created card as `deals.source`, and a card without one
+        cannot say which demo it came from.
         """
         return self.post(
             "/api/contacts",
@@ -137,11 +147,12 @@ class CrmClient(JsonApiClient):
                 "initial_status": "lead",
                 "initial_title": title,
                 "initial_amount": amount,
+                "initial_source": source,
             },
         )
 
-    def create_deal(self, *, contact_id: str, title: str, amount: float) -> dict:
-        """A new opportunity against somebody already on the books."""
+    def create_deal(self, *, contact_id: str, title: str, amount: float, source: str) -> dict:
+        """A new opportunity against somebody already on the books, from `source`."""
         return self.post(
             "/api/deals",
             json={
@@ -149,6 +160,7 @@ class CrmClient(JsonApiClient):
                 "status": "lead",
                 "title": title,
                 "amount": amount,
+                "source": source,
             },
         )
 

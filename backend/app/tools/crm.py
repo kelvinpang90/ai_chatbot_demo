@@ -272,7 +272,7 @@ def _deal_for_order(client: crm_client.CrmClient, contact_id, order_no: str) -> 
 
 
 def _card(
-    client: crm_client.CrmClient, lead: _Lead, confirmed: bool
+    client: crm_client.CrmClient, lead: _Lead, confirmed: bool, source: str
 ) -> tuple[dict, dict | None]:
     """The contact this lead belongs to, and the card that now represents it.
 
@@ -312,7 +312,7 @@ def _card(
             logger.info("reusing deal %s for %s", same_order.get("id"), lead.phone)
             return contact, same_order
         deal = client.create_deal(
-            contact_id=contact.get("id"), title=lead.title, amount=lead.amount
+            contact_id=contact.get("id"), title=lead.title, amount=lead.amount, source=source
         )
         return contact, deal
 
@@ -322,6 +322,7 @@ def _card(
         title=lead.title,
         amount=lead.amount,
         notes=NEW_CONTACT_NOTES,
+        source=source,
     )
     return contact, _auto_created_card(client, contact.get("id"))
 
@@ -381,7 +382,9 @@ def crm_create_lead(
 
     client = crm_client.client()
     try:
-        contact, deal = _card(client, lead, confirmed=bool(confirmed))
+        # The card says which demo the customer was in: the bot answering, never
+        # an industry the model names.
+        contact, deal = _card(client, lead, confirmed=bool(confirmed), source=local.bot_id())
     except ApiClientError as exc:
         logger.exception("crm_create_lead failed for %r", lead.name)
         # "It failed" and "I do not know" send the model to two different places,
