@@ -221,6 +221,18 @@ def customer() -> "UserProfile | None":
     return None if current is None else current.customer
 
 
+def bot_id() -> str | None:
+    """Which bot is answering this turn, or None outside one.
+
+    Exported for the CRM lead, which records the industry the customer came in
+    through (`deals.source`). Taken from the turn rather than asked of the model,
+    for the same reason the phone number is: it is a fact of the conversation,
+    not something the model gets to choose.
+    """
+    current = _serving.get()
+    return None if current is None else current.bot.id
+
+
 def customer_language() -> str | None:
     """The language on this customer's record, for a line a tool writes itself.
 

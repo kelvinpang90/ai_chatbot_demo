@@ -72,9 +72,13 @@ class Leads:
         phone: str,
         requirement: str,
         amount: float,
+        source: str,
         delivery_address: str = "",
     ) -> dict:
         """One contact, the card crm_os makes with it, and the note inside it.
+
+        `source` is the seeded customer's bot, so the card names the same demo
+        a live lead from that bot would.
 
         Nothing here is forgiving. The live tool swallows a failed note and a
         card it cannot find again, because by then the customer has been told
@@ -90,6 +94,7 @@ class Leads:
             title=title,
             amount=amount,
             notes=NOTES,
+            source=source,
         )
         contact_id = contact.get("id")
         deals = self._client.deals_for_contact(contact_id)

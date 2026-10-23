@@ -3447,6 +3447,24 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
+## 任务 45：写进 CRM 的商机卡带上「来源行业」（2026-10-23 新增；Kelvin 已批准的跨仓库方案，CRM 侧另一个会话做）
+
+- [x] **任务 45**——**2026-10-23 完成，走分支 `crm-deal-source` + PR（未合并、未部署）**
+  - 起因：Kelvin 要 CRM demo（`acuven_crm_demo`，原 `crm_os`）的 Pipeline 卡片和联系人列表标出客户是从哪个行业机器人进来的。CRM 给 `deals` 加可空列 `source`（`banking` / `food` / `hotel` / `realestate` / `retail` / `saas`），`POST /api/deals` 收 `source`，`POST /api/contacts` 收 `initial_source` 写到自动生成的那张卡上。之后 CRM 会话会删掉生产库里没有来源的老数据、重新播种，所以本仓库的种子也必须带来源
+  - 做了什么：
+    - `services/crm_client.py`：`create_contact` / `create_deal` 加必填关键字参数 `source`，分别作为 `initial_source` / `source` 放进请求体；加常量 `SOURCES`（与 CRM 约定的六个值）
+    - `tools/local.py`：加 `bot_id()`，返回本轮正在回答的 bot id（`local.serving` 的 ContextVar），轮次外为 None
+    - `tools/crm.py`：`crm_create_lead` → `_card(..., source=local.bot_id())`，新联系人和老客户再开一张卡两条路径都带上。来源取自当前轮次，不让模型填
+    - `tasks/seed_crm.py`：`Leads.lead` 加必填 `source`；`tasks/seed_console.py` 的 `_lead` 把 `bot.id` 传进去（retail / realestate 两处）。`source` 放在 `lead_input` 旁边而不是里面——`lead_input` 是导演台上显示的工具入参，真工具不收这个参数
+  - 验证到什么程度：
+    - 新增 4 条测试：`test_crm_tools.py` 断言 retail / realestate 两个 bot 各自在 `POST /api/contacts` 里带 `initial_source`、在 `POST /api/deals` 里带 `source`（参数化，证明不是写死的），以及每个声明了 `crm_create_lead` 的 bot 的 id 都在 `SOURCES` 里；`test_seed_console.py` 断言每张种子卡的 `source` 等于它那段对话的 bot，且 `source` 没混进导演台显示的工具入参。原有两条整包断言请求体的测试同步加上新字段
+    - 变异检查 **5 处，5 处全红**：工具里写死 `"retail"` / 不发 `initial_source` / 不发 `source` / 种子两处各写死 `"retail"`；文件逐字节还原
+    - 全套（Docker，`python:3.13-slim`）**1358 passed, 10 skipped**（1354 → 1358）。⚠️ worktree 里没有 `backend/.env`，直接用 `pytest_docker.sh` 跑时 `test_an_unreachable_erp_clears_nothing` / `test_an_unreachable_erp_clears_no_crm_rows` 两条会红——它们不 patch CRM 凭据、靠 `.env` 提供；补上假的 `CRM_BASE_URL` / `CRM_EMAIL` / `CRM_PASSWORD` 环境变量后全绿。与本任务无关，没动
+    - 没验：对真 CRM 发请求（CRM 侧 `deals.source` 还没上线）；线上播种后 Pipeline / 联系人列表的显示——由 CRM 会话两边都部署后统一做
+  - 没做：没在生产跑 seed 或 cleanup（重新播种由 CRM 会话在两边都部署后统一做）；CRM 旧版本会忽略未知字段，所以本 PR 先合后合都行
+
+---
+
 ## 运维教训：2026-09-13 —— 一条少了 `-f` 的 compose 命令把线上打挂了
 
 **没改一行代码，线上后端死了十几分钟。** 起因是执行阻塞项 I 的最后一步（改完 `.env` 重建容器），
