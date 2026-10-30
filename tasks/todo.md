@@ -3474,6 +3474,101 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
+## 批次 11：demo 号多客服第 3 阶段 C5「窗口外模板消息」——chatbot 侧（2026-10-30 新增，**计划待 Kelvin 批准**）
+
+> **契约**：`acuven_crm_demo` 的 `docs/chatbot-phase3.md`（已批准，PR kelvinpang90/acuven_crm_demo#249；读的是 `origin/master` `b443e82`）——第 5.3 节（白名单、第 6 条参数限制）、第六节第 2 条（`agent_reply` 加 `kind` / `template_name`）、第七节 `POST /internal/crm/templates` 与 `POST /internal/crm/send-template`、第十三节（模板被 Meta 停用 → `rejected`）、第十四节（只涉及 CRM 的 091–095，与本批无关）。
+> `git -C E:\projects\acuven_crm_demo show origin/master:docs/chatbot-phase3.md`。契约若改，以它为准，本计划跟着改。
+>
+> **范围**：只做 C5。**不做** C6、C7（媒体）；不改 CRM 仓库；不改 `notify.py` 里 `order_*` 模板的现有用法；不部署、不调真实 Meta / VPS。Q14：人工会话做，不登记进 OpenClaw。
+> 走分支 + PR（这个会话由另一个会话开在 worktree 里，按交代开 PR）。
+>
+> **上线顺序里的位置**（契约第十一节「模板」）：CRM-096 → **C5 部署（白名单为空）** → CRM-097 → 098 → 099 → 两个模板变成 Active、写进白名单 → 真机验收。白名单为空时 `templates` 返回空列表、`send-template` 一律 422，所以 C5 先上线对线上零影响。
+
+### 现状侦察（2026-10-30，读代码，未跑）
+
+- `crm_send.send`（`services/crm_send.py`）一条直线：抢键（`SET NX`，`chat:crm_send:<request_id>`，120 秒）→ `build_text_message` → `send_raw` → 分类（4xx `rejected` 删键 502；5xx / 超时 / 无 id `unknown` 504 留键）→ 键写 `wa_message_id` 48 小时 → 入队 `agent_reply` → `_record_for` → `_take_over` → `_file`。**只有「拼消息体」和「写进历史的正文」两处跟文字有关**，其余都可以原样共用
+- `agent_reply` 的 `message` 现在是 `{"wa_message_id", "body"}`，没有 `kind`；入队在 `crm_send.py:238`。`crm_events.enqueue` 透传 `**fields`，不用改
+- `whatsapp.build_template_message(to, name, language, params)`（`whatsapp.py:139`）：只拼正文位置参数，`params` 为空时不带 `components`；**不做 Markdown 转换**（`build_text_message` 会）。C5 原样复用，不改
+- `notify.py:47-53` 的 `ORDER_CONFIRMED` / `ORDER_SHIPPED` / `TEMPLATE_LANGUAGE` 只给 ERP 订单推送用，C5 不碰
+- 门（`routers/internal_crm.py`）：`_verified_body`（503 → 401，验原始字节）与 `_parsed`（422，日志不回显输入）已是路由共用，新路由直接用
+- 导演台把 CRM 客服的回复显示成 `CRM · 名字`，靠的是审计里 `crm.reply` 工具行的 `input.agent_name`（任务 44）——模板发送若换工具名，导演台会把它显示成 bot
+- ⚠️ **这个仓库的 PR 没有 CI**：`.github/workflows/` 只有 `deploy.yml`，只在推 master 时构建镜像并部署，不跑测试；PR #2 上 `gh pr checks` 是「no checks reported」。测试一直是本地 Docker 跑全套（`tasks/review/pytest_docker.sh`）。见下面要你定的第 1 条
+
+### 配置项（46.1 加进 `config.py` 和 `backend/.env.example`）
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `CRM_TEMPLATES` | `[]` | 给 CRM 用的模板白名单，一行 JSON 数组。每项 `{"name", "language", "category", "params": [{"label", "max_len"}], "body"}`；`body` 是 Meta 批准的正文原文、带 `{{1}}`… 占位。**两个模板变成 Active 之前保持空** |
+
+示例（只写进 `.env.example` 的注释里，不作为默认值）：`[{"name":"crm_followup","language":"en","category":"UTILITY","params":[{"label":"Visitor name","max_len":60}],"body":"Hi {{1}}, this is Acuven Technology following up on ..."}]`
+
+### 计划里我自己定的（契约没写死，附建议，请逐条确认）
+
+1. **白名单启动时校验，不合法进程起不来**：每项 `name` / `language` / `category` / `body` 非空字符串；`params` 每项 `label` 非空、`max_len` 为 1–1024 的整数；`body` 里的占位**恰好**是 `{{1}}`…`{{n}}`（n = 参数个数，不多不少、不跳号）；`(name, language)` 不重复。理由：手抄 Meta 正文时漏一个占位，CRM 预览和写进历史的正文就跟访客收到的不一样，而这种错在运行时谁也看不出来。代价：`.env` 写错一个引号，整个 chatbot（六个行业的 demo）起不来——所以上线步骤里改白名单后必须看启动日志并调一次 `templates`。备选：不合法时打 ERROR、当作空白名单（CRM 显示「没有可用模板」，demo 照常）
+2. **请求校验分两步**：先按形状（`request_id` UUID、`visitor` 同 `send`、`template.name` / `language` 非空、`params` 是字符串数组、`agent` 同 `send`）→ 422；再对白名单（名字加语言精确匹配、大小写敏感；个数一致；每个参数去首尾空白后 1–`max_len` 字符，不含 `\n` `\r` `\t`、不含连续 4 个以上空格）→ 422，`detail` 说哪个参数、哪条规则，不回显参数值。都在验签之后（同 `send`：没签名的人探不出请求体结构）
+3. **参数去首尾空白后的值**既用于渲染、也原样发给 Meta——访客看到的和写进历史的是同一串字
+4. **渲染一次替换**：`{{i}}` → 第 i 个参数，用正则回调一遍做完，参数值里本身含 `{{2}}` 也不会被再替换
+5. **共用流程的改法**：`crm_send.send` 里抢键之后那一段抽成内部函数 `_deliver(...)`，入参多一个「拼好的消息体」和「写进历史的正文」以及 `kind` / `template_name`；`send` 与新的 `send_template` 各自只负责拼消息体。`send` 对外的入参、返回、日志不变。幂等键、120 秒 / 48 小时、结果分类、状态码一字不改
+6. **`body` 只在 `sent` 时返回**：`duplicate` 照旧 `{result, wa_message_id, handover: null}`——键里只存了 `wa_message_id`，拿这次请求重新渲染的正文冒充「当初发出去的」不对（CRM 若换了参数重试，两者会不一样）；CRM 先存的就是自己按白名单渲染的正文，结果以 `agent_reply` 为准（契约 5.3「存储」）
+7. **`agent_reply` 的字段**：文字发送 `message = {"wa_message_id", "body", "kind": "text"}`；模板 `{"wa_message_id", "body": 渲染后正文, "kind": "template", "template_name": 名字}`。语言不放进事件（契约只要名字）
+8. **历史、审计、导演台**：历史记渲染后的正文（`assistant`，同文字回复，模型回来时看得懂）；审计消息行 `source = crm_agent`；工具行**仍叫 `crm.reply`**（导演台照旧显示 `CRM · 名字`，前端不用改），`input` 在原有 `agent_id` / `agent_name` / `request_id` 之外多 `template`、`language` 两个键；控制台 span 同理
+9. **接管**：与文字发送同一个 `_take_over`（契约 R7：算客服回复，开始或续期 24 小时）；`reason` 文案改成 `sent a template from the CRM by 名字`，只进日志与控制台
+10. **🔍**：46.2 走双 agent 冷审——它改的是已上线的真实发送路径（`send` 的拆分）；46.1 只有配置、只读接口和纯函数校验，不标 🔍，靠变异检查兜底
+
+### 需要你定的
+
+1. **「CI 全绿」怎么算**（交代里的完成标准，但 PR 上没有 CI）：
+   - A（建议）：这次**不加** CI，验收证据是本地 Docker 全套 `pytest`（贴通过数）+ 变异检查；PR 描述里写明「本仓库 PR 无 CI」。加 CI 是另一件事，可以单独开任务
+   - B：本 PR 顺带加一个 `pull_request` 触发、只跑后端 `pytest` 的工作流（新文件 `.github/workflows/tests.yml`），以后的 PR 都有检查
+2. **一个会话做两个编号任务**：46.1、46.2 按规则应分两个会话，但这次交代是「整个 C5 一个 PR」。建议本会话依次做完两个，两个 commit、一个 PR；46.2 的冷审照 `tasks/REVIEW.md` 走
+
+---
+
+**顺序**：46.1 → 46.2，后者依赖前者的白名单模块。
+
+- [ ] **任务 46.1（C5a）：模板白名单与 `POST /internal/crm/templates`**
+  文件：`backend/app/config.py`（`CRM_TEMPLATES` 与校验）、`backend/.env.example`、`backend/app/services/crm_templates.py`（新：查白名单、校验参数、渲染）、`backend/app/routers/internal_crm.py`（`templates` 路由）；测试 `backend/tests/test_crm_templates.py`（新）
+  目标：CRM 带正确签名 `POST {}` 拿到白名单原样；白名单写错，进程起不来、错误说清哪一项
+  测试：
+  - 门：未配密钥 503；签名错 / 时间戳超 300 秒 / 只签 body 401；旧密钥（`_PREVIOUS`）也过；签名错 + 请求体不是 `{}` → 401
+  - 返回：默认 → 200 `{"templates": []}`；配两项 → 原样返回（含中文正文）
+  - 配置校验各一条：占位少一个 / 多一个 / 跳号、`max_len` 0、`(name, language)` 重复、`label` 空 → 解析报错
+  - 纯函数：渲染（多参数、参数里含 `{{2}}`、中文）；参数校验（个数、空白、`max_len` 边界、换行 / `\r` / 制表符、恰好 3 个与 4 个连续空格）
+- [ ] 🔍 **任务 46.2（C5b）：`POST /internal/crm/send-template` 与 `agent_reply` 的 `kind`**
+  文件：`backend/app/services/crm_send.py`（抽 `_deliver`、加 `send_template`、`kind`）、`backend/app/routers/internal_crm.py`（路由 + `SendTemplateRequest`）；测试 `backend/tests/test_crm_send_template.py`（新）、`backend/tests/test_crm_send.py`（`agent_reply` 断言加 `kind: text`）
+  目标：CRM 窗口外发一个白名单模板，与发文字同一套幂等、分类、接管、历史、事件；`send` 与 `handback` 行为不变（现有测试一条不改语义）
+  测试（签名在测试里独立算；Redis 用现有假 Redis；`send_raw` 打桩）：
+  - 门与校验：503 / 401 / 形状 422；白名单空 → 422；名字对语言错 → 422；个数不一致、超长、换行、4 个空格 → 422；**校验不过时 Meta 零调用、键不被占**
+  - 发出：200 `{result: sent, wa_message_id, handover, body}`；发给 Meta 的 payload 是 `type: template`、名字、语言、去空白后的参数
+  - 幂等：同 `request_id` 再来 → `duplicate`、不再发；**先用 `send` 发过的 `request_id` 再走 `send-template` → `duplicate`**（反过来也一样）；并发两次只有一个抢到
+  - 分类：Meta 4xx → 502 `rejected`（含 `error_code` / `error_title`）、键被删、重试会再发；5xx → 504 `unknown`、键保留；超时 / 连接错误 → 504 `unknown`；200 没有 id → 504 `unknown`
+  - 接管：没接管 → 开始；接管中 → 续期；响应 `handover.occurred_at` 与 `handover_changed` 事件逐字相同
+  - 事件：`agent_reply` 带 `kind: template`、`template_name`、`body` 为渲染后正文、`crm_message_id = request_id`；文字发送的 `agent_reply` 带 `kind: text`、没有 `template_name`
+  - 历史与审计：历史最后一条是渲染后正文（`assistant`）；审计 `crm.reply` 行 `input` 含 `template` / `language` 与客服名字
+  - 变异检查：去掉白名单校验 / 渲染用错参数 / `kind` 写死 `text` / 不共用键前缀 / 4xx 不删键，各应变红
+
+### 边缘情况（已想过的）
+
+- **白名单里有、Meta 那边被停用或改了类别**：Meta 4xx → `rejected` 如实返回（契约第十三节）；Kelvin 从白名单移除、重建容器即可
+- **CRM 读白名单后、发送前白名单被改**：发送时按当时的白名单校验 → 422，CRM 显示失败；不缓存
+- **语言代码大小写**：`zh_CN` 精确匹配；CRM 原样回传它读到的值，不会不一致
+- **字符长度**：按 Python 字符（码点）数；Meta 怎么计 emoji 未核实，`max_len` 留余量即可
+- **Meta 对参数的限制**（换行、制表符、连续空格）是契约原文，契约也注明「未核实现行条款」；chatbot 只按契约拦，漏网的由 Meta 4xx → `rejected`
+- **窗口开着时发模板**：chatbot 不查窗口（同 `send`，契约 R2 由 CRM 查）；发出去不违规
+- **出站不计入每日条数上限**：同 `send`
+- **`.env` 里写 JSON**：一行、单引号包住整串，避免 compose 对引号和空格的处理出岔子——46.1 做时用 `docker compose config` 实际核一次 `env_file` 的引号行为，结论写进 `.env.example`
+
+### 上线步骤（46.1 + 46.2 一个 PR；收尾时定稿）
+
+1. **合并 PR 到 master（推送即部署），`CRM_TEMPLATES` 不设——白名单先留空即可部署**。线上已配 `CRM_SEND_SECRET`，所以内网不带签名的 `POST /internal/crm/templates` 与 `/send-template` **期望 401**；公网 `https://chatbot.acuventech.com/internal/crm/templates` **期望 405 `text/html`**（nginx 不转发 `/internal/`）。启动日志无 ERROR、`crm events on`
+2. 可选：在 VPS 上用 `.env` 里的密钥签一次 `POST /internal/crm/templates`，期望 200 `{"templates": []}`（命令收尾时写，密钥只在 VPS 上读、不打印）
+3. **等 CRM-096 / 097 / 098 / 099**（CRM 读到空列表，显示「没有可用模板」）
+4. **两个模板在 Meta 变成 Active 后**：Kelvin 从 Meta 后台抄**批准的正文原文**，写进 `/opt/ai_chatbot/backend/.env` 的 `CRM_TEMPLATES`（备份 `.env`）→ `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）→ 看启动日志（白名单写错进程起不来）→ 第 2 步那条签名请求期望返回两项
+5. **真机验收**（Kelvin，契约第十一节）：窗口外发模板 → 手机收到；访客回复后接管中；频率限制（CRM 侧）；未确认送出与重试
+- **回滚**：清空 `CRM_TEMPLATES` + 重建容器 → 列表为空、`send-template` 一律 422；已发出的不受影响
+
+---
+
 ## 运维教训：2026-09-13 —— 一条少了 `-f` 的 compose 命令把线上打挂了
 
 **没改一行代码，线上后端死了十几分钟。** 起因是执行阻塞项 I 的最后一步（改完 `.env` 重建容器），
