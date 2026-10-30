@@ -3526,7 +3526,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 **顺序**：46.1 → 46.2，后者依赖前者的白名单模块。
 
-- [x] **任务 46.1（C5a）：模板白名单与 `POST /internal/crm/templates`**——**2026-10-31 完成，分支 `claude/crm-templates-c5-d954c1`，未合并、未部署**
+- [x] **任务 46.1（C5a）：模板白名单与 `POST /internal/crm/templates`**——**2026-10-31 完成并上线（PR #3，merge commit `88991bb`）**
   - 做了什么：`config.py` 加 `CrmTemplateParam` / `CrmTemplate`（启动时校验：字段非空、`max_len` 1–1024、正文占位恰好 `{{1}}`…`{{n}}`）与 `crm_templates` 字段（`(name, language)` 不重复）；`services/crm_templates.py`（新）`listing` / `find` / `checked_params` / `render` 与 `TemplateRefused`；`internal_crm.py` 加 `POST /templates`（`_verified_body` → `_parsed(TemplatesRequest)` → 200）；`.env.example` 加 `CRM_TEMPLATES=` 与写法说明
   - 偏离计划：
     - **多改了 `requirements.txt`**：`pydantic-settings>=2.6` → `>=2.7`。pydantic-settings 自己解码 JSON 字段时，`.env.example` 原样的 `CRM_TEMPLATES=`（空值）会让进程起不来（测试先红了）；改成字段标 `NoDecode`、在 validator 里自己 `json.loads`，空串当空列表——`NoDecode` 是 2.7 才有的。镜像构建本来就装最新 2.x（测试容器里是 2.16.2），只是把下限写实
@@ -3546,7 +3546,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 返回：默认 → 200 `{"templates": []}`；配两项 → 原样返回（含中文正文）
   - 配置校验各一条：占位少一个 / 多一个 / 跳号、`max_len` 0、`(name, language)` 重复、`label` 空 → 解析报错
   - 纯函数：渲染（多参数、参数里含 `{{2}}`、中文）；参数校验（个数、空白、`max_len` 边界、换行 / `\r` / 制表符、恰好 3 个与 4 个连续空格）
-- [x] 🔍 **任务 46.2（C5b）：`POST /internal/crm/send-template` 与 `agent_reply` 的 `kind`**——**2026-10-31 完成，冷审中；分支同 46.1，未合并、未部署**
+- [x] 🔍 **任务 46.2（C5b）：`POST /internal/crm/send-template` 与 `agent_reply` 的 `kind`**——**2026-10-31 完成，冷审 clean，并上线（同 46.1）**
   - 做了什么：
     - `crm_send.py`：`send` 抢键之后的整段原样搬进 `_deliver(build, body, kind, reason, detail)`；`send` 只传 `build_text_message` 与 `kind={"kind": "text"}`，入参、返回、日志不变；新 `send_template(template, values)` 先 `render`，传 `build_template_message` 与 `kind={"kind": "template", "template_name": ...}`、`detail={"template", "language"}`，结果为 `sent` 时加 `body`
     - `_take_over` 改收 `reason`（模板是 `sent a template from the CRM by 名字`）；`_file` 多收 `detail`，进审计 `crm.reply` 行的 `input` 与控制台 span 的 `input`
@@ -3589,6 +3589,12 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 ### 上线步骤（46.1 + 46.2 一个 PR；2026-10-31 定稿）
 
 1. **合并 PR 到 master（推送即部署），`CRM_TEMPLATES` 不设——白名单先留空即可部署**。线上已配 `CRM_SEND_SECRET`，所以内网不带签名的 `POST /internal/crm/templates` 与 `/send-template` **期望 401**；公网 `https://chatbot.acuventech.com/internal/crm/templates` **期望 405 `text/html`**（nginx 不转发 `/internal/`）。启动日志无 ERROR、`crm events on`
+   - ✅ **2026-10-31 已做（Kelvin「去上线」）**：
+     - 部署前（Claude 的 SSH 被权限分类器拦，Kelvin 在终端里自己跑的只读检查）：`backend/.env` 里 `CRM_TEMPLATES` 行数 **0**；两个容器 `:latest`、`Up 10 hours`；VPS `Docker Compose version v5.1.3`
+     - PR #3 以 merge commit `88991bb` 合进 master；Deploy run `41091553259` **success**（16:38:23Z，`script_stop: true`）
+     - 公网探针（Claude 跑）：首页 200、`/api/bots` 200、`/console/tools` 401、webhook 错 token 403；`/internal/crm/templates` 与 `/send-template` 都是 **405 `text/html`**
+     - VPS 核（Kelvin 在终端跑、贴回输出）：两个容器 `Up 3 minutes`（已换）；`:latest` 镜像临时容器里 `crm_send.py` 有 3 处 `send_template`、`app/services/crm_templates.py` 存在；`proxy_net` 上不签名 `POST /internal/crm/templates` → **401**、`/send-template` → **401**；最近 15 分钟日志 ERROR / Traceback **0**，有 `crm events on, delivering to http://crm_os-backend-1:8000/internal/chatbot/events` 与 `Application startup complete`
+     - 没做：第 2 步签名探测（可选）；镜像 digest 没记
 2. 可选：在 VPS 上用 `.env` 里的密钥签一次 `POST /internal/crm/templates`，期望 200 `{"templates": []}`。密钥只在 VPS 上读，经 `--env-file <(grep ...)` 只把这一个变量交给一次性容器，不进命令行、不打印（**这条命令没在 VPS 上跑过**；本机用同样的签名算法对容器里的 app 验过）：
    ```
    cd /opt/ai_chatbot && docker run --rm -i --network proxy_net --env-file <(grep '^CRM_SEND_SECRET=' backend/.env) ghcr.io/kelvinpang90/ai_chatbot_demo-backend:latest python - <<'PY'
@@ -3602,7 +3608,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
    ```
    ⚠️ 不要用 `docker run --env-file backend/.env` 把整份 `.env` 交给一次性容器去 import app：`docker run --env-file` **不去引号**（compose 的 `env_file` 才去），写了单引号的 `CRM_TEMPLATES` 在那种容器里会解析失败
 3. **等 CRM-096 / 097 / 098 / 099**（CRM 读到空列表，显示「没有可用模板」）
-4. **两个模板在 Meta 变成 Active 后**：先 `docker compose version` 看 VPS 上的版本（本机实测的是 v5.4.0；compose v2 系对 `env_file` 单引号的处理相同，但没在 VPS 上核过）。Kelvin 从 Meta 后台抄**批准的正文原文**，写进 `/opt/ai_chatbot/backend/.env` 的 `CRM_TEMPLATES`（备份 `.env`）→ `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）→ 看启动日志（白名单写错进程起不来）→ 第 2 步那条签名请求期望返回两项
+4. **两个模板在 Meta 变成 Active 后**：先 `docker compose version` 看 VPS 上的版本（2026-10-31 查得 VPS 是 **v5.1.3**，本机实测的是 v5.4.0；单引号的处理没在 VPS 上实测过，写完看启动日志与第 2 步即可确认）。Kelvin 从 Meta 后台抄**批准的正文原文**，写进 `/opt/ai_chatbot/backend/.env` 的 `CRM_TEMPLATES`（备份 `.env`）→ `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`（**`-f` 不能省**）→ 看启动日志（白名单写错进程起不来）→ 第 2 步那条签名请求期望返回两项
 5. **真机验收**（Kelvin，契约第十一节）：窗口外发模板 → 手机收到；访客回复后接管中；频率限制（CRM 侧）；未确认送出与重试
 - **回滚**：清空 `CRM_TEMPLATES` + 重建容器 → 列表为空、`send-template` 一律 422；已发出的不受影响
 
