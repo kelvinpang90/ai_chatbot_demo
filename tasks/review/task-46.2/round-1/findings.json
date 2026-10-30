@@ -1,0 +1,19 @@
+{
+  "task": "46.2",
+  "round": 1,
+  "commit": "7bab703765f3cbabaa24a3025c875c2e8a90d294",
+  "base": "a04abe09109a09919f35dcb5bb55dc51f70ae375",
+  "verdict": "clean",
+  "suite_result": "1434 passed, 10 skipped, 2 failed（tests/test_seed_console.py::test_an_unreachable_erp_clears_nothing 与 ::test_an_unreachable_erp_clears_no_crm_rows）。这两条在基线 a04abe0 上（git archive 出 backend、同一镜像同一命令）照样 2 failed / 118 passed，报错是 'CRM_BASE_URL, CRM_EMAIL and CRM_PASSWORD must be set'，与本次改动无关、不归 46.2。46.2 新增的 test_crm_send_template.py 与改过的 test_crm_send.py 全绿。",
+  "findings": [],
+  "self_check": {
+    "spec_coverage": "逐条对了 46.2 的测试清单：门与校验（503/401/形状 422/白名单空/名字对语言错/个数/超长/换行/制表/4 空格，且断言 Meta 零调用、redis.calls 为空即键未被碰）；发出（payload type=template、名字、语言、去空白后的参数）；幂等（同 id 重放 duplicate 不带 body、send→send-template 与反向都 duplicate、键被占时 409）；分类（4xx 502 含 code/title 删键可重发、5xx/超时/连接错/无 id 504 留键）；接管开始/续期、occurred_at 与事件逐字相同；agent_reply 的 kind/template_name/body；文字发送 kind=text；历史与审计 crm.reply 行含 template/language；控制台 span 与 reason 文案。测试是走真实路由 + 打桩 httpx.post 而非打桩 crm_send 内部，异常从真实 send_raw 路径抛出，不是同义反复。弱点：46.2 测试里的白名单只有单参数模板，'参数顺序 / 渲染用错参数' 这类变异在 46.2 层看不出来，靠 46.1 的 render 纯函数多参数测试兜底；_deliver 的实现没有任何重排参数的代码，所以我不认为这是可被利用的缺口。'并发两次只有一个抢到' 是用预置 sending 占位来测的（等价于 SET NX 失败分支），没有真并发——共用的是 send 早已有的同一行 SET NX，未改动。",
+    "e2e": "没有做真实链路端到端：契约与计划都规定 C5 不调真实 Meta、白名单在模板 Active 前为空，线上 send-template 只会 422；对真实 Meta 发模板会向真人发消息且计费，审查方不该做。做了的：(1) 用路由级探索测试把边界输入真实喂进去（孤立代理项 → JSON 层 422；\\u2028、\\v、4 个全角空格、4 个 NBSP → 放行到 Meta，符合计划『契约之外的由 Meta 4xx 兜成 rejected』的既定取舍）；(2) 读 CRM 仓库 origin/master b443e82 的 backend/app/schemas/chatbot_event.py，确认 EventMessage 没有 extra='forbid'——46.2 让每条现有文字发送的 agent_reply 都多了 kind:'text'，而 chatbot 先于 CRM-098 部署，如果 CRM 拒收多余字段，线上文字回复的事件会进死信。核实结果是会被忽略，不构成问题，但这是只读核实，没有对线上 /internal/chatbot/events 发签名请求（没有 CRM_EVENTS_SECRET）。真机验收按计划第 5 步由 Kelvin 在模板 Active 后做，目前未发生。",
+    "security": "验签沿用 _verified_body，在任何解析与白名单校验之前；签名错 + 不在白名单的模板 → 401（有测试）。422 的 detail 不回显参数值（有测试），但会回显请求里的 name/language（不是个人数据）。白名单拒绝时 logger.error 只记规则不记值。无新凭据、无新配置写进仓库（AR-1/AR-2 不受影响）。",
+    "spec_deviation": "未发现无正当理由的偏离。对照契约第 5.3 节第 6 条、第六节第 2 条、第七节 send-template：键空间同一前缀、校验在键之前、成功时多 body、duplicate 不带 body（计划第 6 条已说明理由，与契约『响应同 send，成功时多一个 body』不冲突）、agent_reply kind=template + template_name、工具行仍叫 crm.reply、reason 文案按计划第 9 条。'连续 4 个以上空格' 实现为 4 个即拒，比 Meta 的公开说法（多于 4 个）更严，但这是计划第 2 条与测试清单写明的口径，偏严只会多一个 422，不是缺陷。"
+  },
+  "phase2": {
+    "rebuttals": "逐条看 46.2 的自辩，没有不成立的。(1) 『偏离计划：没有』——与 diff 一致：_deliver 是 send 抢键后整段原样搬移，只把 build_text_message/text 换成 build()/body，_take_over 的 reason 由调用方传入，文字路径的 reason 字符串与原来逐字相同。(2) 『全套 1436 passed』——我直接跑 pytest_docker.sh 得到 1434 passed / 2 failed，它自己也写明这两条要补假 CRM_* 环境变量才绿、是任务 45 记过的旧问题；我在基线 a04abe0 上复跑同样 2 红，所以这个说法属实、且它没有把 1436 说成是不加条件的结果。(3) 『签名在测试里独立算；send_raw 打桩』——实际打桩点在 httpx.post，比计划写的更靠外，send_raw 的真实分类逻辑被跑到了，这是好于计划而非偏离。(4) 唯一我无法证实的是『变异检查 11 处全红』：我没有逐个重做变异（不能改被审 worktree，复制一份再改的成本这轮没花），只是读测试判断这 11 种变异对应的断言都存在（kind、键前缀、4xx 删键、duplicate 无 body、detail、接管原因的控制台断言）。它自己承认『接管原因』那个变异第一次没被抓到、补断言后才红——说明这套测试是被变异检查推着补齐的，自述可信，但仍属未经我复核。",
+    "blind_spot": "它主动承认、我第一阶段没提的：(a) 46.1 的 env_file 单引号行为只在本机 Compose v5.4.0 实测、VPS 上的 compose 版本没核——这直接决定上线第 4 步写白名单后进程能不能起来；我把它归为 46.1 的范围就没看，但 46.2 能否在线上工作依赖它，范围划分让我漏了一条真实上线风险（它不是 finding，因为已被自述标为未验证、且白名单为空时不触发）。(b) 变异检查的第一次漏网（接管原因）——我读测试时看到了那条控制台断言，却没有想到去问『这条断言是不是事后补的、补之前测试是否能抓住』；也就是说我判断测试质量只看了终态，没有用变异去主动撞它。盲区总结：这一轮我偏重『读实现 + 对契约 + 喂边界输入』，没有做『改一处看测试红不红』这种对测试本身的对抗性检验；对一个 verdict=clean 的结论，这恰恰是最该补的一步。"
+  }
+}
