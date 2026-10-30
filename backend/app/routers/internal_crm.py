@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from app.config import settings
-from app.services import crm_send, phone
+from app.services import crm_send, crm_templates, phone
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +205,18 @@ async def send(request: Request) -> JSONResponse:
         agent_name=parsed.agent.name,
     )
     return JSONResponse(status_code=status, content=body)
+
+
+class TemplatesRequest(BaseModel):
+    """`POST /internal/crm/templates`: an empty object. A POST only so that it
+    is signed exactly like the others (phase-three contract, section 7)."""
+
+
+@router.post("/templates")
+async def templates(request: Request) -> JSONResponse:
+    """The templates the CRM may send. Read fresh on every call; never cached."""
+    _parsed(TemplatesRequest, await _verified_body(request))
+    return JSONResponse(status_code=200, content={"templates": crm_templates.listing()})
 
 
 @router.post("/handback")
