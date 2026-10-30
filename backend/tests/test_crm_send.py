@@ -538,7 +538,8 @@ def test_after_a_send_the_key_then_agent_reply_then_the_takeover_in_that_order(r
     reply, changed = queue()
     assert reply["type"] == "agent_reply"
     assert reply["crm_message_id"] == REQUEST_ID
-    assert reply["message"] == {"wa_message_id": "wamid.SENT1", "body": "Hello from the CRM"}
+    # `kind` from phase three (task 46.2); a text send never has `template_name`.
+    assert reply["message"] == {"wa_message_id": "wamid.SENT1", "body": "Hello from the CRM", "kind": "text"}
     assert reply["visitor"] == {"phone": PHONE, "bsuid": None, "profile_name": None}
     assert changed["type"] == "handover_changed"
     assert response.json()["handover"]["occurred_at"] == changed["occurred_at"]

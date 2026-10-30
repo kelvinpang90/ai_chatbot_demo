@@ -105,6 +105,35 @@ class SendRequest(BaseModel):
         return value
 
 
+class TemplateChoice(BaseModel):
+    """Which whitelisted template, and the values for its `{{n}}` slots in order.
+
+    Only the shape here; whether the whitelist allows it is the route's check,
+    after parsing, against `CRM_TEMPLATES` as it is at that moment.
+    """
+
+    name: str
+    language: str
+    params: list[str]
+
+    @field_validator("name", "language")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+
+class SendTemplateRequest(BaseModel):
+    """`POST /internal/crm/send-template` (phase-three contract, section 7).
+    Same visitor, agent and key as `SendRequest`; a template in place of text."""
+
+    request_id: uuid.UUID
+    visitor: Visitor
+    template: TemplateChoice
+    agent: Agent
+
+
 class HandbackVisitor(Visitor):
     """A hand-back may name a visitor the CRM has no usable number for -- one
     known only by BSUID can be handed back but not replied to (D10). One of the
@@ -201,6 +230,34 @@ async def send(request: Request) -> JSONResponse:
         phone=parsed.visitor.phone,
         bsuid=parsed.visitor.bsuid,
         text=parsed.text,
+        agent_id=parsed.agent.id,
+        agent_name=parsed.agent.name,
+    )
+    return JSONResponse(status_code=status, content=body)
+
+
+@router.post("/send-template")
+async def send_template(request: Request) -> JSONResponse:
+    """Send one whitelisted template for a CRM agent. Contract section 7.
+
+    Past the door, the whitelist: a name, language or value it does not allow
+    is a 422 before the key is touched or Meta is called. The rest is `send`'s.
+    """
+    parsed = _parsed(SendTemplateRequest, await _verified_body(request))
+    try:
+        template = crm_templates.find(parsed.template.name, parsed.template.language)
+        values = crm_templates.checked_params(template, parsed.template.params)
+    except crm_templates.TemplateRefused as refused:
+        # The rule, never the value: a parameter is usually the visitor's name.
+        logger.error("internal crm: the CRM asked for a template the whitelist refuses: %s", refused)
+        raise HTTPException(status_code=422, detail=[{"loc": ["body", "template"], "msg": str(refused)}]) from None
+    status, body = await run_in_threadpool(
+        crm_send.send_template,
+        request_id=str(parsed.request_id),
+        phone=parsed.visitor.phone,
+        bsuid=parsed.visitor.bsuid,
+        template=template,
+        values=values,
         agent_id=parsed.agent.id,
         agent_name=parsed.agent.name,
     )

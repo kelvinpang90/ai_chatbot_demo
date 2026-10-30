@@ -3474,7 +3474,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 ---
 
-## 批次 11：demo 号多客服第 3 阶段 C5「窗口外模板消息」——chatbot 侧（2026-10-30 新增，**计划待 Kelvin 批准**）
+## 批次 11：demo 号多客服第 3 阶段 C5「窗口外模板消息」——chatbot 侧（2026-10-30 新增；计划与 10 条自定、2 条待定 2026-10-31 Kelvin 批准，原话「批准，都按建议」）
 
 > **契约**：`acuven_crm_demo` 的 `docs/chatbot-phase3.md`（已批准，PR kelvinpang90/acuven_crm_demo#249；读的是 `origin/master` `b443e82`）——第 5.3 节（白名单、第 6 条参数限制）、第六节第 2 条（`agent_reply` 加 `kind` / `template_name`）、第七节 `POST /internal/crm/templates` 与 `POST /internal/crm/send-template`、第十三节（模板被 Meta 停用 → `rejected`）、第十四节（只涉及 CRM 的 091–095，与本批无关）。
 > `git -C E:\projects\acuven_crm_demo show origin/master:docs/chatbot-phase3.md`。契约若改，以它为准，本计划跟着改。
@@ -3502,7 +3502,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 示例（只写进 `.env.example` 的注释里，不作为默认值）：`[{"name":"crm_followup","language":"en","category":"UTILITY","params":[{"label":"Visitor name","max_len":60}],"body":"Hi {{1}}, this is Acuven Technology following up on ..."}]`
 
-### 计划里我自己定的（契约没写死，附建议，请逐条确认）
+### 计划里我自己定的（契约没写死；2026-10-31 Kelvin「都按建议」）
 
 1. **白名单启动时校验，不合法进程起不来**：每项 `name` / `language` / `category` / `body` 非空字符串；`params` 每项 `label` 非空、`max_len` 为 1–1024 的整数；`body` 里的占位**恰好**是 `{{1}}`…`{{n}}`（n = 参数个数，不多不少、不跳号）；`(name, language)` 不重复。理由：手抄 Meta 正文时漏一个占位，CRM 预览和写进历史的正文就跟访客收到的不一样，而这种错在运行时谁也看不出来。代价：`.env` 写错一个引号，整个 chatbot（六个行业的 demo）起不来——所以上线步骤里改白名单后必须看启动日志并调一次 `templates`。备选：不合法时打 ERROR、当作空白名单（CRM 显示「没有可用模板」，demo 照常）
 2. **请求校验分两步**：先按形状（`request_id` UUID、`visitor` 同 `send`、`template.name` / `language` 非空、`params` 是字符串数组、`agent` 同 `send`）→ 422；再对白名单（名字加语言精确匹配、大小写敏感；个数一致；每个参数去首尾空白后 1–`max_len` 字符，不含 `\n` `\r` `\t`、不含连续 4 个以上空格）→ 422，`detail` 说哪个参数、哪条规则，不回显参数值。都在验签之后（同 `send`：没签名的人探不出请求体结构）
@@ -3515,7 +3515,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 9. **接管**：与文字发送同一个 `_take_over`（契约 R7：算客服回复，开始或续期 24 小时）；`reason` 文案改成 `sent a template from the CRM by 名字`，只进日志与控制台
 10. **🔍**：46.2 走双 agent 冷审——它改的是已上线的真实发送路径（`send` 的拆分）；46.1 只有配置、只读接口和纯函数校验，不标 🔍，靠变异检查兜底
 
-### 需要你定的
+### 需要你定的（2026-10-31 已定：两条都按建议，A 不加 CI、本会话做完两个任务）
 
 1. **「CI 全绿」怎么算**（交代里的完成标准，但 PR 上没有 CI）：
    - A（建议）：这次**不加** CI，验收证据是本地 Docker 全套 `pytest`（贴通过数）+ 变异检查；PR 描述里写明「本仓库 PR 无 CI」。加 CI 是另一件事，可以单独开任务
@@ -3526,7 +3526,17 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 
 **顺序**：46.1 → 46.2，后者依赖前者的白名单模块。
 
-- [ ] **任务 46.1（C5a）：模板白名单与 `POST /internal/crm/templates`**
+- [x] **任务 46.1（C5a）：模板白名单与 `POST /internal/crm/templates`**——**2026-10-31 完成，分支 `claude/crm-templates-c5-d954c1`，未合并、未部署**
+  - 做了什么：`config.py` 加 `CrmTemplateParam` / `CrmTemplate`（启动时校验：字段非空、`max_len` 1–1024、正文占位恰好 `{{1}}`…`{{n}}`）与 `crm_templates` 字段（`(name, language)` 不重复）；`services/crm_templates.py`（新）`listing` / `find` / `checked_params` / `render` 与 `TemplateRefused`；`internal_crm.py` 加 `POST /templates`（`_verified_body` → `_parsed(TemplatesRequest)` → 200）；`.env.example` 加 `CRM_TEMPLATES=` 与写法说明
+  - 偏离计划：
+    - **多改了 `requirements.txt`**：`pydantic-settings>=2.6` → `>=2.7`。pydantic-settings 自己解码 JSON 字段时，`.env.example` 原样的 `CRM_TEMPLATES=`（空值）会让进程起不来（测试先红了）；改成字段标 `NoDecode`、在 validator 里自己 `json.loads`，空串当空列表——`NoDecode` 是 2.7 才有的。镜像构建本来就装最新 2.x（测试容器里是 2.16.2），只是把下限写实
+    - `body` 不合法 JSON 也是进程起不来（同自定第 1 条）
+  - 验证到什么程度：
+    - 新增 `tests/test_crm_templates.py` 38 条：门（503、三种 401、旧密钥、签名错 + 坏请求体仍 401、签名对的非对象 422）、返回（空、两项原样含中文）、`CRM_TEMPLATES` 从环境变量读 JSON / 默认空 / 空值为空、八种不合法项与重复项起不来、同名不同语言是两项、`find` 精确匹配、参数（去空白含 NBSP、个数、`max_len` 边界、`
+` `` `	`、3 个空格过 4 个不过、报错不回显值）、渲染（中文、值里含 `{{2}}` 不被二次替换）
+    - 变异检查 **8 处，8 处全红**：去掉占位校验 / 去掉重复校验 / 4 空格改 5 / 漏掉 `` / 不去空白 / 只按名字找 / 渲染改成逐个 `replace` / 空值不当空列表；文件逐个还原
+    - 端到端（本机）：一次性 compose 服务，`env_file` 里单引号包住**两条真实模板**（正文取自共享笔记，不是 Meta 后台原文），容器里起 app 打签名 `POST /internal/crm/templates` → 200、两项（`crm_followup`/`en`、`crm_followup_cn`/`zh_CN`，中文原样）；不签名 → 401
+    - 没验：VPS 上的 compose 版本对单引号的处理（与本机同为 compose v2 系，没登 VPS 核）；Meta 后台批准的正文原文（要等 Active 后由 Kelvin 抄）
   文件：`backend/app/config.py`（`CRM_TEMPLATES` 与校验）、`backend/.env.example`、`backend/app/services/crm_templates.py`（新：查白名单、校验参数、渲染）、`backend/app/routers/internal_crm.py`（`templates` 路由）；测试 `backend/tests/test_crm_templates.py`（新）
   目标：CRM 带正确签名 `POST {}` 拿到白名单原样；白名单写错，进程起不来、错误说清哪一项
   测试：
@@ -3534,7 +3544,17 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
   - 返回：默认 → 200 `{"templates": []}`；配两项 → 原样返回（含中文正文）
   - 配置校验各一条：占位少一个 / 多一个 / 跳号、`max_len` 0、`(name, language)` 重复、`label` 空 → 解析报错
   - 纯函数：渲染（多参数、参数里含 `{{2}}`、中文）；参数校验（个数、空白、`max_len` 边界、换行 / `\r` / 制表符、恰好 3 个与 4 个连续空格）
-- [ ] 🔍 **任务 46.2（C5b）：`POST /internal/crm/send-template` 与 `agent_reply` 的 `kind`**
+- [x] 🔍 **任务 46.2（C5b）：`POST /internal/crm/send-template` 与 `agent_reply` 的 `kind`**——**2026-10-31 完成，冷审中；分支同 46.1，未合并、未部署**
+  - 做了什么：
+    - `crm_send.py`：`send` 抢键之后的整段原样搬进 `_deliver(build, body, kind, reason, detail)`；`send` 只传 `build_text_message` 与 `kind={"kind": "text"}`，入参、返回、日志不变；新 `send_template(template, values)` 先 `render`，传 `build_template_message` 与 `kind={"kind": "template", "template_name": ...}`、`detail={"template", "language"}`，结果为 `sent` 时加 `body`
+    - `_take_over` 改收 `reason`（模板是 `sent a template from the CRM by 名字`）；`_file` 多收 `detail`，进审计 `crm.reply` 行的 `input` 与控制台 span 的 `input`
+    - `internal_crm.py`：`TemplateChoice` / `SendTemplateRequest`；`POST /send-template`：验签 → 形状 422 → `find` + `checked_params`（`TemplateRefused` → 422，`detail` 只有规则、日志不回显值）→ `run_in_threadpool(crm_send.send_template)`
+  - 偏离计划：没有。`test_crm_send.py` 只改了一处断言（`agent_reply.message` 多 `kind: text`），其余现有测试一条没动
+  - 验证到什么程度：
+    - 新增 `tests/test_crm_send_template.py` 40 条，复用 `test_crm_send` 的假 Redis / 事件队列 / 审计桩（同一个键空间正是要测的）：503；签名错 + 不在白名单 → 401；七种形状 422；十种白名单 / 参数 422 且**键零调用、Meta 零调用、队列为空**；白名单空 → 422；422 不回显值；发给 Meta 的 payload（`type: template`、名字、语言、去空白的参数）；`sent` 带渲染后 `body`、键 48 小时；中文模板按语言找到；同 `request_id` 再来 `duplicate` 不带 `body`；**`send` 用过的 `request_id` 走 `send-template` 是 `duplicate`、反过来也是**；`send` 占着键时 409；占位 `SET NX` 120 秒在调 Meta 之前；4xx → 502 `rejected` 删键、不建档、重试真发；5xx / 读超时 / 连接错误 / 200 无 id → 504 `unknown` 留键、重试 409；Redis 挂 → 503 不发；`agent_reply` 四个字段；开始接管、续期接管、响应与事件 `occurred_at` 一致；历史与审计（渲染后正文、`crm_agent`、`crm.reply` 的 `input` 多 `template` / `language`）；控制台 span 与接管原因
+    - 变异检查 **11 处，11 处全红**：不过参数校验 / 不按名字语言找 / 不渲染 / 模板的 `kind` 写成 text / 文字的 `kind` 去掉 / 模板换一个键前缀（只改模板那条，第一次写成连文字一起改了，太宽，重做）/ 4xx 不删键 / `duplicate` 也带 `body` / 模板按文字发 / 去掉 `detail` / 接管原因用文字那句（第一次没被抓到，补了控制台接管原因的断言后转红）；文件逐个还原
+    - 全套（Docker，`python:3.13-slim`）：**1436 passed, 10 skipped**。直接跑 `pytest_docker.sh` 时 `test_seed_console.py` 两条红（`test_an_unreachable_erp_clears_nothing` / `..._no_crm_rows`），是任务 45 记过的「worktree 没有 `backend/.env`」，补假 `CRM_BASE_URL` / `CRM_EMAIL` / `CRM_PASSWORD` 后全绿；与本任务无关，没动
+    - 没验：对真 Meta 发模板（模板还在 In review，白名单为空）；CRM 侧调用（CRM-096～099 还没做）；真机
   文件：`backend/app/services/crm_send.py`（抽 `_deliver`、加 `send_template`、`kind`）、`backend/app/routers/internal_crm.py`（路由 + `SendTemplateRequest`）；测试 `backend/tests/test_crm_send_template.py`（新）、`backend/tests/test_crm_send.py`（`agent_reply` 断言加 `kind: text`）
   目标：CRM 窗口外发一个白名单模板，与发文字同一套幂等、分类、接管、历史、事件；`send` 与 `handback` 行为不变（现有测试一条不改语义）
   测试（签名在测试里独立算；Redis 用现有假 Redis；`send_raw` 打桩）：
@@ -3556,7 +3576,7 @@ v1 MVP 的实施记录已归档到 [tasks/todo-v1-mvp.md](todo-v1-mvp.md)（任�
 - **Meta 对参数的限制**（换行、制表符、连续空格）是契约原文，契约也注明「未核实现行条款」；chatbot 只按契约拦，漏网的由 Meta 4xx → `rejected`
 - **窗口开着时发模板**：chatbot 不查窗口（同 `send`，契约 R2 由 CRM 查）；发出去不违规
 - **出站不计入每日条数上限**：同 `send`
-- **`.env` 里写 JSON**：一行、单引号包住整串，避免 compose 对引号和空格的处理出岔子——46.1 做时用 `docker compose config` 实际核一次 `env_file` 的引号行为，结论写进 `.env.example`
+- **`.env` 里写 JSON**：一行、单引号包住整串。46.1 用本机 Docker Compose v5.4.0 实测 `env_file`：单引号原样保留（中文、`#` 都在）；**不加引号时值在第一个 ` #` 处被截断**。已写进 `.env.example`。VPS 上的 compose 版本没核
 
 ### 上线步骤（46.1 + 46.2 一个 PR；收尾时定稿）
 
