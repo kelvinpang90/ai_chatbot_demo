@@ -27,6 +27,10 @@ renewed, and the reply goes into the history and the audit log. Each of the
 last two is caught on its own: by then the visitor has the message, and nothing
 that fails afterwards may make the answer anything but "sent".
 
+`send_template` is `POST /internal/crm/send-template` (task 46.2, phase-three
+contract section 7): a whitelisted template instead of text, through the same
+key space and every step above; only the message and the body filed differ.
+
 `hand_back` is the CRM's other request, `POST /internal/crm/handback` (task
 42.1): the same takeover, ended.
 """
@@ -41,7 +45,8 @@ from app.config import settings
 import time
 
 from app.console import events
-from app.services import audit, crm_events, handover, whatsapp
+from app.config import CrmTemplate
+from app.services import audit, crm_events, crm_templates, handover, whatsapp
 from app.services.user_store import user_store
 
 logger = logging.getLogger(__name__)
@@ -165,6 +170,74 @@ def send(
     `request_id` arrives canonical (the door parses it as a UUID) and `text`
     trimmed. `bsuid` only helps find the visitor's record.
     """
+    return _deliver(
+        request_id=request_id,
+        phone=phone,
+        bsuid=bsuid,
+        build=lambda: whatsapp.build_text_message(phone, text),
+        body=text,
+        kind={"kind": "text"},
+        agent_id=agent_id,
+        agent_name=agent_name,
+        reason=f"replied from the CRM by {agent_name}",
+    )
+
+
+def send_template(
+    *,
+    request_id: str,
+    phone: str,
+    bsuid: str | None,
+    template: CrmTemplate,
+    values: list[str],
+    agent_id: str,
+    agent_name: str,
+) -> tuple[int, dict]:
+    """Send one whitelisted template for an agent. Returns the status code and body.
+
+    `template` and `values` arrive checked (the door ran them past
+    `crm_templates`). Answers as `send` does, plus the rendered `body` when it
+    went out -- only then: a duplicate's key holds Meta's id alone, and this
+    request's values rendered again are not provably what was sent.
+    """
+    body = crm_templates.render(template, values)
+    status, answer = _deliver(
+        request_id=request_id,
+        phone=phone,
+        bsuid=bsuid,
+        build=lambda: whatsapp.build_template_message(phone, template.name, template.language, values),
+        body=body,
+        kind={"kind": "template", "template_name": template.name},
+        agent_id=agent_id,
+        agent_name=agent_name,
+        reason=f"sent a template from the CRM by {agent_name}",
+        detail={"template": template.name, "language": template.language},
+    )
+    if answer.get("result") == "sent":
+        answer = {**answer, "body": body}
+    return status, answer
+
+
+def _deliver(
+    *,
+    request_id: str,
+    phone: str,
+    bsuid: str | None,
+    build,
+    body: str,
+    kind: dict,
+    agent_id: str,
+    agent_name: str,
+    reason: str,
+    detail: dict | None = None,
+) -> tuple[int, dict]:
+    """Everything `send` and `send_template` share, from the key to the history.
+
+    `build` makes the message for Meta, called once the key is ours; `body` is
+    what the visitor reads, for the event and the history. `kind` goes into the
+    `agent_reply` message as is (phase-three contract section 6, item 2);
+    `detail` onto the audit row and the console span beside who sent it.
+    """
     key = f"{KEY_PREFIX}{request_id}"
 
     try:
@@ -181,7 +254,7 @@ def send(
         return 503, {"result": "unavailable"}
 
     try:
-        payload = whatsapp.build_text_message(phone, text)
+        payload = build()
     except Exception:
         # Nothing has left this process. Free the key: a retry should send.
         logger.exception("crm send %s: could not build the message", request_id)
@@ -237,7 +310,7 @@ def send(
     crm_events.enqueue(
         "agent_reply",
         crm_events.visitor(phone, bsuid, None),
-        message={"wa_message_id": wa_message_id, "body": text},
+        message={"wa_message_id": wa_message_id, "body": body, **kind},
         crm_message_id=request_id,
     )
 
@@ -247,8 +320,8 @@ def send(
         logger.exception("crm send %s: sent, but could not read the visitor's record", request_id)
         return 200, {"result": "sent", "wa_message_id": wa_message_id, "handover": None}
 
-    taken = _take_over(profile, agent_name, request_id)
-    _file(profile, text, wa_message_id, request_id, agent_id, agent_name)
+    taken = _take_over(profile, reason, request_id)
+    _file(profile, body, wa_message_id, request_id, agent_id, agent_name, detail or {})
     return 200, {"result": "sent", "wa_message_id": wa_message_id, "handover": taken}
 
 
@@ -324,7 +397,7 @@ def _record_for(phone: str, bsuid: str | None):
     )
 
 
-def _take_over(profile, agent_name: str, request_id: str) -> dict | None:
+def _take_over(profile, reason: str, request_id: str) -> dict | None:
     """Start or renew the takeover; what changed, for the response. None if it failed.
 
     None too when the change reached memory only: `handover` did not queue an
@@ -333,7 +406,7 @@ def _take_over(profile, agent_name: str, request_id: str) -> dict | None:
     review). The contract's own word for this step failing is a null handover.
     """
     try:
-        if not handover.hold(profile, reason=f"replied from the CRM by {agent_name}"):
+        if not handover.hold(profile, reason=reason):
             logger.error("crm send %s: sent, but the takeover reached memory only; not reporting it", request_id)
             return None
         # The moment the record carries is the one `handover_changed` was
@@ -344,7 +417,9 @@ def _take_over(profile, agent_name: str, request_id: str) -> dict | None:
         return None
 
 
-def _file(profile, text: str, wa_message_id: str, request_id: str, agent_id: str, agent_name: str) -> None:
+def _file(
+    profile, text: str, wa_message_id: str, request_id: str, agent_id: str, agent_name: str, detail: dict
+) -> None:
     """Put the reply in the history, the audit log and on the console.
 
     The same object the takeover was written on, never a fresh read: two copies
@@ -363,14 +438,16 @@ def _file(profile, text: str, wa_message_id: str, request_id: str, agent_id: str
         # none is kept rather than filed once and forgotten.
         audit.begin_for(profile, audit.WHATSAPP)
         user_store.save(profile)
-        who = {"agent_id": agent_id, "agent_name": agent_name, "request_id": request_id}
+        # Still `crm.reply` for a template: the console labels a CRM agent's
+        # line by that row's `agent_name` (task 44).
+        who = {"agent_id": agent_id, "agent_name": agent_name, "request_id": request_id, **detail}
         audit.record_message("assistant", text, audit.CRM_AGENT)
         audit.record_tool_call(tool=CRM_REPLY_TOOL, tool_use_id=request_id, input=who, output=wa_message_id)
         events.emit(
             type=events.TOOL_START,
             tool=CRM_REPLY_TOOL,
             tool_use_id=request_id,
-            input={"to": profile.key_id, "agent": agent_name},
+            input={"to": profile.key_id, "agent": agent_name, **detail},
             key_id=profile.key_id,
         )
         events.emit(

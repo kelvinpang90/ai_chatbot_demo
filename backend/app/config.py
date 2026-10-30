@@ -1,4 +1,45 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+import re
+from typing import Annotated
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# A slot in an approved template's body: `{{1}}`, `{{2}}`, ...
+TEMPLATE_SLOT = re.compile(r"\{\{(\d+)\}\}")
+
+
+class CrmTemplateParam(BaseModel):
+    """One `{{n}}` slot of a CRM template, as the CRM's form shows it."""
+
+    label: str = Field(min_length=1)
+    max_len: int = Field(ge=1, le=1024)
+
+
+class CrmTemplate(BaseModel):
+    """One template the CRM may send (phase-three contract, section 5.3).
+
+    `body` is Meta's approved wording copied by hand, which is exactly where a
+    slot gets lost: then the CRM's preview and the history would read one thing
+    and the visitor's phone another, and nothing at runtime would notice. So the
+    slots have to be precisely `{{1}}`..`{{n}}`, n being the number of params.
+    """
+
+    name: str = Field(min_length=1)
+    language: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    params: list[CrmTemplateParam]
+    body: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _slots_match_params(self) -> "CrmTemplate":
+        slots = {int(n) for n in TEMPLATE_SLOT.findall(self.body)}
+        if slots != set(range(1, len(self.params) + 1)):
+            raise ValueError(
+                f"{self.name}/{self.language}: body must use exactly {{{{1}}}}..{{{{{len(self.params)}}}}}, "
+                f"one per param; it uses {sorted(slots)}"
+            )
+        return self
 
 
 class Settings(BaseSettings):
@@ -120,6 +161,33 @@ class Settings(BaseSettings):
     # The previous key is only for rotating: either one passes while both are set.
     crm_send_secret: str = ""
     crm_send_secret_previous: str = ""
+    # The templates the CRM may send outside the 24-hour window (task 46,
+    # `services/crm_templates.py`): one line of JSON. Empty is a supported
+    # state -- the CRM shows "no templates" and every send-template is a 422 --
+    # and stays empty until Meta marks a template Active. Checked at startup:
+    # a body whose slots do not match its params stops the process, on
+    # purpose, rather than send visitors one wording and file another.
+    crm_templates: Annotated[list[CrmTemplate], NoDecode] = []
+
+    @field_validator("crm_templates", mode="before")
+    @classmethod
+    def _json_or_nothing(cls, value):
+        # Decoded here rather than by pydantic-settings, which fails on the bare
+        # `CRM_TEMPLATES=` that `.env.example` ships: empty means no templates.
+        if isinstance(value, str):
+            return json.loads(value) if value.strip() else []
+        return value
+
+    @field_validator("crm_templates")
+    @classmethod
+    def _one_entry_per_template(cls, value: list[CrmTemplate]) -> list[CrmTemplate]:
+        seen = set()
+        for template in value:
+            key = (template.name, template.language)
+            if key in seen:
+                raise ValueError(f"CRM_TEMPLATES lists {template.name}/{template.language} twice")
+            seen.add(key)
+        return value
 
     # The shared infra_redis, where customer profiles live. Empty on purpose:
     # unset means "keep everything in memory", which is how this service ran
